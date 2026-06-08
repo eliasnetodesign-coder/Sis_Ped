@@ -1,4 +1,4 @@
-Requisitos
+Requisitos 10
     PHP 7.4
     XAMP 7.4
 
