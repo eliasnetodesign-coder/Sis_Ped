@@ -221,4 +221,27 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
     </div>
 </div>
+<script>
+(function() {
+    var cartKey = 'sis_ped_cart_<?= (int)$u['id'] ?>';
+    var saved = localStorage.getItem(cartKey);
+    if (!saved) return;
+    try {
+        var items = JSON.parse(saved);
+        var count = Object.values(items).filter(function(v) { return parseInt(v) > 0; }).length;
+        if (count < 1) return;
+        setTimeout(function() {
+            var el = document.createElement('div');
+            el.className = 'alert alert-info alert-dismissible fade show position-fixed bottom-0 end-0 m-3 shadow';
+            el.style.zIndex = 9999;
+            el.innerHTML = '<i class="bi bi-cart-check me-2"></i>Você tem <strong>' + count
+                + '</strong> produto(s) salvos no carrinho do acesso anterior.'
+                + ' <a href="<?= BASE_URL ?>/cliente/novo-pedido.php" class="alert-link">Continuar pedido</a>'
+                + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+            document.body.appendChild(el);
+            setTimeout(function() { try { bootstrap.Alert.getOrCreateInstance(el).close(); } catch(e) {} }, 7000);
+        }, 500);
+    } catch(e) {}
+})();
+</script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>

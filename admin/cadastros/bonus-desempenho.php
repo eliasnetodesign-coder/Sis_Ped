@@ -181,21 +181,21 @@ require_once LAYOUT_PATH . '/header.php';
         <table class="table table-hover table-sm mb-0" style="font-size:.85rem">
             <thead class="table-light">
                 <tr>
-                    <th>Código</th>
-                    <th>Cliente</th>
-                    <th>Vendedor</th>
-                    <th>Canal</th>
-                    <th class="text-center">Desconto</th>
-                    <th class="text-end"><?= $nomeMes1 ?></th>
-                    <th class="text-end"><?= $nomeMes2 ?></th>
-                    <th class="text-end"><?= $nomeMes3 ?></th>
-                    <th class="text-end">Total Faturado</th>
-                    <th class="text-end">Meta</th>
-                    <th class="text-center">%BD</th>
-                    <th class="text-end">Valor BD</th>
-                    <th class="text-center">Méd. Atrasos</th>
-                    <th>Ação</th>
-                    <th>Log</th>
+                    <th class="text-center" style="white-space:nowrap">Código</th>
+                    <th style="white-space:nowrap">Cliente</th>
+                    <th style="white-space:nowrap">Vendedor</th>
+                    <th class="text-center" style="white-space:nowrap">Canal</th>
+                    <th class="text-center" style="white-space:nowrap">Desconto</th>
+                    <th class="text-end" style="white-space:nowrap"><?= $nomeMes1 ?></th>
+                    <th class="text-end" style="white-space:nowrap"><?= $nomeMes2 ?></th>
+                    <th class="text-end" style="white-space:nowrap"><?= $nomeMes3 ?></th>
+                    <th class="text-end" style="white-space:nowrap">Total Faturado</th>
+                    <th class="text-end" style="white-space:nowrap">Meta</th>
+                    <th class="text-center" style="white-space:nowrap">%BD</th>
+                    <th class="text-end" style="white-space:nowrap">Valor BD</th>
+                    <th class="text-center" style="white-space:nowrap">Méd. Atrasos</th>
+                    <th class="text-center" style="white-space:nowrap">Ação</th>
+                    <th style="white-space:nowrap">Log</th>
                 </tr>
             </thead>
             <tbody>
@@ -204,10 +204,10 @@ require_once LAYOUT_PATH . '/header.php';
                 $valorBD  = $fatTotal * $r['bonus_pct'] / 100;
             ?>
                 <tr>
-                    <td><span class="badge bg-secondary"><?= e($r['codigo_cliente']) ?></span></td>
+                    <td class="text-center"><span class="badge bg-secondary"><?= e($r['codigo_cliente']) ?></span></td>
                     <td class="fw-semibold"><?= e($r['razao_social']) ?></td>
                     <td class="text-muted"><?= e($r['vendedor'] ?: '—') ?></td>
-                    <td><?= $r['canal'] ? '<span class="badge bg-light text-dark border">'.e($r['canal']).'</span>' : '—' ?></td>
+                    <td class="text-center"><?= $r['canal'] ? '<span class="badge bg-light text-dark border">'.e($r['canal']).'</span>' : '<span class="text-muted">—</span>' ?></td>
                     <td class="text-center"><?= number_format($r['desconto_cliente'], 2) ?>%</td>
                     <td class="text-end"><?= $r['fat_mes1'] > 0 ? moedaBR($r['fat_mes1']) : '<span class="text-muted">—</span>' ?></td>
                     <td class="text-end"><?= $r['fat_mes2'] > 0 ? moedaBR($r['fat_mes2']) : '<span class="text-muted">—</span>' ?></td>
@@ -225,8 +225,8 @@ require_once LAYOUT_PATH . '/header.php';
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td>
-                        <div class="d-flex gap-1 flex-nowrap">
+                    <td class="text-center">
+                        <div class="d-flex gap-1 flex-nowrap justify-content-center">
                             <a href="<?= BASE_URL ?>/admin/cadastros/concessao-creditos.php?cliente_id=<?= $r['id'] ?>"
                                class="btn btn-xs btn-outline-success" style="padding:.2rem .5rem;font-size:.75rem"
                                title="Conceder crédito">
@@ -271,7 +271,7 @@ require_once LAYOUT_PATH . '/header.php';
             <?php if ($rows): ?>
             <tfoot class="table-light fw-bold">
                 <tr>
-                    <td colspan="5">Total</td>
+                    <td colspan="5" class="text-start">Total</td>
                     <td class="text-end"><?= moedaBR($totalFat1) ?></td>
                     <td class="text-end"><?= moedaBR($totalFat2) ?></td>
                     <td class="text-end"><?= moedaBR($totalFat3) ?></td>

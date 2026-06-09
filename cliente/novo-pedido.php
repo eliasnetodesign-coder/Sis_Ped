@@ -361,10 +361,8 @@ require_once LAYOUT_PATH . '/header.php';
         </h4>
         <small class="text-muted">Informe as quantidades e clique em Carrinho para avançar</small>
     </div>
-    <div class="d-flex align-items-center gap-3">
-        <a href="<?= BASE_URL ?>/cliente/meus-pedidos.php" class="btn btn-outline-secondary btn-sm">
-            <i class="bi bi-arrow-left me-1"></i>Voltar
-        </a>
+    <div class="d-flex align-items-center gap-2">
+        <span id="headerTotal" class="fw-bold text-primary" style="display:none;font-size:1.05rem"></span>
         <button type="button" class="btn btn-primary position-relative px-4"
                 data-bs-toggle="offcanvas" data-bs-target="#offCarrinho">
             <i class="bi bi-cart3 me-2"></i>Carrinho
@@ -375,11 +373,28 @@ require_once LAYOUT_PATH . '/header.php';
 </div>
 
 <?php if ($campanhas): ?>
-<div class="alert alert-info py-2 mb-3">
-    <i class="bi bi-megaphone me-1"></i><strong>Campanhas Ativas:</strong>
-    <?php foreach ($campanhas as $c): ?>
-    <span class="ms-2 badge bg-info text-dark"><?= e($c['codigo_campanha']) ?>: <?= e($c['descricao_pt'] ?? ($c['linha'] ? 'Linha ' . $c['linha'] : '—')) ?> — <?= e($c['desconto']) ?>% desc. a partir de <?= (int)$c['quantidade'] ?> un.</span>
-    <?php endforeach; ?>
+<div class="mb-3 p-3 rounded-3 border bg-white">
+    <div class="d-flex align-items-center gap-2 mb-2">
+        <i class="bi bi-megaphone-fill text-primary"></i>
+        <span class="fw-semibold text-primary small text-uppercase">Campanhas Ativas</span>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <?php foreach ($campanhas as $c):
+            $alvo = $c['descricao_pt']
+                ?? ($c['linha']     ? 'Linha ' . $c['linha']         : null)
+                ?? ($c['grupo']     ? 'Grupo ' . $c['grupo']         : null)
+                ?? ($c['subgrupo']  ? 'Subgrupo ' . $c['subgrupo']   : 'Todos os produtos');
+            $pct = rtrim(rtrim(number_format((float)$c['desconto'], 2, ',', '.'), '0'), ',');
+        ?>
+        <div class="d-flex align-items-center gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
+            <span class="badge bg-success fs-6 fw-bold px-2">−<?= $pct ?>%</span>
+            <div style="line-height:1.3">
+                <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
+                <div class="text-muted" style="font-size:.76rem"><?= e($alvo) ?> &middot; a partir de <?= (int)$c['quantidade'] ?> un.</div>
+            </div>
+        </div>
+        <?php endforeach; ?>
+    </div>
 </div>
 <?php endif; ?>
 
@@ -452,6 +467,7 @@ require_once LAYOUT_PATH . '/header.php';
                     data-preco="<?= e($precoExib) ?>"
                     data-nome="<?= e($p['descricao_pt']) ?>"
                     data-codigo="<?= e($p['codigo_produto']) ?>"
+                    data-barra="<?= e($p['codigo_barra'] ?? '') ?>"
                     data-linha="<?= e($p['linha'] ?? '') ?>"
                     data-grupo="<?= e($p['grupo'] ?? '') ?>"
                     data-subgrupo="<?= e($p['subgrupo'] ?? '') ?>"
@@ -655,6 +671,9 @@ require_once LAYOUT_PATH . '/header.php';
             <button type="button" class="btn btn-primary w-100 btn-lg" id="btnAvancar">
                 <i class="bi bi-arrow-right me-2"></i>Avançar
             </button>
+            <button type="button" class="btn btn-outline-danger w-100 mt-2" id="btnLimparCarrinho">
+                <i class="bi bi-trash me-1"></i>Limpar Carrinho
+            </button>
         </div>
     </div>
 </div>
@@ -700,18 +719,7 @@ function restaurarCarrinho() {
             row.querySelector('.qtd-total-col').textContent = actual;
             restaurados++;
         });
-        if (restaurados > 0) {
-            setTimeout(function() {
-                var el = document.createElement('div');
-                el.className = 'alert alert-info alert-dismissible fade show position-fixed bottom-0 end-0 m-3 shadow';
-                el.style.zIndex = 9999;
-                el.innerHTML = '<i class="bi bi-cart-check me-2"></i>Carrinho restaurado com <strong>'
-                    + restaurados + '</strong> produto(s) do acesso anterior.'
-                    + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
-                document.body.appendChild(el);
-                setTimeout(function() { try { bootstrap.Alert.getOrCreateInstance(el).close(); } catch(e) {} }, 5000);
-            }, 400);
-        }
+        atualizarCarrinho();
     } catch(e) {
         localStorage.removeItem(_cartKey);
     }
@@ -828,8 +836,10 @@ function getItens() {
             var campDesc  = parseFloat(row.dataset.campDesc) || 0;
             var preco     = campDesc > 0 ? precoBase * (1 - campDesc / 100) : precoBase;
             itens.push({
+                pid:       pid,
                 nome:      row.dataset.nome,
                 codigo:    row.dataset.codigo,
+                barra:     row.dataset.barra  || '',
                 linha:     linha,
                 preco:     preco,
                 precoBase: precoBase,
@@ -868,6 +878,10 @@ function atualizar() {
 
     document.getElementById('carrinhoTotal').textContent = fmtBRL(total);
 
+    var ht = document.getElementById('headerTotal');
+    if (total > 0) { ht.textContent = fmtBRL(total); ht.style.display = ''; }
+    else           { ht.style.display = 'none'; }
+
     var el = document.getElementById('carrinhoItens');
     if (itens.length === 0) {
         el.innerHTML = '<div class="text-center text-muted py-5">'
@@ -889,6 +903,16 @@ function atualizar() {
     }
 }
 
+document.getElementById('btnLimparCarrinho').addEventListener('click', function() {
+    if (!confirm('Deseja remover todos os produtos do carrinho?')) return;
+    document.querySelectorAll('.produto-row').forEach(function(row) {
+        var inp = row.querySelector('input[type="number"]');
+        if (inp) { inp.value = 0; inp.dispatchEvent(new Event('input')); }
+    });
+    localStorage.removeItem(_cartKey);
+    atualizarCarrinho();
+});
+
 document.getElementById('btnAvancar').addEventListener('click', function() {
     var itens = getItens();
     if (itens.length === 0) {
@@ -904,6 +928,18 @@ document.getElementById('btnAvancar').addEventListener('click', function() {
         }
     }
 
+    gerarResumo();
+    var oc = bootstrap.Offcanvas.getInstance(document.getElementById('offCarrinho'));
+    if (oc) oc.hide();
+    document.getElementById('step1').style.display = 'none';
+    document.getElementById('step2').style.display = '';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+function gerarResumo() {
+    var itens = getItens();
+    if (itens.length === 0) { voltarStep1(); return; }
+
     var grupos = {};
     itens.forEach(function(i) {
         if (!grupos[i.linha]) grupos[i.linha] = [];
@@ -917,17 +953,20 @@ document.getElementById('btnAvancar').addEventListener('click', function() {
         var rows = grupos[linha].map(function(i) {
             linhaTotal += i.sub;
             total      += i.sub;
-            var qtdDesc = i.multiplo > 1
-                ? i.visual + ' × ' + i.multiplo + ' = ' + i.qtd + ' un.'
-                : i.qtd + ' un.';
             var campBadge = i.campDesc > 0
-                ? ' <span class="badge bg-success">-' + i.campDesc + '%</span>' : '';
+                ? ' <span class="badge bg-success ms-1" style="font-size:.7em">-' + i.campDesc + '%</span>' : '';
             return '<tr>'
-                + '<td class="fw-semibold">' + i.nome + campBadge + '</td>'
-                + '<td class="text-muted small">' + i.codigo + '</td>'
-                + '<td class="text-center small">' + qtdDesc + '</td>'
-                + '<td class="text-end">R$ ' + i.preco.toFixed(2).replace('.', ',') + '</td>'
-                + '<td class="text-end fw-semibold text-primary">' + fmtBRL(i.sub) + '</td>'
+                + '<td class="text-muted small ps-3">'  + (i.codigo || '—') + '</td>'
+                + '<td class="text-muted small">'        + (i.barra  || '—') + '</td>'
+                + '<td class="fw-semibold">'              + i.nome + campBadge + '</td>'
+                + '<td class="text-end small pe-3">'      + fmtBRL(i.preco) + '</td>'
+                + '<td class="text-center small">'        + (i.multiplo > 1 ? i.multiplo : '—') + '</td>'
+                + '<td class="text-center" style="width:100px">'
+                + '<input type="number" class="form-control form-control-sm text-center resumo-qtd-input mx-auto" '
+                + 'value="' + i.visual + '" min="0" step="1" data-pid="' + i.pid + '" style="width:68px">'
+                + '</td>'
+                + '<td class="text-center small fw-semibold">' + i.qtd + '</td>'
+                + '<td class="text-end fw-semibold text-primary pe-3">' + fmtBRL(i.sub) + '</td>'
                 + '</tr>';
         }).join('');
 
@@ -935,12 +974,19 @@ document.getElementById('btnAvancar').addEventListener('click', function() {
             + '<div class="card-header bg-white d-flex justify-content-between align-items-center py-2">'
             + '<span class="fw-bold"><i class="bi bi-tag me-2 text-primary"></i>' + linha + '</span>'
             + '<span class="text-muted small">Subtotal: <strong class="text-primary">' + fmtBRL(linhaTotal) + '</strong></span>'
-            + '</div><div class="table-responsive"><table class="table table-hover align-middle mb-0">'
-            + '<thead class="table-light"><tr><th>Produto</th><th>Código</th>'
-            + '<th class="text-center">Qtd.</th><th class="text-end">Preço Unit.</th>'
-            + '<th class="text-end">Subtotal</th></tr></thead><tbody>' + rows + '</tbody>'
-            + '<tfoot class="table-light"><tr><td colspan="4" class="text-end fw-semibold">Subtotal ' + linha + '</td>'
-            + '<td class="text-end fw-bold text-primary">' + fmtBRL(linhaTotal) + '</td>'
+            + '</div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">'
+            + '<thead class="table-light"><tr>'
+            + '<th class="small ps-3" style="white-space:nowrap">Código</th>'
+            + '<th class="small" style="white-space:nowrap">Cod. Barras</th>'
+            + '<th class="small">Produto</th>'
+            + '<th class="text-end small pe-3" style="white-space:nowrap">Preço Unit.</th>'
+            + '<th class="text-center small" style="white-space:nowrap">Múlt.</th>'
+            + '<th class="text-center small" style="white-space:nowrap">Quantidade</th>'
+            + '<th class="text-center small" style="white-space:nowrap">Quantidade<br>Total</th>'
+            + '<th class="text-end small pe-3" style="white-space:nowrap">Total R$</th>'
+            + '</tr></thead><tbody>' + rows + '</tbody>'
+            + '<tfoot class="table-light"><tr><td colspan="7" class="text-end fw-semibold small pe-3">Subtotal ' + linha + '</td>'
+            + '<td class="text-end fw-bold text-primary pe-3">' + fmtBRL(linhaTotal) + '</td>'
             + '</tr></tfoot></table></div></div>';
     });
 
@@ -951,11 +997,40 @@ document.getElementById('btnAvancar').addEventListener('click', function() {
         + '</div></div>';
 
     document.getElementById('resumoConteudo').innerHTML = html;
-    var oc = bootstrap.Offcanvas.getInstance(document.getElementById('offCarrinho'));
-    if (oc) oc.hide();
-    document.getElementById('step1').style.display = 'none';
-    document.getElementById('step2').style.display = '';
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+document.getElementById('resumoConteudo').addEventListener('change', function(e) {
+    if (!e.target.classList.contains('resumo-qtd-input')) return;
+    var pid    = parseInt(e.target.dataset.pid);
+    var row    = document.querySelector('.produto-row[data-pid="' + pid + '"]');
+    if (!row) return;
+
+    var visual = Math.max(0, parseInt(e.target.value) || 0);
+    var mult   = parseFloat(row.dataset.multiplo) || 1;
+    var actual = Math.round(visual * mult);
+
+    row.querySelector('.qtd-visual').value          = visual;
+    row.querySelector('.qtd-hidden').value          = actual;
+    row.querySelector('.qtd-total-col').textContent = actual > 0 ? actual : '—';
+
+    recalcularTodas();
+    salvarCarrinho();
+
+    if (isFinite(_maSaldo)) {
+        var totalMA = getItens().reduce(function(a, i) { return a + i.sub; }, 0);
+        if (totalMA > _maSaldo + 0.01) {
+            alert('O valor do pedido (' + fmtBRL(totalMA) + ') ultrapassa o saldo de Bônus MA (' + fmtBRL(_maSaldo) + ').\nReduz a quantidade para continuar.');
+            // Reverte
+            var visAntes = parseInt(row.querySelector('.qtd-visual').value) || 0;
+            var actAntes = Math.round(visAntes * mult);
+            row.querySelector('.qtd-hidden').value          = actAntes;
+            row.querySelector('.qtd-total-col').textContent = actAntes > 0 ? actAntes : '—';
+            recalcularTodas();
+            salvarCarrinho();
+        }
+    }
+
+    gerarResumo();
 });
 
 function voltarStep1() {
