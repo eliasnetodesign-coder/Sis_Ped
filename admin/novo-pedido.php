@@ -160,14 +160,28 @@ require_once LAYOUT_PATH . '/header.php';
 </div>
 
 <?php if ($campanhas): ?>
-<div class="alert alert-info py-2 mb-3">
-    <i class="bi bi-megaphone me-1"></i><strong>Campanhas Ativas:</strong>
-    <?php foreach ($campanhas as $c):
-        $descCamp = $c['descricao_pt']
-            ?? implode(' / ', array_filter([trim($c['linha'] ?? ''), trim($c['grupo'] ?? ''), trim($c['subgrupo'] ?? '')]));
-    ?>
-    <span class="ms-2 badge bg-info text-dark"><?= e($c['codigo_campanha']) ?>: <?= e($descCamp) ?> — <?= e($c['desconto']) ?>% desc. a partir de <?= (int)$c['quantidade'] ?> un.</span>
-    <?php endforeach; ?>
+<div class="mb-3 p-3 rounded-3 border bg-white">
+    <div class="d-flex align-items-center gap-2 mb-2">
+        <i class="bi bi-megaphone-fill text-primary"></i>
+        <span class="fw-semibold text-primary small text-uppercase">Campanhas Ativas</span>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <?php foreach ($campanhas as $c):
+            $alvo = $c['descricao_pt']
+                ?? ($c['linha']     ? 'Linha '     . trim($c['linha'])     : null)
+                ?? ($c['grupo']     ? 'Grupo '     . trim($c['grupo'])     : null)
+                ?? ($c['subgrupo']  ? 'Subgrupo '  . trim($c['subgrupo'])  : 'Todos os produtos');
+            $pct = rtrim(rtrim(number_format((float)$c['desconto'], 2, ',', '.'), '0'), ',');
+        ?>
+        <div class="d-flex align-items-center gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
+            <span class="badge bg-success fs-6 fw-bold px-2">−<?= $pct ?>%</span>
+            <div style="line-height:1.3">
+                <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
+                <div class="text-muted" style="font-size:.76rem"><?= e($alvo) ?> &middot; a partir de <?= (int)$c['quantidade'] ?> un.</div>
+            </div>
+        </div>
+        <?php endforeach; ?>
+    </div>
 </div>
 <?php endif; ?>
 
