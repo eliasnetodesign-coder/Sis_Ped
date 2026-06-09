@@ -719,7 +719,8 @@ function restaurarCarrinho() {
             row.querySelector('.qtd-total-col').textContent = actual;
             restaurados++;
         });
-        atualizarCarrinho();
+        recalcularTodas();
+        atualizar();
     } catch(e) {
         localStorage.removeItem(_cartKey);
     }
