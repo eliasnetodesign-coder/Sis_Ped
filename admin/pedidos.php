@@ -3,6 +3,17 @@ require_once __DIR__ . '/../config.php';
 requireAdmin();
 $u = usuario();
 
+// AJAX: dados do cliente para popup
+if (isset($_GET['ajax_cliente'])) {
+    $cid = (int)($_GET['id'] ?? 0);
+    $stmt = db()->prepare('SELECT c.*, cv.canal FROM clientes c LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id WHERE c.id = ?');
+    $stmt->execute([$cid]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    header('Content-Type: application/json');
+    echo json_encode($row ?: null);
+    exit;
+}
+
 $filtro    = $_GET['status']  ?? '';
 $dt_inicio = isset($_GET['dt_ini']) ? $_GET['dt_ini'] : date('Y-m-01');
 $dt_fim    = isset($_GET['dt_fim']) ? $_GET['dt_fim'] : date('Y-m-t');
@@ -24,7 +35,7 @@ $pedidos = db()->prepare("
            pf.data_pedido, g.created_at,
            pf.tipo_venda, g.valor_total,
            g.status, g.num_itens, g.lote_key,
-           g.razao_social, pf.observacoes
+           g.razao_social, g.codigo_cliente, g.cliente_id, g.vendedor, pf.observacoes
     FROM (
         SELECT MIN(p.id) AS min_id,
                COALESCE(p.lote_id, CAST(p.id AS CHAR)) AS lote_key,
@@ -32,7 +43,10 @@ $pedidos = db()->prepare("
                SUM(p.valor_total) AS valor_total,
                MIN(p.status) AS status,
                COUNT(*) AS num_itens,
-               MIN(c.razao_social) AS razao_social
+               MIN(c.razao_social) AS razao_social,
+               MIN(c.codigo_cliente) AS codigo_cliente,
+               MIN(p.cliente_id) AS cliente_id,
+               MIN(p.vendedor) AS vendedor
         FROM pedidos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         $where
@@ -237,7 +251,9 @@ $cardDefs = [
                 <thead class="table-light">
                     <tr>
                         <th class="ps-3">Nº Pedido</th>
+                        <th style="white-space:nowrap">Código</th>
                         <th>Cliente</th>
+                        <th>Vendedor</th>
                         <th>Data</th>
                         <th>Tipo</th>
                         <th>Valor</th>
@@ -263,7 +279,20 @@ $cardDefs = [
                         <span class="badge bg-secondary ms-1"><?= $p['num_itens'] ?> itens</span>
                         <?php endif; ?>
                     </td>
+                    <td>
+                        <?php if (!empty($p['cliente_id'])): ?>
+                        <button type="button"
+                                class="badge bg-secondary border-0 btn-cliente-popup"
+                                data-id="<?= (int)$p['cliente_id'] ?>"
+                                title="Ver cadastro do cliente" style="cursor:pointer">
+                            <?= e($p['codigo_cliente'] ?? '—') ?>
+                        </button>
+                        <?php else: ?>
+                        <span class="text-muted">—</span>
+                        <?php endif; ?>
+                    </td>
                     <td><?= e($p['razao_social'] ?? '—') ?></td>
+                    <td class="text-muted small"><?= e($p['vendedor'] ?: '—') ?></td>
                     <td>
                         <?= dataBR($p['data_pedido']) ?>
                         <?php if (!empty($p['created_at'])): ?>
@@ -359,5 +388,98 @@ $cardDefs = [
     </div>
     <?php endif; ?>
 </div>
+
+<!-- Modal: Dados do Cliente -->
+<div class="modal fade" id="modalCliente" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold"><i class="bi bi-person-circle me-2 text-primary"></i><span id="mcTitulo">Dados do Cliente</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="mcBody">
+                <div class="text-center py-5">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <div class="mt-2 text-muted">Carregando...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <a id="mcLinkCadastro" href="#" class="btn btn-outline-primary btn-sm me-auto">
+                    <i class="bi bi-box-arrow-up-right me-1"></i>Abrir Cadastro Completo
+                </a>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    function campo(label, valor, wide) {
+        var v = valor || '—';
+        var col = wide ? 'col-md-12' : 'col-md-4';
+        return '<div class="' + col + '">'
+            + '<div class="text-muted small fw-semibold text-uppercase mb-1">' + label + '</div>'
+            + '<div class="form-control bg-light" style="min-height:38px">' + v + '</div>'
+            + '</div>';
+    }
+    function renderCliente(c) {
+        var html = '<div class="row g-3">'
+            + campo('Código', c.codigo_cliente)
+            + campo('CNPJ', c.cnpj)
+            + campo('CPF', c.cpf)
+            + campo('Status', c.status ? c.status.charAt(0).toUpperCase() + c.status.slice(1) : '—')
+            + campo('Razão Social', c.razao_social, true)
+            + campo('CEP', c.cep)
+            + campo('Endereço', c.endereco, true)
+            + campo('Número', c.numero)
+            + campo('Complemento', c.complemento)
+            + campo('Bairro', c.bairro)
+            + campo('Cidade', c.cidade)
+            + campo('UF', c.estado)
+            + campo('País', c.pais || 'Brasil')
+            + campo('Telefone 1', c.telefone1)
+            + campo('Telefone 2', c.telefone2)
+            + campo('E-mail (login)', c.email)
+            + campo('Vendedor', c.vendedor)
+            + campo('Canal de Venda', c.canal)
+            + campo('Desconto do Cliente %', c.desconto_cliente)
+            + campo('Desconto do Canal %', c.desconto_canal)
+            + campo('Bônus Desempenho %', c.bonus_desempenho)
+            + campo('Bônus Mat. Apoio %', c.material_apoio)
+            + campo('Limite Créd.', c.limite_credito)
+            + campo('Idioma', c.idioma ? c.idioma.toUpperCase() : '—')
+            + campo('Moeda', c.moeda)
+            + '</div>';
+        return html;
+    }
+
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest('.btn-cliente-popup');
+        if (!btn) return;
+        var id = btn.dataset.id;
+        var modal = new bootstrap.Modal(document.getElementById('modalCliente'));
+        document.getElementById('mcTitulo').textContent = 'Dados do Cliente';
+        document.getElementById('mcBody').innerHTML = '<div class="text-center py-5"><div class="spinner-border text-primary" role="status"></div><div class="mt-2 text-muted">Carregando...</div></div>';
+        modal.show();
+        fetch('<?= BASE_URL ?>/admin/pedidos.php?ajax_cliente=1&id=' + id)
+            .then(function(r) { return r.json(); })
+            .then(function(c) {
+                if (!c) {
+                    document.getElementById('mcBody').innerHTML = '<div class="alert alert-warning">Cliente não encontrado.</div>';
+                    return;
+                }
+                document.getElementById('mcTitulo').textContent = c.razao_social || 'Dados do Cliente';
+                document.getElementById('mcBody').innerHTML = renderCliente(c);
+                if (c.codigo_cliente) {
+                    document.getElementById('mcLinkCadastro').href = '<?= BASE_URL ?>/admin/cadastros/clientes.php?q=' + encodeURIComponent(c.codigo_cliente);
+                }
+            })
+            .catch(function() {
+                document.getElementById('mcBody').innerHTML = '<div class="alert alert-danger">Erro ao carregar dados.</div>';
+            });
+    });
+})();
+</script>
 
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>

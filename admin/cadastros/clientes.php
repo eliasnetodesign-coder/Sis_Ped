@@ -144,8 +144,8 @@ if ($u['tipo'] === 'vendedor') {
     $params[] = $u['nome'];
 }
 if ($busca) {
-    $conditions[] = '(c.razao_social LIKE ? OR c.cnpj LIKE ? OR c.email LIKE ?)';
-    $params[] = "%$busca%"; $params[] = "%$busca%"; $params[] = "%$busca%";
+    $conditions[] = '(c.razao_social LIKE ? OR c.cnpj LIKE ? OR c.email LIKE ? OR c.codigo_cliente LIKE ?)';
+    $params[] = "%$busca%"; $params[] = "%$busca%"; $params[] = "%$busca%"; $params[] = "%$busca%";
 }
 if ($filtro_status) {
     $conditions[] = 'c.status = ?';

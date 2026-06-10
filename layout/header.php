@@ -41,10 +41,28 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
             <i class="bi bi-list fs-3 lh-1"></i>
         </button>
         <div class="ms-auto d-flex align-items-center gap-2 gap-md-3">
+            <?php $_temGrupo = !empty($_SESSION['grupo_opcoes']) && count($_SESSION['grupo_opcoes']) > 1; ?>
+            <?php if ($_temGrupo): ?>
+            <button type="button"
+                    class="btn btn-link text-white text-decoration-none p-0 small d-none d-sm-inline-flex align-items-center gap-1"
+                    data-bs-toggle="modal" data-bs-target="#modalTrocarCnpj"
+                    title="Trocar empresa">
+                <i class="bi bi-person-circle me-1"></i><?= e($_usuario['nome']) ?>
+                <?php if (!empty($_usuario['cnpj'])): ?>
+                <span class="text-white-50" style="font-size:.78rem"><?= e($_usuario['cnpj']) ?></span>
+                <?php endif; ?>
+                <span class="badge bg-white text-primary ms-1"><?= ucfirst($_usuario['tipo']) ?></span>
+                <i class="bi bi-chevron-down ms-1" style="font-size:.7rem;opacity:.7"></i>
+            </button>
+            <?php else: ?>
             <span class="text-white small d-none d-sm-inline">
                 <i class="bi bi-person-circle me-1"></i><?= e($_usuario['nome']) ?>
+                <?php if (!empty($_usuario['cnpj'])): ?>
+                <span class="text-white-50 ms-1" style="font-size:.78rem"><?= e($_usuario['cnpj']) ?></span>
+                <?php endif; ?>
                 <span class="badge bg-white text-primary ms-1"><?= ucfirst($_usuario['tipo']) ?></span>
             </span>
+            <?php endif; ?>
             <a href="<?= BASE_URL ?>/logout.php"
                class="btn btn-outline-light btn-sm"
                onclick="return confirm('Deseja realmente sair?')">
@@ -54,6 +72,53 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
         <?php endif; ?>
     </div>
 </nav>
+
+<?php if (!empty($_SESSION['grupo_opcoes']) && count($_SESSION['grupo_opcoes']) > 1): ?>
+<div class="modal fade" id="modalTrocarCnpj" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-building me-2 text-primary"></i>Trocar Empresa
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body pt-2 pb-1">
+                <p class="text-muted small mb-3">Selecione o CNPJ para o qual deseja realizar o pedido:</p>
+                <form method="POST" action="<?= BASE_URL ?>/cliente/trocar-cnpj.php">
+                    <input type="hidden" name="voltar" value="<?= e($_SERVER['REQUEST_URI']) ?>">
+                    <div class="d-flex flex-column gap-2 mb-3">
+                        <?php foreach ($_SESSION['grupo_opcoes'] as $op): ?>
+                        <label class="d-flex align-items-center gap-3 p-3 border rounded-3"
+                               style="cursor:pointer;transition:all .15s"
+                               onmouseover="this.style.background='#f0faf5';this.style.borderColor='#2b6a4d'"
+                               onmouseout="this.style.background='';this.style.borderColor=''">
+                            <input type="radio" name="cliente_id" value="<?= $op['id'] ?>"
+                                   class="form-check-input flex-shrink-0 mt-0" style="width:1.2em;height:1.2em"
+                                   <?= $op['id'] == $_usuario['id'] ? 'checked' : '' ?>>
+                            <div>
+                                <div class="fw-semibold" style="font-size:.9rem"><?= e($op['razao_social']) ?></div>
+                                <div class="text-muted small">
+                                    <?= !empty($op['cnpj']) ? e($op['cnpj']) . ' &nbsp;' : '' ?>
+                                    <span class="badge bg-secondary" style="font-size:.68rem"><?= e($op['codigo_cliente']) ?></span>
+                                    <?php if ($op['id'] == $_usuario['id']): ?>
+                                    <span class="badge bg-success ms-1" style="font-size:.68rem">Atual</span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </label>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="d-flex gap-2 justify-content-end pb-1">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-check-lg me-1"></i>Confirmar</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
 
 <?php if ($_usuario): ?>
 <div class="d-flex" style="min-height: calc(100vh - 56px)">
@@ -182,6 +247,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
             $cadastroLinks = [
                 ['slug'=>'produtos',        'label'=>'Produtos',            'icon'=>'bi-box-seam'],
                 ['slug'=>'clientes',        'label'=>'Clientes',            'icon'=>'bi-people'],
+                ['slug'=>'grupo-empresas',  'label'=>'Grupo de Empresas',   'icon'=>'bi-diagram-2'],
                 ['slug'=>'tabela-precos',   'label'=>'Tabela de Preços',    'icon'=>'bi-tags'],
                 ['slug'=>'campanhas',       'label'=>'Campanhas',           'icon'=>'bi-megaphone'],
                 ['slug'=>'canal-venda',     'label'=>'Canal de Venda',      'icon'=>'bi-diagram-3'],
