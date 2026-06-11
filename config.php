@@ -43,6 +43,15 @@ function db() {
                 cliente_id INT NOT NULL,
                 UNIQUE KEY uq_grupo_cliente (grupo_id, cliente_id)
             )"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS webhook_logs (
+                id         INT AUTO_INCREMENT PRIMARY KEY,
+                origem     VARCHAR(50)  NOT NULL,
+                evento     VARCHAR(100) NOT NULL,
+                status     VARCHAR(20)  NOT NULL,
+                detalhe    TEXT,
+                cliente_id INT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS pedido_logs (
                 id            INT AUTO_INCREMENT PRIMARY KEY,
                 pedido_id     INT          NOT NULL,

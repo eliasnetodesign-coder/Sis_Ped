@@ -10,7 +10,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 
 ### 2.1 Login (`login.php`)
 - Formulário único para todos os tipos de usuário.
-- **Clientes** autenticam com **código de cliente** (`codigo_cliente`) + senha.
+- **Clientes** autenticam com **e-mail de cliente** (`e-mail_cliente`) + senha.
 - **Usuários admin** autenticam com **e-mail** + senha.
 - Botão de mostrar/ocultar senha.
 - Redirecionamento automático:
@@ -23,9 +23,10 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 
 | Perfil | Portal | Permissões |
 |--------|--------|-----------|
-| `comercial` | Admin | Acesso total: todos os cadastros, pedidos, relatórios; aprova pedidos na etapa Comercial |
-| `financeiro` | Admin | Acesso ao módulo financeiro e cadastros financeiros; aprova, reprova e retorna pedidos na etapa Financeiro |
+| `comercial` | Admin | Acesso total: todos os pedidos, relatórios; aprova e cancela pedidos na etapa Comercial | Acesso limitado aos cadastros, permitindo edição de descontos, limite de crédito, idioma e bonus
+| `financeiro` | Admin | Acesso ao módulo financeiro e cadastros financeiros; aprova, cancela e retorna pedidos na etapa Financeiro |
 | `vendedor` | Admin | Visão filtrada somente aos próprios clientes e pedidos; pode criar pedidos |
+| `tecnologia da informação` | Acesso total a todos os módulos |
 | `cliente` | Cliente | Acesso apenas ao próprio portal: pedidos, financeiro, perfil |
 
 ### 2.3 Proteção de Rotas
@@ -39,7 +40,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 ## 3. Portal Administrativo
 
 ### 3.1 Dashboard (`admin/dashboard.php`)
-- Cards de resumo: Aguardando Comercial, No Financeiro, Faturados, Reprovados, Total de Pedidos, Valor Total Faturado.
+- Cards de resumo: Aguardando Comercial, No Financeiro, Faturados, Cancelados, Total de Pedidos, Valor Total Faturado.
 - Tabela dos 10 últimos pedidos (nº, cliente, produto, data, valor, status + link para detalhes).
 - Perfil `vendedor`: vê apenas seus pedidos e clientes.
 - Alerta de ação rápida (botão) exibido quando há pedidos aguardando Comercial (somente para perfis `comercial` e `financeiro`).
@@ -52,10 +53,10 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 **Campos:** Código, CNPJ, CPF, Razão Social*, Status, CEP, Endereço, Número, Complemento, Bairro, Cidade, UF (2 chars), País (default: Brasil), Telefone 1, Telefone 2, E-mail (login, único)*, Vendedor (dropdown de usuários tipo vendedor ativos), Canal de Venda (dropdown), Desconto do Cliente %, Desconto do Canal %, Bônus Desempenho % (máx. 4%), Bônus Material de Apoio % (máx. 5%), Limite de Crédito, Idioma (PT/EN/ES), Moeda (BRL/USD/EUR), Senha.
 
 **Operações:**
-- **Criar** — senha obrigatória; Desconto do Canal limitado ao teto do canal selecionado.
+- **Criar** — senha obrigatória; Desconto do Canal limitado ao teto do canal selecionado (exibir somente para perfil `tecnologia da informação`).
 - **Editar** — senha opcional (campo vazio mantém a atual).
-- **Excluir** — com confirmação JS.
-- **Filtros:** busca texto (razão social / CNPJ / e-mail), Canal de Venda, Status; padrão exibe somente ativos.
+- **Excluir** — com confirmação JS e se não houver histórico de pedidos.
+- **Filtros:** busca texto (codigo / razão social / CNPJ / e-mail), Canal de Venda, Status; padrão exibe somente ativos.
 - **Desconto do Canal:** ao selecionar o canal, preenchido automaticamente com o teto do canal; campo limitado pelo `max` do input via JS; informação do máximo exibida abaixo do campo.
 
 **Exportar Excel:**
@@ -68,8 +69,8 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Mapeamento de colunas por índice (A=0, C=2, E=4, H=7, I=8, J=9, K=10, L=11, N=13, O=14, P=15, Q=16, Y=24, AC=28, BW=74).
 - E-mail: extrai o primeiro endereço válido de células com múltiplos e-mails separados por `;`, `,`, `/` ou espaço.
 - Upsert: identifica duplicata por `codigo_cliente` (primeiro) ou `cnpj` (segundo).
-- Conflito de e-mail: se o e-mail já pertence a outro cliente no banco ou aparece duplicado no lote, o campo é zerado (não rejeita a linha).
-- Novos registros recebem senha aleatória de 8 dígitos numéricos.
+- Conflito de e-mail: se o e-mail já pertence a outro cliente no banco ou aparece duplicado no lote, o campo deve ser gravado (não rejeita a linha).
+- Novos registros recebem senha aleatória de 4 dígitos numéricos sendo eles 1234, e solicita alteração do cadastro no primeiro acesso.
 - Preview de até 200 linhas antes da confirmação.
 - Relatório final: inseridos, atualizados, ignorados (sem razão social), e-mails conflitantes.
 

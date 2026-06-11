@@ -191,3 +191,5 @@ onde possamos criar um grupo entre os CNPJs cadastrados de clientes
 Mudar o acesso do cliente, para clientes logarem com e-mail, e se um cliente fizer parte de um Grupo de empresas, após logar no sistema com o e-mail, aparecer um pop-up para o cliente selecione qual CNPJ do grupo dele, ele pretende passar o pedido
 
 perfil administração permitir com que ele clique e possa trocar o CNPJ do qual vai realizar o pedido
+
+No perfil do comercial, adicione esse resumo igual ao do perfil de acesso do comercial no lugar do resumo do topo atual
