@@ -6,6 +6,21 @@ if ($usr['tipo'] !== 'cliente') {
     header('Location: ' . BASE_URL . '/admin/dashboard.php'); exit;
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'senha') {
+    try {
+        $nova = $_POST['nova_senha']      ?? '';
+        $conf = $_POST['confirmar_senha'] ?? '';
+        if (!$nova)            throw new Exception('Informe a nova senha.');
+        if ($nova !== $conf)   throw new Exception('As senhas não conferem.');
+        if (strlen($nova) < 4) throw new Exception('A senha deve ter pelo menos 4 caracteres.');
+        db()->prepare('UPDATE clientes SET senha=? WHERE id=?')->execute([$nova, $usr['id']]);
+        flash('success', 'Senha alterada com sucesso!');
+    } catch (Exception $e) {
+        flash('danger', 'Erro: ' . $e->getMessage());
+    }
+    header('Location: ' . BASE_URL . '/cliente/perfil.php'); exit;
+}
+
 $cliente = db()->prepare('SELECT c.*, cv.canal FROM clientes c LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id WHERE c.id = ?');
 $cliente->execute([$usr['id']]);
 $cliente = $cliente->fetch();
@@ -84,7 +99,8 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 
     <div class="col-lg-4">
-        <div class="card border-0 shadow-sm">
+
+        <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white py-3">
                 <h5 class="mb-0"><i class="bi bi-building me-2 text-primary"></i>Dados Cadastrais</h5>
             </div>
@@ -124,6 +140,35 @@ require_once LAYOUT_PATH . '/header.php';
                 </div>
             </div>
         </div>
+
+        <div class="card border-0 shadow-sm border-start border-warning border-4">
+            <div class="card-header bg-white py-3">
+                <h5 class="mb-0"><i class="bi bi-shield-lock me-2 text-warning"></i>Alterar Senha</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <input type="hidden" name="action" value="senha">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Nova Senha <span class="text-danger">*</span></label>
+                            <input type="password" name="nova_senha" class="form-control"
+                                   placeholder="••••••" autocomplete="new-password">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Confirmar Senha <span class="text-danger">*</span></label>
+                            <input type="password" name="confirmar_senha" class="form-control"
+                                   placeholder="••••••" autocomplete="new-password">
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-warning w-100">
+                            <i class="bi bi-key me-1"></i>Alterar Senha
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
     </div>
 
 </div>
