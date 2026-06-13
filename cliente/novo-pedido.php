@@ -1041,10 +1041,30 @@ function voltarStep1() {
 }
 
 document.getElementById('filtroProduto').addEventListener('input', function() {
-    var q = this.value.toLowerCase();
+    var q = this.value.trim().toLowerCase();
+
+    if (q === '') {
+        document.querySelectorAll('.produto-row').forEach(function(row) {
+            row.style.display = '';
+        });
+        var firstTab = document.querySelector('.nav-link[data-bs-toggle="tab"]');
+        if (firstTab && !firstTab.classList.contains('active')) firstTab.click();
+        return;
+    }
+
+    var firstMatchTab = null;
     document.querySelectorAll('.produto-row').forEach(function(row) {
-        row.style.display = row.dataset.nome.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
+        var match = row.dataset.nome.toLowerCase().indexOf(q) !== -1
+                 || (row.dataset.codigo && row.dataset.codigo.toLowerCase().indexOf(q) !== -1)
+                 || (row.dataset.barra  && row.dataset.barra.toLowerCase().indexOf(q) !== -1);
+        row.style.display = match ? '' : 'none';
+        if (match && !firstMatchTab) firstMatchTab = row.dataset.tab;
     });
+
+    if (firstMatchTab) {
+        var tabBtn = document.querySelector('[data-bs-target="#pane-' + firstMatchTab + '"]');
+        if (tabBtn && !tabBtn.classList.contains('active')) tabBtn.click();
+    }
 });
 
 function _submeterPedido(btnSpinner) {
