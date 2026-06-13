@@ -1,15 +1,91 @@
 <?php
 require_once __DIR__ . '/../../config.php';
-requireComercial();
 $u = usuario();
+
+// Acesso: Comercial (e equivalentes) + Financeiro
+$tiposComercial  = ['comercial', 'supervisor', 'tecnologia da informacao', 'vendedor'];
+$tiposFinanceiro = ['financeiro', 'tecnologia da informacao'];
+if (!$u || !in_array($u['tipo'], array_merge($tiposComercial, $tiposFinanceiro))) {
+    flash('danger', 'Acesso restrito.');
+    header('Location: ' . BASE_URL . '/admin/dashboard.php');
+    exit;
+}
+$isComercial  = in_array($u['tipo'], $tiposComercial);
+$isFinanceiro = in_array($u['tipo'], $tiposFinanceiro);
+
+// Calcula o valor do BD (faturamento faturado do trimestre x % bônus do cliente)
+function bdCalcValor($cliId, $tri, $ano) {
+    $m1 = ($tri - 1) * 3 + 1;
+    $m3 = $tri * 3;
+    $stmt = db()->prepare("
+        SELECT CAST(c.bonus_desempenho AS DECIMAL(10,2)) AS pct,
+               COALESCE(SUM(CASE WHEN p.status='faturado' AND MONTH(p.data_pedido) BETWEEN ? AND ? THEN p.valor_total ELSE 0 END), 0) AS fat
+        FROM clientes c
+        LEFT JOIN pedidos p ON p.cliente_id = c.id AND YEAR(p.data_pedido) = ?
+        WHERE c.id = ?
+        GROUP BY c.id
+    ");
+    $stmt->execute([$m1, $m3, $ano, $cliId]);
+    $r = $stmt->fetch();
+    if (!$r) return 0.0;
+    return round((float)$r['fat'] * (float)$r['pct'] / 100, 2);
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['aprovado', 'reprovado'])) {
     $cliId = (int)$_POST['cliente_id'];
     $pTri  = (int)$_POST['tri'];
     $pAno  = (int)$_POST['ano'];
     $acao  = $_POST['acao'];
-    db()->prepare('INSERT INTO bonus_desempenho_logs (cliente_id, trimestre, ano, acao, usuario_nome) VALUES (?,?,?,?,?)')
-       ->execute([$cliId, $pTri, $pAno, $acao, $u['nome']]);
+    $etapa = $_POST['etapa'] === 'financeiro' ? 'financeiro' : 'comercial';
+
+    // Valida permissão para a etapa
+    $permitido = ($etapa === 'comercial' && $isComercial) || ($etapa === 'financeiro' && $isFinanceiro);
+
+    // Etapa Financeiro exige aprovação prévia do Comercial
+    if ($permitido && $etapa === 'financeiro') {
+        $cl = db()->prepare("SELECT acao FROM bonus_desempenho_logs WHERE cliente_id=? AND trimestre=? AND ano=? AND etapa='comercial' ORDER BY id DESC LIMIT 1");
+        $cl->execute([$cliId, $pTri, $pAno]);
+        if ($cl->fetchColumn() !== 'aprovado') $permitido = false;
+    }
+
+    if ($permitido) {
+        db()->prepare('INSERT INTO bonus_desempenho_logs (cliente_id, trimestre, ano, acao, etapa, usuario_nome) VALUES (?,?,?,?,?,?)')
+           ->execute([$cliId, $pTri, $pAno, $acao, $etapa, $u['nome']]);
+
+        // Aprovação final do Financeiro: gera/atualiza o crédito visível na área do cliente
+        if ($etapa === 'financeiro') {
+            $mesesRom = [1=>'1º', 2=>'2º', 3=>'3º', 4=>'4º'];
+            $descBD   = 'BD ' . $mesesRom[$pTri] . 'TRI ' . $pAno;
+            $hoje     = date('Y-m-d');
+
+            $exStmt = db()->prepare('SELECT id, valor_utilizado FROM creditos WHERE cliente_id=? AND descricao=? LIMIT 1');
+            $exStmt->execute([$cliId, $descBD]);
+            $ex = $exStmt->fetch();
+
+            if ($acao === 'aprovado') {
+                $valor = bdCalcValor($cliId, $pTri, $pAno);
+                if ($ex) {
+                    // Não reduz abaixo do que já foi utilizado
+                    db()->prepare('UPDATE creditos SET valor=GREATEST(?, valor_utilizado), data=? WHERE id=?')
+                       ->execute([$valor, $hoje, $ex['id']]);
+                    $credId = (int)$ex['id'];
+                } else {
+                    db()->prepare('INSERT INTO creditos (cliente_id, descricao, observacao_interna, valor, data, usuario_id) VALUES (?,?,?,?,?,?)')
+                       ->execute([$cliId, $descBD, 'Gerado automaticamente pelo Bônus de Desempenho.', $valor, $hoje, $u['id']]);
+                    $credId = (int)db()->lastInsertId();
+                }
+                db()->prepare('INSERT INTO creditos_logs (credito_id, acao, usuario_nome) VALUES (?,?,?)')
+                   ->execute([$credId, 'aprovado', $u['nome']]);
+            } elseif ($acao === 'reprovado' && $ex) {
+                // Oculta o crédito da área do cliente registrando log de reprovação
+                db()->prepare('INSERT INTO creditos_logs (credito_id, acao, usuario_nome) VALUES (?,?,?)')
+                   ->execute([(int)$ex['id'], 'reprovado', $u['nome']]);
+            }
+        }
+    } else {
+        flash('danger', 'Você não tem permissão para esta ação nesta etapa.');
+    }
+
     header('Location: ' . BASE_URL . '/admin/cadastros/bonus-desempenho.php?tri=' . $pTri . '&ano=' . $pAno);
     exit;
 }
@@ -62,20 +138,24 @@ $rows = db()->prepare("
 $rows->execute([$mes1, $mes2, $mes3, $ano, $tri, $ano]);
 $rows = $rows->fetchAll();
 
-// Último log por cliente no trimestre/ano selecionado
+// Último log por cliente e etapa no trimestre/ano selecionado
 $logsStmt = db()->prepare("
-    SELECT l1.cliente_id, l1.acao, l1.usuario_nome, l1.created_at
+    SELECT l1.cliente_id, l1.etapa, l1.acao, l1.usuario_nome, l1.created_at
     FROM bonus_desempenho_logs l1
     INNER JOIN (
-        SELECT cliente_id, MAX(id) AS max_id
+        SELECT cliente_id, etapa, MAX(id) AS max_id
         FROM bonus_desempenho_logs
         WHERE trimestre = ? AND ano = ?
-        GROUP BY cliente_id
-    ) l2 ON l2.cliente_id = l1.cliente_id AND l2.max_id = l1.id
+        GROUP BY cliente_id, etapa
+    ) l2 ON l2.cliente_id = l1.cliente_id AND l2.etapa = l1.etapa AND l2.max_id = l1.id
 ");
 $logsStmt->execute([$tri, $ano]);
-$logs = [];
-foreach ($logsStmt->fetchAll() as $l) $logs[$l['cliente_id']] = $l;
+$logCom = [];
+$logFin = [];
+foreach ($logsStmt->fetchAll() as $l) {
+    if ($l['etapa'] === 'financeiro') $logFin[$l['cliente_id']] = $l;
+    else                             $logCom[$l['cliente_id']] = $l;
+}
 
 $totalFat1   = array_sum(array_column($rows, 'fat_mes1'));
 $totalFat2   = array_sum(array_column($rows, 'fat_mes2'));
@@ -194,8 +274,8 @@ require_once LAYOUT_PATH . '/header.php';
                     <th class="text-center" style="white-space:nowrap">%BD</th>
                     <th class="text-end" style="white-space:nowrap">Valor BD</th>
                     <th class="text-center" style="white-space:nowrap">Méd. Atrasos</th>
-                    <th class="text-center" style="white-space:nowrap">Ação</th>
-                    <th style="white-space:nowrap">Log</th>
+                    <th class="text-center" style="white-space:nowrap">1. Comercial</th>
+                    <th class="text-center" style="white-space:nowrap">2. Financeiro</th>
                 </tr>
             </thead>
             <tbody>
@@ -225,42 +305,89 @@ require_once LAYOUT_PATH . '/header.php';
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td class="text-center">
-                        <div class="d-flex gap-1 flex-nowrap justify-content-center">
-                            <a href="<?= BASE_URL ?>/admin/cadastros/concessao-creditos.php?cliente_id=<?= $r['id'] ?>"
-                               class="btn btn-xs btn-outline-success" style="padding:.2rem .5rem;font-size:.75rem"
-                               title="Conceder crédito">
-                                <i class="bi bi-coin"></i>
-                            </a>
-                            <form method="POST" class="d-inline">
-                                <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
-                                <input type="hidden" name="tri" value="<?= $tri ?>">
-                                <input type="hidden" name="ano" value="<?= $ano ?>">
-                                <input type="hidden" name="acao" value="aprovado">
-                                <button class="btn btn-xs btn-outline-primary" style="padding:.2rem .5rem;font-size:.75rem" title="Aprovar bônus">
-                                    <i class="bi bi-check-lg"></i>
-                                </button>
-                            </form>
-                            <form method="POST" class="d-inline">
-                                <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
-                                <input type="hidden" name="tri" value="<?= $tri ?>">
-                                <input type="hidden" name="ano" value="<?= $ano ?>">
-                                <input type="hidden" name="acao" value="reprovado">
-                                <button class="btn btn-xs btn-outline-danger" style="padding:.2rem .5rem;font-size:.75rem" title="Reprovar bônus">
-                                    <i class="bi bi-x-lg"></i>
-                                </button>
-                            </form>
-                        </div>
+                    <?php
+                        $cLog  = $logCom[$r['id']] ?? null;
+                        $fLog  = $logFin[$r['id']] ?? null;
+                        $cAcao = $cLog['acao'] ?? null;
+                        $fAcao = $fLog['acao'] ?? null;
+                    ?>
+                    <!-- Etapa 1: Comercial -->
+                    <td class="text-center" style="min-width:155px">
+                        <?php if ($cLog): ?>
+                            <span class="badge bg-<?= $cAcao==='aprovado'?'success':'danger' ?>">
+                                <?= $cAcao==='aprovado' ? 'Aprovado' : 'Reprovado' ?>
+                            </span>
+                            <div class="small text-muted"><?= e($cLog['usuario_nome']) ?> · <?= date('d/m/Y H:i', strtotime($cLog['created_at'])) ?></div>
+                        <?php endif; ?>
+                        <?php if ($isComercial): ?>
+                            <div class="d-flex gap-1 flex-nowrap justify-content-center mt-1">
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
+                                    <input type="hidden" name="tri" value="<?= $tri ?>">
+                                    <input type="hidden" name="ano" value="<?= $ano ?>">
+                                    <input type="hidden" name="etapa" value="comercial">
+                                    <input type="hidden" name="acao" value="aprovado">
+                                    <button class="btn btn-xs btn-outline-primary" style="padding:.2rem .5rem;font-size:.75rem" title="Aprovar (Comercial)">
+                                        <i class="bi bi-check-lg"></i>
+                                    </button>
+                                </form>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
+                                    <input type="hidden" name="tri" value="<?= $tri ?>">
+                                    <input type="hidden" name="ano" value="<?= $ano ?>">
+                                    <input type="hidden" name="etapa" value="comercial">
+                                    <input type="hidden" name="acao" value="reprovado">
+                                    <button class="btn btn-xs btn-outline-danger" style="padding:.2rem .5rem;font-size:.75rem" title="Reprovar (Comercial)">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        <?php elseif (!$cLog): ?>
+                            <span class="text-muted small">Pendente</span>
+                        <?php endif; ?>
                     </td>
-                    <td style="min-width:160px">
-                        <?php if (isset($logs[$r['id']])): $lg = $logs[$r['id']]; ?>
-                            <span class="badge bg-<?= $lg['acao']==='aprovado'?'success':'danger' ?> mb-1">
-                                <?= $lg['acao']==='aprovado' ? 'Aprovado' : 'Reprovado' ?>
-                            </span><br>
-                            <span class="small text-muted"><?= e($lg['usuario_nome']) ?></span><br>
-                            <span class="small text-muted"><?= date('d/m/Y H:i', strtotime($lg['created_at'])) ?></span>
+                    <!-- Etapa 2: Financeiro (habilitado só após aprovação do Comercial) -->
+                    <td class="text-center" style="min-width:155px">
+                        <?php if ($cAcao === 'reprovado'): ?>
+                            <span class="text-muted small"><i class="bi bi-slash-circle me-1"></i>Reprovado no Comercial</span>
+                        <?php elseif ($cAcao !== 'aprovado'): ?>
+                            <span class="text-muted small"><i class="bi bi-lock me-1"></i>Aguardando Comercial</span>
                         <?php else: ?>
-                            <span class="text-muted small">—</span>
+                            <?php if ($fLog): ?>
+                                <span class="badge bg-<?= $fAcao==='aprovado'?'success':'danger' ?>">
+                                    <?= $fAcao==='aprovado' ? 'Aprovado' : 'Reprovado' ?>
+                                </span>
+                                <?php if ($fAcao==='aprovado'): ?>
+                                    <div class="small text-success"><i class="bi bi-coin me-1"></i>Crédito gerado</div>
+                                <?php endif; ?>
+                                <div class="small text-muted"><?= e($fLog['usuario_nome']) ?> · <?= date('d/m/Y H:i', strtotime($fLog['created_at'])) ?></div>
+                            <?php endif; ?>
+                            <?php if ($isFinanceiro): ?>
+                                <div class="d-flex gap-1 flex-nowrap justify-content-center mt-1">
+                                    <form method="POST" class="d-inline">
+                                        <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
+                                        <input type="hidden" name="tri" value="<?= $tri ?>">
+                                        <input type="hidden" name="ano" value="<?= $ano ?>">
+                                        <input type="hidden" name="etapa" value="financeiro">
+                                        <input type="hidden" name="acao" value="aprovado">
+                                        <button class="btn btn-xs btn-outline-primary" style="padding:.2rem .5rem;font-size:.75rem" title="Aprovar (Financeiro)">
+                                            <i class="bi bi-check-lg"></i>
+                                        </button>
+                                    </form>
+                                    <form method="POST" class="d-inline">
+                                        <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
+                                        <input type="hidden" name="tri" value="<?= $tri ?>">
+                                        <input type="hidden" name="ano" value="<?= $ano ?>">
+                                        <input type="hidden" name="etapa" value="financeiro">
+                                        <input type="hidden" name="acao" value="reprovado">
+                                        <button class="btn btn-xs btn-outline-danger" style="padding:.2rem .5rem;font-size:.75rem" title="Reprovar (Financeiro)">
+                                            <i class="bi bi-x-lg"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            <?php elseif (!$fLog): ?>
+                                <span class="text-muted small">Pendente</span>
+                            <?php endif; ?>
                         <?php endif; ?>
                     </td>
                 </tr>

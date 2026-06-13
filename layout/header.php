@@ -358,6 +358,15 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                     </div>
                 </li>
             </ul>
+            <ul class="nav flex-column mt-1">
+                <li class="nav-item">
+                    <a class="nav-link <?= $_pg === 'bonus-desempenho' ? 'active' : '' ?>"
+                       href="<?= BASE_URL ?>/admin/cadastros/bonus-desempenho.php"
+                       data-bs-dismiss="offcanvas">
+                        <i class="bi bi-trophy me-2"></i>Bônus Desempenho
+                    </a>
+                </li>
+            </ul>
             <?php endif; // financeiro ?>
 
             <!-- Flyout Administração -->
