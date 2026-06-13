@@ -65,9 +65,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($camp['canal_venda_id'] && (int)$camp['canal_venda_id'] !== $canalVendaId) continue;
                 if ($camp['produto_id'] && (int)$camp['produto_id'] !== $produto_id) continue;
                 if (!$camp['produto_id']) {
-                    $cLinha    = trim($camp['linha']    ?? '');
-                    $cGrupo    = trim($camp['grupo']    ?? '');
-                    $cSubgrupo = trim($camp['subgrupo'] ?? '');
+                    $cLinha    = trim(preg_replace('/\d+/', '', $camp['linha']    ?? ''));
+                    $cGrupo    = trim(preg_replace('/\d+/', '', $camp['grupo']    ?? ''));
+                    $cSubgrupo = trim(preg_replace('/\d+/', '', $camp['subgrupo'] ?? ''));
                     if ($cLinha) {
                         if ($cLinha !== trim($prod['linha'] ?? '')) continue;
                         $qtdRef = $totaisLinha[$cLinha] ?? 0;
@@ -376,9 +376,9 @@ var _canalId   = 0;
 var _campanhas = <?= json_encode(array_map(function($c) {
     return [
         'produto_id'   => $c['produto_id'] ? (int)$c['produto_id'] : null,
-        'linha'        => trim($c['linha']    ?? ''),
-        'grupo'        => trim($c['grupo']    ?? ''),
-        'subgrupo'     => trim($c['subgrupo'] ?? ''),
+        'linha'        => trim(preg_replace('/\d+/', '', $c['linha']    ?? '')),
+        'grupo'        => trim(preg_replace('/\d+/', '', $c['grupo']    ?? '')),
+        'subgrupo'     => trim(preg_replace('/\d+/', '', $c['subgrupo'] ?? '')),
         'canal_id'     => $c['canal_venda_id'] ? (int)$c['canal_venda_id'] : null,
         'quantidade'   => (int)$c['quantidade'],
         'desconto'     => (float)$c['desconto'],
