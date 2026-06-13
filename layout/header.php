@@ -151,7 +151,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                        COALESCE((SELECT SUM(valor_total) FROM pedidos WHERE cliente_id=c.id AND status='faturado' AND DATE(data_pedido) BETWEEN ? AND ?),0) AS fat
                 FROM clientes c WHERE c.id=?
             ");
-            $_maR->execute([$_mp,$_ap,$_mp,$_ap,$_di,$_df,$_usuario['id']]);
+            $_maR->execute([$_mn,$_ay,$_mn,$_ay,$_di,$_df,$_usuario['id']]);
             $_maR = $_maR->fetch();
             if ($_maR && (int)$_maR['material_apoio']>0 && $_maR['acao']==='aprovado') {
                 $_maTotal   = (float)$_maR['fat'] * (int)$_maR['material_apoio'] / 100;

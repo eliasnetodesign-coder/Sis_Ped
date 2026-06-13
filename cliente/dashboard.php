@@ -28,38 +28,43 @@ FROM contas_receber WHERE cliente_id = ?');
 $boletos->execute([$u['id']]);
 $b = $boletos->fetch();
 
-// Bônus MA: verifica se deve exibir popup (uma vez por sessão de login)
+// Bônus MA: verifica aprovação do mês atual (sempre, não só uma vez por sessão)
 $showMaPopup = false;
-$maValor     = 0;
-$_maKey      = 'ma_popup_shown_' . $u['id'];
-if (empty($_SESSION[$_maKey])) {
-    $_SESSION[$_maKey] = true;
-    $mesAtual = (int)date('n');
-    $anoAtual = (int)date('Y');
-    $mesPad   = $mesAtual === 1 ? 12 : $mesAtual - 1;
-    $anoPad   = $mesAtual === 1 ? $anoAtual - 1 : $anoAtual;
-    $maLog = db()->prepare("
-        SELECT l1.acao, l1.valor_utilizado FROM bonus_ma_logs l1
-        INNER JOIN (
-            SELECT cliente_id, MAX(id) AS max_id FROM bonus_ma_logs
-            WHERE cliente_id = ? AND mes = ? AND ano = ?
-            GROUP BY cliente_id
-        ) l2 ON l2.cliente_id = l1.cliente_id AND l2.max_id = l1.id
-    ");
-    $maLog->execute([$u['id'], $mesPad, $anoPad]);
-    $maLog = $maLog->fetch();
-    if ($maLog && $maLog['acao'] === 'aprovado') {
-        $cliMa = db()->prepare('SELECT material_apoio FROM clientes WHERE id = ?');
-        $cliMa->execute([$u['id']]);
-        $maPct = (int)($cliMa->fetch()['material_apoio'] ?? 0);
-        if ($maPct > 0) {
-            $dtIni = sprintf('%04d-%02d-01', $anoPad, $mesPad);
-            $dtFim = date('Y-m-t', mktime(0, 0, 0, $mesPad, 1, $anoPad));
-            $fat = db()->prepare("SELECT COALESCE(SUM(valor_total),0) AS total FROM pedidos WHERE cliente_id=? AND status='faturado' AND DATE(data_pedido) BETWEEN ? AND ?");
-            $fat->execute([$u['id'], $dtIni, $dtFim]);
-            $maTotal = (float)$fat->fetch()['total'] * $maPct / 100;
-            $maValor = max(0, $maTotal - (float)($maLog['valor_utilizado'] ?? 0));
-            if ($maValor > 0) $showMaPopup = true;
+$showMaBanner = false;
+$maValor      = 0;
+$mesAtual = (int)date('n');
+$anoAtual = (int)date('Y');
+$fatMes   = $mesAtual === 1 ? 12 : $mesAtual - 1;
+$fatAno   = $mesAtual === 1 ? $anoAtual - 1 : $anoAtual;
+$maLog = db()->prepare("
+    SELECT l1.acao, l1.valor_utilizado FROM bonus_ma_logs l1
+    INNER JOIN (
+        SELECT cliente_id, MAX(id) AS max_id FROM bonus_ma_logs
+        WHERE cliente_id = ? AND mes = ? AND ano = ?
+        GROUP BY cliente_id
+    ) l2 ON l2.cliente_id = l1.cliente_id AND l2.max_id = l1.id
+");
+$maLog->execute([$u['id'], $mesAtual, $anoAtual]);
+$maLog = $maLog->fetch();
+if ($maLog && $maLog['acao'] === 'aprovado') {
+    $cliMa = db()->prepare('SELECT material_apoio FROM clientes WHERE id = ?');
+    $cliMa->execute([$u['id']]);
+    $maPct = (int)($cliMa->fetch()['material_apoio'] ?? 0);
+    if ($maPct > 0) {
+        $dtIni = sprintf('%04d-%02d-01', $fatAno, $fatMes);
+        $dtFim = date('Y-m-t', mktime(0, 0, 0, $fatMes, 1, $fatAno));
+        $fat = db()->prepare("SELECT COALESCE(SUM(valor_total),0) AS total FROM pedidos WHERE cliente_id=? AND status='faturado' AND DATE(data_pedido) BETWEEN ? AND ?");
+        $fat->execute([$u['id'], $dtIni, $dtFim]);
+        $maTotal = (float)$fat->fetch()['total'] * $maPct / 100;
+        $maValor = max(0, $maTotal - (float)($maLog['valor_utilizado'] ?? 0));
+        if ($maValor > 0) {
+            $showMaBanner = true;
+            // Popup apenas uma vez por mês (session key inclui mês/ano)
+            $_maKey = 'ma_popup_' . $u['id'] . '_' . $mesAtual . '_' . $anoAtual;
+            if (empty($_SESSION[$_maKey])) {
+                $_SESSION[$_maKey] = true;
+                $showMaPopup = true;
+            }
         }
     }
 }
@@ -73,15 +78,11 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content border-0 shadow-lg">
             <div class="modal-header bg-success text-white border-0">
-                <h5 class="modal-title fw-bold">
-                    <i class="bi bi-gift-fill me-2"></i>Bônus de Material de Apoio Disponível!
-                </h5>
+                <h5 class="modal-title fw-bold"><i class="bi bi-gift-fill me-2"></i>Bônus de Material de Apoio Disponível!</h5>
             </div>
             <div class="modal-body text-center py-5">
-                <div class="mb-3">
-                    <i class="bi bi-gift text-success" style="font-size:3rem"></i>
-                </div>
-                <p class="fs-5 mb-2">Você possui</p>
+                <i class="bi bi-gift text-success" style="font-size:3rem"></i>
+                <p class="fs-5 mt-3 mb-2">Você possui</p>
                 <div class="display-5 fw-bold text-success mb-3"><?= moedaBR($maValor) ?></div>
                 <p class="text-muted mb-0">de Bônus MA para utilizar em produtos de Material de Apoio.<br>Deseja utilizá-lo agora?</p>
             </div>
@@ -112,6 +113,7 @@ document.addEventListener('DOMContentLoaded', function () {
         <i class="bi bi-plus-lg me-1"></i>Novo Pedido
     </a>
 </div>
+
 
 <!-- Cards de resumo -->
 <div class="row g-3 mb-4">
@@ -147,6 +149,21 @@ document.addEventListener('DOMContentLoaded', function () {
             </div>
         </div>
     </div>
+    <?php if ($showMaBanner): ?>
+    <div class="col-6 col-xl-3">
+        <a href="<?= BASE_URL ?>/cliente/novo-pedido.php?modo=ma_bonus" class="text-decoration-none">
+            <div class="card shadow-sm border-0 border-start border-4 border-success h-100" style="cursor:pointer">
+                <div class="card-body">
+                    <div class="text-muted small fw-semibold text-uppercase d-flex align-items-center gap-1">
+                        <i class="bi bi-gift-fill text-success"></i> Bônus MA
+                    </div>
+                    <div class="fw-bold text-success" style="font-size:1.4rem"><?= moedaBR($maValor) ?></div>
+                    <div class="text-muted small">Clique para utilizar</div>
+                </div>
+            </div>
+        </a>
+    </div>
+    <?php endif; ?>
 </div>
 
 <div class="row g-3 mb-4">

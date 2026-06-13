@@ -310,8 +310,9 @@ $maSaldo         = 0.0;
 $maLogId         = 0;
 $maOriginalTotal = 0.0;
 if ($modoMA) {
-    $porLinha = array_filter($porLinha, fn($k) => in_array($k, $MA_LINHAS), ARRAY_FILTER_USE_KEY);
+    $porLinha = array_filter($porLinha, fn($k) => $k === 'MATERIAL DE APOIO', ARRAY_FILTER_USE_KEY);
     $_mn2 = (int)date('n'); $_ay2 = (int)date('Y');
+    // Aprovação gravada no mês atual; faturamento base = mês anterior
     $_mp2 = $_mn2===1?12:$_mn2-1; $_ap2 = $_mn2===1?$_ay2-1:$_ay2;
     $_di2 = sprintf('%04d-%02d-01',$_ap2,$_mp2);
     $_df2 = date('Y-m-t',mktime(0,0,0,$_mp2,1,$_ap2));
@@ -328,7 +329,7 @@ if ($modoMA) {
         )
         WHERE c.id=?
     ");
-    $maStmt->execute([$_di2,$_df2,$_mp2,$_ap2,$u['id']]);
+    $maStmt->execute([$_di2,$_df2,$_mn2,$_ay2,$u['id']]);
     $maRow = $maStmt->fetch();
     if ($maRow && $maRow['log_id'] && (int)$maRow['material_apoio']>0) {
         $valorTotalMA    = (float)$maRow['fat'] * (int)$maRow['material_apoio'] / 100;
@@ -375,7 +376,7 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 </div>
 
-<?php if ($campanhas): ?>
+<?php if ($campanhas && !$modoMA): ?>
 <div class="mb-3 p-3 rounded-3 border bg-white">
     <div class="d-flex align-items-center gap-2 mb-2">
         <i class="bi bi-megaphone-fill text-primary"></i>
