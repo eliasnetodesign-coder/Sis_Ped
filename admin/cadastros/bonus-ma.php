@@ -3,11 +3,11 @@ require_once __DIR__ . '/../../config.php';
 requireComercial();
 $u = usuario();
 
-// Mês anterior por padrão
+// Mês atual por padrão
 $mesAtual = (int)date('n');
 $anoAtual = (int)date('Y');
-$mesPad   = $mesAtual === 1 ? 12 : $mesAtual - 1;
-$anoPad   = $mesAtual === 1 ? $anoAtual - 1 : $anoAtual;
+$mesPad   = $mesAtual;
+$anoPad   = $anoAtual;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['aprovado', 'reprovado'])) {
     db()->prepare('INSERT INTO bonus_ma_logs (cliente_id, mes, ano, acao, usuario_nome) VALUES (?,?,?,?,?)')
@@ -20,6 +20,12 @@ $mes = isset($_GET['mes']) ? (int)$_GET['mes'] : $mesPad;
 $ano = isset($_GET['ano']) ? (int)$_GET['ano'] : $anoPad;
 if ($mes < 1 || $mes > 12) $mes = $mesPad;
 
+// Mês anterior (base do faturamento para cálculo do bônus)
+$fatMes   = $mes === 1 ? 12 : $mes - 1;
+$fatAno   = $mes === 1 ? $ano - 1 : $ano;
+$fatDtIni = sprintf('%04d-%02d-01', $fatAno, $fatMes);
+$fatDtFim = date('Y-m-t', mktime(0, 0, 0, $fatMes, 1, $fatAno));
+// Datas do mês de referência (apenas para exibição)
 $dtIni = sprintf('%04d-%02d-01', $ano, $mes);
 $dtFim = date('Y-m-t', mktime(0, 0, 0, $mes, 1, $ano));
 
@@ -43,9 +49,10 @@ $rows = db()->prepare("
     ) cr_avg ON cr_avg.cliente_id = c.id
     WHERE c.material_apoio > 0 AND c.status = 'ativo'
     GROUP BY c.id
+    HAVING faturamento > 0
     ORDER BY c.razao_social
 ");
-$rows->execute([$dtIni, $dtFim]);
+$rows->execute([$fatDtIni, $fatDtFim]);
 $rows = $rows->fetchAll();
 
 // Último log por cliente no mês/ano selecionado
@@ -109,7 +116,7 @@ require_once LAYOUT_PATH . '/header.php';
                 </a>
                 <?php endif; ?>
                 <?php if (!$ehMesPad): ?>
-                <a href="?" class="btn btn-sm btn-outline-primary">Mês Anterior (Padrão)</a>
+                <a href="?" class="btn btn-sm btn-outline-primary">Mês Atual (Padrão)</a>
                 <?php endif; ?>
             </div>
         </form>
@@ -121,9 +128,9 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="col-6 col-xl-3">
         <div class="card border-0 shadow-sm border-start border-4 border-primary">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Período</div>
+                <div class="text-muted small fw-semibold text-uppercase">Bônus de</div>
                 <div class="fw-bold text-primary"><?= $meses[$mes-1] ?> / <?= $ano ?></div>
-                <div class="text-muted small"><?= date('d/m', strtotime($dtIni)) ?> – <?= date('d/m/Y', strtotime($dtFim)) ?></div>
+                <div class="text-muted small">Fat. base: <?= $meses[$fatMes-1] ?>/<?= $fatAno ?></div>
             </div>
         </div>
     </div>
@@ -168,7 +175,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <th>Supervisor</th>
                     <th>Canal</th>
                     <th class="text-center">Desconto do Canal</th>
-                    <th class="text-end">Faturado (Mês passado)</th>
+                    <th class="text-end">Faturado (<?= $meses[$fatMes-1] ?>/<?= $fatAno ?>)</th>
                     <th class="text-center">%MA</th>
                     <th class="text-end">Valor MA</th>
                     <th class="text-center">Méd. Atr.</th>
