@@ -115,10 +115,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Location: ' . BASE_URL . '/admin/novo-pedido.php'); exit;
 }
 
-$clientes  = db()->query('SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, canal_venda_id FROM clientes WHERE status = "ativo" ORDER BY razao_social')->fetchAll();
+$clientes  = db()->query('SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, canal_venda_id, idioma FROM clientes WHERE status = "ativo" ORDER BY razao_social')->fetchAll();
 $campanhas = db()->query('SELECT c.*, p.descricao_pt, cv.canal FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id ORDER BY c.codigo_campanha')->fetchAll();
 
-$produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo,
+$produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
     COALESCE(t.preco_padrao, p.vendas_varejo, 0) as preco
     FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
     WHERE p.status = "ativo" ORDER BY p.linha, p.descricao_pt')->fetchAll();
@@ -210,7 +210,8 @@ require_once LAYOUT_PATH . '/header.php';
                              data-label="[<?= e($c['codigo_cliente']) ?>] <?= e($c['razao_social']) ?>"
                              data-desconto="<?= e($c['desconto_cliente'] ?? 0) ?>"
                              data-desconto-canal="<?= e($c['desconto_canal'] ?? 0) ?>"
-                             data-canal-id="<?= (int)($c['canal_venda_id'] ?? 0) ?>">
+                             data-canal-id="<?= (int)($c['canal_venda_id'] ?? 0) ?>"
+                             data-idioma="<?= e($c['idioma'] ?? 'pt') ?>">
                             <span class="badge bg-secondary me-1"><?= e($c['codigo_cliente']) ?></span><?= e($c['razao_social']) ?>
                         </div>
                         <?php endforeach; ?>
@@ -278,10 +279,13 @@ require_once LAYOUT_PATH . '/header.php';
                     data-grupo="<?= e($p['grupo'] ?? '') ?>"
                     data-subgrupo="<?= e($p['subgrupo'] ?? '') ?>"
                     data-multiplo="<?= $multiplo ?>"
-                    data-tab="<?= $tid ?>">
+                    data-tab="<?= $tid ?>"
+                    data-desc-pt="<?= e($p['desc_cliente_pt'] ?? '') ?>"
+                    data-desc-en="<?= e($p['desc_cliente_en'] ?? '') ?>"
+                    data-desc-es="<?= e($p['desc_cliente_es'] ?? '') ?>">
                     <td class="text-muted small"><?= e($p['codigo_produto']) ?></td>
                     <td class="text-muted small"><?= e($p['codigo_barra'] ?: '—') ?></td>
-                    <td class="fw-semibold"><?= e($p['descricao_pt']) ?></td>
+                    <td class="fw-semibold prod-nome-cell"><?= e($p['descricao_pt']) ?></td>
                     <td class="text-end text-muted small preco-unit-col"
                         data-preco-base="<?= $preco > 0 ? e('R$ ' . number_format($preco, 2, ',', '.')) : '—' ?>">
                         <?= $preco > 0 ? 'R$ ' . number_format($preco, 2, ',', '.') : '—' ?>
@@ -385,9 +389,16 @@ function fmtBRL(v) {
     return 'R$ ' + v.toFixed(2).replace('.', ',');
 }
 
-function onClienteChange(dCli, dCan, canalId) {
+function onClienteChange(dCli, dCan, canalId, idioma) {
     desconto = dCli + dCan;
     _canalId = canalId;
+    idioma   = idioma || 'pt';
+    document.querySelectorAll('.produto-row').forEach(function(row) {
+        var key = 'desc' + idioma.charAt(0).toUpperCase() + idioma.slice(1);
+        var dc  = (row.dataset[key] || '').trim();
+        var el  = row.querySelector('.prod-nome-cell');
+        if (el) el.textContent = dc || row.dataset.nome;
+    });
 
     var alertEl  = document.getElementById('alertDesconto');
     var alertTxt = document.getElementById('alertDescontoTexto');
@@ -427,10 +438,11 @@ function onClienteChange(dCli, dCan, canalId) {
             hid.value = o.dataset.id;
             inp.value = o.dataset.label;
             drop.style.display = 'none';
-            var dCli = (parseFloat(o.dataset.desconto)      || 0) / 100;
-            var dCan = (parseFloat(o.dataset.descontoCanal) || 0) / 100;
-            var cId  = parseInt(o.dataset.canalId)          || 0;
-            onClienteChange(dCli, dCan, cId);
+            var dCli   = (parseFloat(o.dataset.desconto)      || 0) / 100;
+            var dCan   = (parseFloat(o.dataset.descontoCanal) || 0) / 100;
+            var cId    = parseInt(o.dataset.canalId)          || 0;
+            var idioma = o.dataset.idioma || 'pt';
+            onClienteChange(dCli, dCan, cId, idioma);
         });
         o.addEventListener('mouseover', function () { o.style.background = '#f0f0f0'; });
         o.addEventListener('mouseout',  function () { o.style.background = ''; });

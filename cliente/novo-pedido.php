@@ -236,7 +236,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit;
 }
 
-$cli_data = db()->prepare('SELECT desconto_cliente, desconto_canal, canal_venda_id FROM clientes WHERE id = ?');
+$cli_data = db()->prepare('SELECT desconto_cliente, desconto_canal, canal_venda_id, idioma FROM clientes WHERE id = ?');
 $cli_data->execute([$u['id']]);
 $cli_data     = $cli_data->fetch();
 $desconto_pct = (float)($cli_data['desconto_cliente'] ?? 0) + (float)($cli_data['desconto_canal'] ?? 0);
@@ -261,10 +261,11 @@ $creditoStmt->execute([$u['id']]);
 $creditosDisponiveis = $creditoStmt->fetchAll();
 $creditoDisponivel   = array_sum(array_column($creditosDisponiveis, 'saldo'));
 
-$produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo,
+$produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
     COALESCE(t.preco_padrao, p.vendas_varejo, 0) as preco
     FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
     WHERE p.status = "ativo" ORDER BY p.linha, p.descricao_pt')->fetchAll();
+$idiomaCliente = $cli_data['idioma'] ?? 'pt';
 
 $campanhas = db()->query('SELECT c.*, p.descricao_pt FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id ORDER BY c.codigo_campanha')
     ->fetchAll();
@@ -477,7 +478,8 @@ require_once LAYOUT_PATH . '/header.php';
                     data-tab="<?= $tid ?>">
                     <td class="text-muted small"><?= e($p['codigo_produto']) ?></td>
                     <td class="text-muted small"><?= e($p['codigo_barra'] ?: '—') ?></td>
-                    <td class="fw-semibold"><?= e($p['descricao_pt']) ?></td>
+                    <?php $dc = trim($p['desc_cliente_' . $idiomaCliente] ?? ''); ?>
+                    <td class="fw-semibold"><?= e($dc ?: $p['descricao_pt']) ?></td>
                     <td class="text-end text-muted small preco-unit-col" data-preco-fmt="<?= $precoExib > 0 ? e('R$ ' . number_format($precoExib, 2, ',', '.')) : '—' ?>">
                         <?= $precoExib > 0 ? 'R$ ' . number_format($precoExib, 2, ',', '.') : '—' ?>
                     </td>

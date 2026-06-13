@@ -24,12 +24,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $d = [
                 $_POST['codigo_produto'], $_POST['linha'], $_POST['grupo'], $_POST['subgrupo'],
                 $_POST['codigo_barra'], $_POST['descricao_pt'], $_POST['descricao_en'], $_POST['descricao_es'],
+                $_POST['desc_cliente_pt'] ?? '', $_POST['desc_cliente_en'] ?? '', $_POST['desc_cliente_es'] ?? '',
                 $_POST['nuance'], (int)$_POST['multiplo'],
                 (float)$_POST['vendas_distribuidor'], (float)$_POST['vendas_varejo'], (float)$_POST['vendas_exportacao'],
                 $_POST['ncm_id'] ?: null, $_POST['cest'], $_POST['status'],
             ];
             if ($a === 'criar') {
-                db()->prepare('INSERT INTO produtos (codigo_produto,linha,grupo,subgrupo,codigo_barra,descricao_pt,descricao_en,descricao_es,nuance,multiplo,vendas_distribuidor,vendas_varejo,vendas_exportacao,ncm_id,cest,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
+                db()->prepare('INSERT INTO produtos (codigo_produto,linha,grupo,subgrupo,codigo_barra,descricao_pt,descricao_en,descricao_es,desc_cliente_pt,desc_cliente_en,desc_cliente_es,nuance,multiplo,vendas_distribuidor,vendas_varejo,vendas_exportacao,ncm_id,cest,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
                 // Inserir preço padrão
                 $pid = db()->lastInsertId();
                 if ($_POST['preco_padrao']) {
@@ -38,7 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 flash('success', 'Produto criado com sucesso!');
             } else {
                 $d[] = (int)$_POST['id'];
-                db()->prepare('UPDATE produtos SET codigo_produto=?,linha=?,grupo=?,subgrupo=?,codigo_barra=?,descricao_pt=?,descricao_en=?,descricao_es=?,nuance=?,multiplo=?,vendas_distribuidor=?,vendas_varejo=?,vendas_exportacao=?,ncm_id=?,cest=?,status=? WHERE id=?')->execute($d);
+                db()->prepare('UPDATE produtos SET codigo_produto=?,linha=?,grupo=?,subgrupo=?,codigo_barra=?,descricao_pt=?,descricao_en=?,descricao_es=?,desc_cliente_pt=?,desc_cliente_en=?,desc_cliente_es=?,nuance=?,multiplo=?,vendas_distribuidor=?,vendas_varejo=?,vendas_exportacao=?,ncm_id=?,cest=?,status=? WHERE id=?')->execute($d);
                 if ($_POST['preco_padrao']) {
                     $exists = db()->prepare('SELECT id FROM tabela_precos WHERE produto_id=?');
                     $exists->execute([(int)$_POST['id']]);
@@ -81,15 +82,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $linha    = trim(preg_replace('/\d+/', '', $row['linha']    ?? ''));
                 $grupo    = trim(preg_replace('/\d+/', '', $row['grupo']    ?? ''));
                 $subgrupo = trim(preg_replace('/\d+/', '', $row['subgrupo'] ?? ''));
-                $cbarra   = trim($row['codigo_barra'] ?? '');
-                $cest     = trim($row['cest']        ?? '');
+                $cbarra      = trim($row['codigo_barra']    ?? '');
+                $cest        = trim($row['cest']           ?? '');
+                $dcPT        = trim($row['desc_cliente_pt'] ?? '');
+                $dcEN        = trim($row['desc_cliente_en'] ?? '');
+                $dcES        = trim($row['desc_cliente_es'] ?? '');
                 if ($existing) {
-                    db()->prepare('UPDATE produtos SET codigo_produto=?,linha=?,grupo=?,subgrupo=?,codigo_barra=?,descricao_pt=?,multiplo=?,ncm_id=?,cest=?,status=? WHERE id=?')
-                        ->execute([$codigo,$linha,$grupo,$subgrupo,$cbarra,$descPT,$multiplo,$ncm_id,$cest,$status,$existing]);
+                    db()->prepare('UPDATE produtos SET codigo_produto=?,linha=?,grupo=?,subgrupo=?,codigo_barra=?,descricao_pt=?,multiplo=?,ncm_id=?,cest=?,status=?,desc_cliente_pt=?,desc_cliente_en=?,desc_cliente_es=? WHERE id=?')
+                        ->execute([$codigo,$linha,$grupo,$subgrupo,$cbarra,$descPT,$multiplo,$ncm_id,$cest,$status,$dcPT,$dcEN,$dcES,$existing]);
                     $upd++;
                 } else {
-                    db()->prepare('INSERT INTO produtos (codigo_produto,linha,grupo,subgrupo,codigo_barra,descricao_pt,descricao_en,descricao_es,nuance,multiplo,vendas_distribuidor,vendas_varejo,vendas_exportacao,ncm_id,cest,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                        ->execute([$codigo,$linha,$grupo,$subgrupo,$cbarra,$descPT,'','','', $multiplo,0,0,0,$ncm_id,$cest,$status]);
+                    db()->prepare('INSERT INTO produtos (codigo_produto,linha,grupo,subgrupo,codigo_barra,descricao_pt,descricao_en,descricao_es,nuance,multiplo,vendas_distribuidor,vendas_varejo,vendas_exportacao,ncm_id,cest,status,desc_cliente_pt,desc_cliente_en,desc_cliente_es) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                        ->execute([$codigo,$linha,$grupo,$subgrupo,$cbarra,$descPT,'','','', $multiplo,0,0,0,$ncm_id,$cest,$status,$dcPT,$dcEN,$dcES]);
                     $ins++;
                 }
             }
@@ -269,91 +273,122 @@ require_once LAYOUT_PATH . '/header.php';
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <div class="row g-3">
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Código do Produto</label>
-                            <input type="text" name="codigo_produto" id="f_codigo" class="form-control" required>
+                    <!-- Guias -->
+                    <ul class="nav nav-tabs mb-3" id="tabsProduto">
+                        <li class="nav-item">
+                            <button type="button" class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-dados">Dados do Produto</button>
+                        </li>
+                        <li class="nav-item">
+                            <button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-desc-cliente">Descrição Área do Cliente</button>
+                        </li>
+                    </ul>
+                    <div class="tab-content">
+                        <!-- Aba: Dados do Produto -->
+                        <div class="tab-pane fade show active" id="tab-dados">
+                            <div class="row g-3">
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">Código do Produto</label>
+                                    <input type="text" name="codigo_produto" id="f_codigo" class="form-control" required>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">Linha</label>
+                                    <input type="text" name="linha" id="f_linha" class="form-control">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">Grupo</label>
+                                    <input type="text" name="grupo" id="f_grupo" class="form-control">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">Subgrupo</label>
+                                    <input type="text" name="subgrupo" id="f_subgrupo" class="form-control">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">Código de Barra</label>
+                                    <input type="text" name="codigo_barra" id="f_codigo_barra" class="form-control">
+                                </div>
+                                <div class="col-md-9">
+                                    <label class="form-label fw-semibold">Descrição (Português) <span class="text-danger">*</span></label>
+                                    <input type="text" name="descricao_pt" id="f_descricao_pt" class="form-control" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label fw-semibold">Descrição (Inglês)</label>
+                                    <input type="text" name="descricao_en" id="f_descricao_en" class="form-control">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label fw-semibold">Descrição (Espanhol)</label>
+                                    <input type="text" name="descricao_es" id="f_descricao_es" class="form-control">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">Nuance</label>
+                                    <input type="text" name="nuance" id="f_nuance" class="form-control">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label fw-semibold">Múltiplo</label>
+                                    <input type="number" name="multiplo" id="f_multiplo" class="form-control" value="1" min="1">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label fw-semibold">V. Distribuidor</label>
+                                    <select name="vendas_distribuidor" id="f_vd" class="form-select">
+                                        <option value="0">Não</option>
+                                        <option value="1">Sim</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label fw-semibold">V. Varejo</label>
+                                    <select name="vendas_varejo" id="f_vv" class="form-select">
+                                        <option value="0">Não</option>
+                                        <option value="1">Sim</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">V. Exportação</label>
+                                    <select name="vendas_exportacao" id="f_ve" class="form-select">
+                                        <option value="0">Não</option>
+                                        <option value="1">Sim</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">Preço Padrão</label>
+                                    <input type="number" step="0.01" name="preco_padrao" id="f_preco" class="form-control" value="0">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">NCM</label>
+                                    <select name="ncm_id" id="f_ncm" class="form-select">
+                                        <option value="">Selecione...</option>
+                                        <?php foreach ($ncms as $n): ?>
+                                        <option value="<?= $n['id'] ?>"><?= e($n['ncm']) ?> — <?= e($n['nome_categoria']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">CEST</label>
+                                    <input type="text" name="cest" id="f_cest" class="form-control">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold">Status</label>
+                                    <select name="status" id="f_status" class="form-select">
+                                        <option value="ativo">Ativo</option>
+                                        <option value="inativo">Inativo</option>
+                                    </select>
+                                </div>
+                            </div>
                         </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Linha</label>
-                            <input type="text" name="linha" id="f_linha" class="form-control">
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Grupo</label>
-                            <input type="text" name="grupo" id="f_grupo" class="form-control">
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Subgrupo</label>
-                            <input type="text" name="subgrupo" id="f_subgrupo" class="form-control">
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Código de Barra</label>
-                            <input type="text" name="codigo_barra" id="f_codigo_barra" class="form-control">
-                        </div>
-                        <div class="col-md-9">
-                            <label class="form-label fw-semibold">Descrição (Português) <span class="text-danger">*</span></label>
-                            <input type="text" name="descricao_pt" id="f_descricao_pt" class="form-control" required>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Descrição (Inglês)</label>
-                            <input type="text" name="descricao_en" id="f_descricao_en" class="form-control">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Descrição (Espanhol)</label>
-                            <input type="text" name="descricao_es" id="f_descricao_es" class="form-control">
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Nuance</label>
-                            <input type="text" name="nuance" id="f_nuance" class="form-control">
-                        </div>
-                        <div class="col-md-2">
-                            <label class="form-label fw-semibold">Múltiplo</label>
-                            <input type="number" name="multiplo" id="f_multiplo" class="form-control" value="1" min="1">
-                        </div>
-                        <div class="col-md-2">
-                            <label class="form-label fw-semibold">V. Distribuidor</label>
-                            <select name="vendas_distribuidor" id="f_vd" class="form-select">
-                                <option value="0">Não</option>
-                                <option value="1">Sim</option>
-                            </select>
-                        </div>
-                        <div class="col-md-2">
-                            <label class="form-label fw-semibold">V. Varejo</label>
-                            <select name="vendas_varejo" id="f_vv" class="form-select">
-                                <option value="0">Não</option>
-                                <option value="1">Sim</option>
-                            </select>
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">V. Exportação</label>
-                            <select name="vendas_exportacao" id="f_ve" class="form-select">
-                                <option value="0">Não</option>
-                                <option value="1">Sim</option>
-                            </select>
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Preço Padrão</label>
-                            <input type="number" step="0.01" name="preco_padrao" id="f_preco" class="form-control" value="0">
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">NCM</label>
-                            <select name="ncm_id" id="f_ncm" class="form-select">
-                                <option value="">Selecione...</option>
-                                <?php foreach ($ncms as $n): ?>
-                                <option value="<?= $n['id'] ?>"><?= e($n['ncm']) ?> — <?= e($n['nome_categoria']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">CEST</label>
-                            <input type="text" name="cest" id="f_cest" class="form-control">
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Status</label>
-                            <select name="status" id="f_status" class="form-select">
-                                <option value="ativo">Ativo</option>
-                                <option value="inativo">Inativo</option>
-                            </select>
+                        <!-- Aba: Descrição Área do Cliente -->
+                        <div class="tab-pane fade" id="tab-desc-cliente">
+                            <div class="row g-3">
+                                <div class="col-12">
+                                    <label class="form-label fw-semibold">Português</label>
+                                    <textarea name="desc_cliente_pt" id="f_desc_cliente_pt" class="form-control" rows="4"></textarea>
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label fw-semibold">Inglês</label>
+                                    <textarea name="desc_cliente_en" id="f_desc_cliente_en" class="form-control" rows="4"></textarea>
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label fw-semibold">Espanhol</label>
+                                    <textarea name="desc_cliente_es" id="f_desc_cliente_es" class="form-control" rows="4"></textarea>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -389,7 +424,8 @@ require_once LAYOUT_PATH . '/header.php';
                             <?php foreach ([
                                 'A'=>'Código do Produto','B'=>'Descrição (PT)','C'=>'Status',
                                 'E'=>'Código de Barra','O'=>'Grupo','P'=>'Subgrupo',
-                                'Q'=>'Linha','AO'=>'NCM (código)','BF'=>'Múltiplo','CF'=>'CEST'
+                                'Q'=>'Linha','AO'=>'NCM (código)','BF'=>'Múltiplo','CF'=>'CEST',
+                                'CG'=>'Desc. Cliente PT','CH'=>'Desc. Cliente EN','CI'=>'Desc. Cliente ES'
                             ] as $col => $label): ?>
                             <span class="badge bg-light text-dark border">
                                 <span class="fw-bold text-primary"><?= $col ?></span> → <?= $label ?>
@@ -504,7 +540,7 @@ function exportarProdutos() {
 </script>
 <script>
 // Mapeamento: índice de coluna (0-based) → campo
-// A=0, B=1, C=2, E=4, O=14, P=15, Q=16, AO=40, BF=57, CF=83
+// A=0, B=1, C=2, E=4, O=14, P=15, Q=16, AO=40, BF=57, CF=83, CG=84, CH=85, CI=86
 var IMP_MAP = {
     0:  'codigo_produto',
     1:  'descricao_pt',
@@ -515,7 +551,10 @@ var IMP_MAP = {
     16: 'linha',
     40: 'ncm',
     57: 'multiplo',
-    83: 'cest'
+    83: 'cest',
+    84: 'desc_cliente_pt',
+    85: 'desc_cliente_en',
+    86: 'desc_cliente_es'
 };
 
 var importData = [];
@@ -620,6 +659,7 @@ function novoRegistro() {
     document.getElementById('formAction').value = 'criar';
     document.getElementById('formId').value = '';
     ['codigo','linha','grupo','subgrupo','codigo_barra','descricao_pt','descricao_en','descricao_es','nuance','cest'].forEach(function(f){ document.getElementById('f_'+f).value=''; });
+    ['desc_cliente_pt','desc_cliente_en','desc_cliente_es'].forEach(function(f){ document.getElementById('f_'+f).value=''; });
     ['multiplo'].forEach(function(f){ document.getElementById('f_'+f).value='1'; });
     ['vd','vv','ve','preco'].forEach(function(f){ document.getElementById('f_'+f).value='0'; });
     document.getElementById('f_ncm').value='';
@@ -659,6 +699,9 @@ function editarRegistro(d) {
     document.getElementById('f_ncm').value = d.ncm_id||'';
     document.getElementById('f_cest').value = d.cest||'';
     document.getElementById('f_status').value = d.status||'ativo';
+    document.getElementById('f_desc_cliente_pt').value = d.desc_cliente_pt||'';
+    document.getElementById('f_desc_cliente_en').value = d.desc_cliente_en||'';
+    document.getElementById('f_desc_cliente_es').value = d.desc_cliente_es||'';
     new bootstrap.Modal(document.getElementById('modalProduto')).show();
 }
 </script>
