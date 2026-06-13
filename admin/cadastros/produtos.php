@@ -4,6 +4,21 @@ requireComercial();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $a = $_POST['action'] ?? '';
+    if ($a === 'toggle_venda') {
+        header('Content-Type: application/json');
+        try {
+            $id    = (int)($_POST['id']    ?? 0);
+            $campo = $_POST['campo']       ?? '';
+            $valor = (int)($_POST['valor'] ?? 0);
+            $allow = ['vendas_distribuidor','vendas_varejo','vendas_exportacao'];
+            if (!$id || !in_array($campo, $allow, true)) throw new Exception('Campo inválido.');
+            db()->prepare("UPDATE produtos SET $campo=? WHERE id=?")->execute([$valor ? 1 : 0, $id]);
+            echo json_encode(['ok' => true]);
+        } catch (Exception $e) {
+            echo json_encode(['ok' => false, 'msg' => $e->getMessage()]);
+        }
+        exit;
+    }
     try {
         if ($a === 'criar' || $a === 'editar') {
             $d = [
@@ -114,7 +129,7 @@ $where = $conditions ? 'WHERE ' . implode(' AND ', $conditions) : '';
 $produtos = db()->prepare("SELECT p.*, t.preco_padrao, n.ncm FROM produtos p
     LEFT JOIN tabela_precos t ON t.produto_id = p.id
     LEFT JOIN ncm n ON n.id = p.ncm_id
-    $where ORDER BY p.descricao_pt");
+    $where ORDER BY p.linha, p.descricao_pt");
 $produtos->execute($params);
 $produtos = $produtos->fetchAll();
 
@@ -182,21 +197,43 @@ require_once LAYOUT_PATH . '/header.php';
                 <tr>
                     <th>Código</th>
                     <th>Descrição</th>
-                    <th>Linha/Grupo</th>
+
                     <th>Preço Padrão</th>
-                    <th>NCM</th>
+                    <th class="text-center">V.Distribuidor</th>
+                    <th class="text-center">V.Varejo</th>
+                    <th class="text-center">V.Exportação</th>
                     <th>Status</th>
                     <th>Ações</th>
                 </tr>
             </thead>
             <tbody>
-            <?php if ($produtos): foreach ($produtos as $p): ?>
+            <?php if ($produtos):
+                $linhaAtual = null;
+                foreach ($produtos as $p):
+                    if ($p['linha'] !== $linhaAtual):
+                        $linhaAtual = $p['linha'];
+                        $lbl = $linhaAtual ?: '(Sem Linha)';
+            ?>
+                <tr>
+                    <td colspan="8" class="fw-bold py-2 px-3 small text-uppercase text-white" style="background:#2b6a4d;letter-spacing:.07em"><?= e($lbl) ?></td>
+                </tr>
+            <?php endif; ?>
                 <tr>
                     <td><strong><?= e($p['codigo_produto']) ?></strong></td>
                     <td><?= e($p['descricao_pt']) ?></td>
-                    <td><?= e($p['linha']) ?><?= $p['grupo'] ? ' / ' . e($p['grupo']) : '' ?></td>
+
                     <td><?= moedaBR($p['preco_padrao']) ?></td>
-                    <td><small><?= e($p['ncm'] ?? '—') ?></small></td>
+                    <?php foreach (['vendas_distribuidor','vendas_varejo','vendas_exportacao'] as $vc):
+                        $on = $p[$vc] > 0; ?>
+                    <td class="text-center">
+                        <span class="badge <?= $on ? 'bg-success' : 'bg-secondary' ?>"
+                              style="cursor:pointer;user-select:none"
+                              data-id="<?= $p['id'] ?>"
+                              data-campo="<?= $vc ?>"
+                              data-valor="<?= $on ? 1 : 0 ?>"
+                              onclick="toggleVenda(this)"><?= $on ? 'Sim' : 'Não' ?></span>
+                    </td>
+                    <?php endforeach; ?>
                     <td><?= statusBadge($p['status']) ?></td>
                     <td>
                         <button class="btn btn-sm btn-outline-primary" onclick="editarRegistro(<?= htmlspecialchars(json_encode($p), ENT_QUOTES) ?>)">
@@ -210,8 +247,8 @@ require_once LAYOUT_PATH . '/header.php';
                         </form>
                     </td>
                 </tr>
-            <?php endforeach; else: ?>
-                <tr><td colspan="7" class="text-center text-muted py-4">Nenhum produto cadastrado.</td></tr>
+            <?php endforeach; endif; if (!$produtos): ?>
+                <tr><td colspan="8" class="text-center text-muted py-4">Nenhum produto cadastrado.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -587,6 +624,19 @@ function novoRegistro() {
     ['vd','vv','ve','preco'].forEach(function(f){ document.getElementById('f_'+f).value='0'; });
     document.getElementById('f_ncm').value='';
     document.getElementById('f_status').value='ativo';
+}
+function toggleVenda(el) {
+    var novoValor = el.dataset.valor == '1' ? 0 : 1;
+    fetch(location.pathname, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'action=toggle_venda&id=' + el.dataset.id + '&campo=' + el.dataset.campo + '&valor=' + novoValor
+    }).then(function(r){ return r.json(); }).then(function(d) {
+        if (!d.ok) return;
+        el.dataset.valor = novoValor;
+        el.className     = 'badge ' + (novoValor ? 'bg-success' : 'bg-secondary');
+        el.textContent   = novoValor ? 'Sim' : 'Não';
+    });
 }
 function editarRegistro(d) {
     document.getElementById('modalTitle').textContent = 'Editar Produto';
