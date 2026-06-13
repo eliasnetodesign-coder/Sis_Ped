@@ -6,9 +6,9 @@ $u = usuario();
 $d_join  = '';
 $d_where = '';
 $d_params = [];
-if ($u['tipo'] === 'vendedor') {
+if (in_array($u['tipo'], ['supervisor', 'vendedor'])) {
     $d_join  = 'LEFT JOIN clientes c ON c.id = p.cliente_id';
-    $d_where = 'WHERE c.vendedor = ?';
+    $d_where = 'WHERE COALESCE(c.supervisor, c.vendedor) = ?';
     $d_params[] = $u['nome'];
 }
 
@@ -48,10 +48,10 @@ foreach ($tipo_stmt->fetchAll() as $tt) {
 }
 
 // Últimos pedidos
-if ($u['tipo'] === 'vendedor') {
+if (in_array($u['tipo'], ['supervisor', 'vendedor'])) {
     $recentes = db()->prepare('SELECT p.*, c.razao_social FROM pedidos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
-        WHERE c.vendedor = ? ORDER BY p.created_at DESC LIMIT 10');
+        WHERE COALESCE(c.supervisor, c.vendedor) = ? ORDER BY p.created_at DESC LIMIT 10');
     $recentes->execute([$u['nome']]);
     $recentes = $recentes->fetchAll();
     $emComercial = 0;
@@ -86,7 +86,7 @@ $cardDefs = [
     'comercial'  => ['label'=>'Ag. Comercial',   'icon'=>'bi-clock-history', 'cor'=>'primary',   'qtd'=>$totais['comercial']['qtd']  ?? 0,   'val'=>$totais['comercial']['total']  ?? 0, 'tipo'=>$totais_tipo['comercial']  ?? []],
     'financeiro' => ['label'=>'Ag. Financeiro',  'icon'=>'bi-bank',          'cor'=>'warning',   'qtd'=>$totais['financeiro']['qtd'] ?? 0,   'val'=>$totais['financeiro']['total'] ?? 0, 'tipo'=>$totais_tipo['financeiro'] ?? []],
     'faturado'   => ['label'=>'Ag. Faturamento', 'icon'=>'bi-box-seam',      'cor'=>'success',   'qtd'=>$totais['faturado']['qtd']   ?? 0,   'val'=>$totais['faturado']['total']   ?? 0, 'tipo'=>$totais_tipo['faturado']   ?? []],
-    'reprovado'  => ['label'=>'Reprovados',      'icon'=>'bi-x-circle',      'cor'=>'danger',    'qtd'=>$totais['reprovado']['qtd']  ?? 0,   'val'=>$totais['reprovado']['total']  ?? 0, 'tipo'=>$totais_tipo['reprovado']  ?? []],
+    'reprovado'  => ['label'=>'Cancelados',      'icon'=>'bi-x-circle',      'cor'=>'danger',    'qtd'=>$totais['reprovado']['qtd']  ?? 0,   'val'=>$totais['reprovado']['total']  ?? 0, 'tipo'=>$totais_tipo['reprovado']  ?? []],
 ];
 ?>
 <div class="row g-3 mb-4">

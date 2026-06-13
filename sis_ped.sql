@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS clientes (
     telefone1 VARCHAR(20),
     telefone2 VARCHAR(20),
     email VARCHAR(100) NOT NULL UNIQUE,
-    vendedor VARCHAR(100),
+    supervisor VARCHAR(100),
     canal_venda_id INT,
     material_apoio TINYINT DEFAULT 0,
     bonus_desempenho DECIMAL(10,2) DEFAULT 0,
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
     senha VARCHAR(255) NOT NULL,
     departamento VARCHAR(50),
     divisao_vendas VARCHAR(50),
-    tipo_acesso ENUM('comercial','financeiro') NOT NULL DEFAULT 'comercial',
+    tipo_acesso ENUM('comercial','financeiro','supervisor','tecnologia da informacao','recursos humanos','marketing','diretoria','centro tecnico','contabilidade','recepcao','expedicao') NOT NULL DEFAULT 'comercial',
     tipo_usuario VARCHAR(50),
     telefone VARCHAR(20),
     ramal VARCHAR(10),
@@ -126,12 +126,12 @@ CREATE TABLE IF NOT EXISTS pedidos (
     data_pedido DATE,
     cliente_id INT,
     produto_id INT,
-    vendedor VARCHAR(100),
+    supervisor VARCHAR(100),
     codigo_barra VARCHAR(50),
     descricao_produto VARCHAR(200),
     quantidade_total INT DEFAULT 0,
     valor_total DECIMAL(12,2) DEFAULT 0,
-    status ENUM('comercial','financeiro','faturado','reprovado') DEFAULT 'comercial',
+    status ENUM('comercial','financeiro','faturamento','faturado','cancelado','reprovado') DEFAULT 'comercial',
     observacoes TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE SET NULL,
@@ -222,19 +222,19 @@ INSERT IGNORE INTO tabela_precos (produto_id, preco_padrao) VALUES
 (2, 35.00),
 (3, 18.00);
 
-INSERT IGNORE INTO clientes (codigo_cliente, cnpj, razao_social, cep, endereco, numero, cidade, estado, telefone1, email, vendedor, canal_venda_id, desconto_cliente, limite_credito, idioma, moeda, senha, status) VALUES
-('CLI001', '12.345.678/0001-90', 'Distribuidora Beleza Ltda', '01310-100', 'Av. Paulista', '1000', 'São Paulo', 'SP', '(11) 3000-0001', 'cliente@teste.com', 'João Vendedor', 1, 5.00, 50000.00, 'pt', 'BRL', '123', 'ativo'),
-('CLI002', '98.765.432/0001-10', 'Salão Top Style', '20040-020', 'Rua da Quitanda', '50', 'Rio de Janeiro', 'RJ', '(21) 3000-0002', 'salao@teste.com', 'Maria Vendedora', 2, 3.00, 20000.00, 'pt', 'BRL', '123', 'ativo');
+INSERT IGNORE INTO clientes (codigo_cliente, cnpj, razao_social, cep, endereco, numero, cidade, estado, telefone1, email, supervisor, canal_venda_id, desconto_cliente, limite_credito, idioma, moeda, senha, status) VALUES
+('CLI001', '12.345.678/0001-90', 'Distribuidora Beleza Ltda', '01310-100', 'Av. Paulista', '1000', 'São Paulo', 'SP', '(11) 3000-0001', 'cliente@teste.com', 'João Supervisor', 1, 5.00, 50000.00, 'pt', 'BRL', '123', 'ativo'),
+('CLI002', '98.765.432/0001-10', 'Salão Top Style', '20040-020', 'Rua da Quitanda', '50', 'Rio de Janeiro', 'RJ', '(21) 3000-0002', 'salao@teste.com', 'Maria Supervisora', 2, 3.00, 20000.00, 'pt', 'BRL', '123', 'ativo');
 
 INSERT IGNORE INTO usuarios (codigo, nome, email, senha, departamento, divisao_vendas, tipo_acesso, tipo_usuario, telefone, status) VALUES
 ('USR001', 'Comercial Teste', 'comercial@teste.com', '123', 'Comercial', 'Nacional', 'comercial', 'Gerente', '(11) 9000-0001', 'ativo'),
 ('USR002', 'Financeiro Teste', 'financeiro@teste.com', '123', 'Financeiro', NULL, 'financeiro', 'Analista', '(11) 9000-0002', 'ativo');
 
-INSERT IGNORE INTO pedidos (numero_pedido, tipo_venda, data_pedido, cliente_id, produto_id, vendedor, codigo_barra, descricao_produto, quantidade_total, valor_total, status) VALUES
-('PED-2024-001', 'venda', '2024-01-15', 1, 1, 'João Vendedor', '7891234560001', 'Tinta Profissional 7.0', 10, 450.00, 'comercial'),
-('PED-2024-002', 'venda', '2024-01-16', 2, 2, 'Maria Vendedora', '7891234560002', 'Máscara Hidratante 500g', 20, 700.00, 'financeiro'),
-('PED-2024-003', 'bonificacao', '2024-01-17', 1, 3, 'João Vendedor', '7891234560003', 'Gel Modelador 200ml', 6, 0.00, 'faturado'),
-('PED-2024-004', 'venda', '2024-02-01', 2, 1, 'Maria Vendedora', '7891234560001', 'Tinta Profissional 7.0', 5, 325.00, 'comercial');
+INSERT IGNORE INTO pedidos (numero_pedido, tipo_venda, data_pedido, cliente_id, produto_id, supervisor, codigo_barra, descricao_produto, quantidade_total, valor_total, status) VALUES
+('PED-2024-001', 'venda', '2024-01-15', 1, 1, 'João Supervisor', '7891234560001', 'Tinta Profissional 7.0', 10, 450.00, 'comercial'),
+('PED-2024-002', 'venda', '2024-01-16', 2, 2, 'Maria Supervisora', '7891234560002', 'Máscara Hidratante 500g', 20, 700.00, 'financeiro'),
+('PED-2024-003', 'bonificacao', '2024-01-17', 1, 3, 'João Supervisor', '7891234560003', 'Gel Modelador 200ml', 6, 0.00, 'faturado'),
+('PED-2024-004', 'venda', '2024-02-01', 2, 1, 'Maria Supervisora', '7891234560001', 'Tinta Profissional 7.0', 5, 325.00, 'comercial');
 
 INSERT IGNORE INTO contas_receber (numero_documento, cliente_id, valor_receber, data_emissao, data_vencimento, situacao) VALUES
 ('NF-001', 1, 450.00, '2024-01-15', '2024-02-15', 'pago'),

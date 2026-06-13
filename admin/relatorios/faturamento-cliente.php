@@ -4,7 +4,7 @@ requireComercial();
 
 $ano = (int)($_GET['ano'] ?? date('Y'));
 
-$rows = db()->prepare("SELECT c.razao_social, c.cidade, c.estado, c.vendedor,
+$rows = db()->prepare("SELECT c.razao_social, c.cidade, c.estado, COALESCE(c.supervisor, c.vendedor) AS supervisor,
     COUNT(p.id) AS pedidos, COALESCE(SUM(p.valor_total),0) AS valor
 FROM pedidos p
 JOIN clientes c ON c.id = p.cliente_id
@@ -33,14 +33,14 @@ require_once LAYOUT_PATH . '/header.php';
 </form>
 <div class="card shadow-sm border-0"><div class="card-body p-0"><div class="table-responsive">
 <table class="table table-hover mb-0">
-    <thead class="table-light"><tr><th>Rank</th><th>Cliente</th><th>Cidade/UF</th><th>Vendedor</th><th>Pedidos</th><th>Valor</th><th>Participação</th></tr></thead>
+    <thead class="table-light"><tr><th>Rank</th><th>Cliente</th><th>Cidade/UF</th><th>Supervisor</th><th>Pedidos</th><th>Valor</th><th>Participação</th></tr></thead>
     <tbody>
     <?php if ($rows): $i=1; foreach ($rows as $r): ?>
         <tr>
             <td><span class="badge bg-<?= $i<=3?'warning':'secondary' ?>">#<?= $i++ ?></span></td>
             <td><strong><?= e($r['razao_social']) ?></strong></td>
             <td><?= e($r['cidade'])?><?= $r['estado']?' /'.e($r['estado']):'' ?></td>
-            <td><?= e($r['vendedor']) ?></td>
+            <td><?= e($r['supervisor']) ?></td>
             <td><?= $r['pedidos'] ?></td>
             <td class="fw-semibold"><?= moedaBR($r['valor']) ?></td>
             <td>

@@ -48,7 +48,7 @@ require_once LAYOUT_PATH . '/header.php';
             <td><strong><?= e($u['nome']) ?></strong></td>
             <td><small><?= e($u['email']) ?></small></td>
             <td><?= e($u['departamento']) ?></td>
-            <?php $badgeColor = $u['tipo_acesso']==='comercial'?'primary':($u['tipo_acesso']==='vendedor'?'success':'warning'); ?>
+            <?php $badgeColor = $u['tipo_acesso']==='comercial'?'primary':(in_array($u['tipo_acesso'],['supervisor','vendedor'])?'success':'warning'); ?>
             <td><span class="badge bg-<?= $badgeColor ?>"><?= ucfirst($u['tipo_acesso']) ?></span></td>
             <td><?= e($u['telefone']) ?></td>
             <td><?= statusBadge($u['status']) ?></td>
@@ -79,7 +79,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <select name="tipo_acesso" id="f_tipo" class="form-select" required>
                         <option value="comercial">Comercial</option>
                         <option value="financeiro">Financeiro</option>
-                        <option value="vendedor">Vendedor</option>
+                        <option value="supervisor">Supervisor</option>
                     </select>
                 </div>
                 <div class="col-md-4"><label class="form-label fw-semibold">Tipo de Usuário</label><input type="text" name="tipo_usuario" id="f_tusr" class="form-control" placeholder="Ex: Gerente, Analista"></div>

@@ -26,7 +26,7 @@ $where_parts = [];
 
 if ($dt_inicio) { $where_parts[] = 'DATE(p.data_pedido) >= ?'; $params[] = $dt_inicio; }
 if ($dt_fim)    { $where_parts[] = 'DATE(p.data_pedido) <= ?'; $params[] = $dt_fim;    }
-if ($u['tipo'] === 'vendedor') { $where_parts[] = 'c.vendedor = ?'; $params[] = $u['nome']; }
+if (in_array($u['tipo'], ['supervisor', 'vendedor'])) { $where_parts[] = 'COALESCE(c.supervisor, c.vendedor) = ?'; $params[] = $u['nome']; }
 if ($where_parts) $where = 'WHERE ' . implode(' AND ', $where_parts);
 if ($filtro)      { $having = 'HAVING MIN(p.status) = ?'; $params[] = $filtro; }
 
@@ -35,7 +35,7 @@ $pedidos = db()->prepare("
            pf.data_pedido, g.created_at,
            pf.tipo_venda, g.valor_total,
            g.status, g.num_itens, g.lote_key,
-           g.razao_social, g.codigo_cliente, g.cliente_id, g.vendedor, pf.observacoes
+           g.razao_social, g.codigo_cliente, g.cliente_id, g.supervisor, pf.observacoes
     FROM (
         SELECT MIN(p.id) AS min_id,
                COALESCE(p.lote_id, CAST(p.id AS CHAR)) AS lote_key,
@@ -46,7 +46,7 @@ $pedidos = db()->prepare("
                MIN(c.razao_social) AS razao_social,
                MIN(c.codigo_cliente) AS codigo_cliente,
                MIN(p.cliente_id) AS cliente_id,
-               MIN(p.vendedor) AS vendedor
+               COALESCE(MIN(p.supervisor), MIN(p.vendedor)) AS supervisor
         FROM pedidos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         $where
@@ -64,9 +64,9 @@ $t_where_parts = [];
 if ($dt_inicio) { $t_where_parts[] = 'DATE(p.data_pedido) >= ?'; $t_params[] = $dt_inicio; }
 if ($dt_fim)    { $t_where_parts[] = 'DATE(p.data_pedido) <= ?'; $t_params[] = $dt_fim;    }
 $t_join = '';
-if ($u['tipo'] === 'vendedor') {
+if (in_array($u['tipo'], ['supervisor', 'vendedor'])) {
     $t_join = 'LEFT JOIN clientes c ON c.id = p.cliente_id';
-    $t_where_parts[] = 'c.vendedor = ?';
+    $t_where_parts[] = 'COALESCE(c.supervisor, c.vendedor) = ?';
     $t_params[] = $u['nome'];
 }
 $t_where = $t_where_parts ? 'WHERE ' . implode(' AND ', $t_where_parts) : '';
@@ -146,16 +146,24 @@ $cardDefs = [
         'val'   => $totais['financeiro']['total'] ?? 0,
         'tipo'  => $totais_tipo['financeiro'] ?? [],
     ],
-    'faturado' => [
+    'faturamento' => [
         'label' => 'Ag. Faturamento',
         'icon'  => 'bi-box-seam',
+        'cor'   => 'info',
+        'qtd'   => $totais['faturamento']['qtd']  ?? 0,
+        'val'   => $totais['faturamento']['total'] ?? 0,
+        'tipo'  => $totais_tipo['faturamento'] ?? [],
+    ],
+    'faturado' => [
+        'label' => 'Faturado',
+        'icon'  => 'bi-check2-all',
         'cor'   => 'success',
         'qtd'   => $totais['faturado']['qtd']  ?? 0,
         'val'   => $totais['faturado']['total'] ?? 0,
         'tipo'  => $totais_tipo['faturado'] ?? [],
     ],
     'reprovado' => [
-        'label' => 'Reprovados',
+        'label' => 'Cancelados',
         'icon'  => 'bi-x-circle',
         'cor'   => 'danger',
         'qtd'   => $totais['reprovado']['qtd']  ?? 0,
@@ -201,20 +209,6 @@ $cardDefs = [
     <div class="card-body py-2 px-3">
         <div class="d-flex flex-wrap align-items-center gap-3">
 
-            <!-- Botões de status -->
-            <div class="d-flex flex-wrap gap-2">
-                <?php
-                $filtros = [''=>'Todos','comercial'=>'Aguardando Comercial','financeiro'=>'Aguardando Financeiro','faturado'=>'Aguardando Faturamento','reprovado'=>'Reprovado'];
-                $cores   = [''=>'secondary','comercial'=>'primary','financeiro'=>'warning','faturado'=>'success','reprovado'=>'danger'];
-                foreach ($filtros as $val => $label):
-                    $ativo = $filtro === $val;
-                    $cls   = $ativo ? 'btn-' . $cores[$val] : 'btn-outline-secondary';
-                    $href  = http_build_query(array_filter(['status'=>$val,'dt_ini'=>$dt_inicio,'dt_fim'=>$dt_fim]));
-                ?>
-                <a href="?<?= $href ?>" class="btn btn-sm <?= $cls ?>"><?= $label ?></a>
-                <?php endforeach; ?>
-            </div>
-
             <!-- Separador vertical -->
             <div class="vr d-none d-md-block"></div>
 
@@ -253,7 +247,7 @@ $cardDefs = [
                         <th class="ps-3">Nº Pedido</th>
                         <th style="white-space:nowrap">Código</th>
                         <th>Cliente</th>
-                        <th>Vendedor</th>
+                        <th>Supervisor</th>
                         <th>Data</th>
                         <th>Tipo</th>
                         <th>Valor</th>
@@ -267,9 +261,9 @@ $cardDefs = [
                     $s           = $p['status'];
                     $isC         = $u['tipo'] === 'comercial';
                     $isF         = $u['tipo'] === 'financeiro';
-                    $canAprovar  = ($isC && $s === 'comercial') || ($isF && $s === 'financeiro');
-                    $canReprovar = $canAprovar;
-                    $canRetornar = $isF && $s === 'financeiro';
+                    $canAprovar  = ($isC && $s === 'comercial') || ($isF && $s === 'financeiro') || (($isC || $isF) && $s === 'faturamento');
+                    $canReprovar = ($isC && $s === 'comercial') || ($isF && ($s === 'financeiro' || $s === 'faturamento'));
+                    $canRetornar = $isF && ($s === 'financeiro' || $s === 'faturamento');
                     $temAcao     = $canAprovar || $canRetornar;
                 ?>
                 <tr>
@@ -292,7 +286,7 @@ $cardDefs = [
                         <?php endif; ?>
                     </td>
                     <td><?= e($p['razao_social'] ?? '—') ?></td>
-                    <td class="text-muted small"><?= e($p['vendedor'] ?: '—') ?></td>
+                    <td class="text-muted small"><?= e($p['supervisor'] ?: '—') ?></td>
                     <td>
                         <?= dataBR($p['data_pedido']) ?>
                         <?php if (!empty($p['created_at'])): ?>
@@ -335,9 +329,12 @@ $cardDefs = [
                                         <input type="hidden" name="action" value="aprovar">
                                         <input type="hidden" name="id" value="<?= $p['id'] ?>">
                                         <input type="hidden" name="_from" value="list">
+                                        <input type="hidden" name="_filtro" value="<?= e($filtro) ?>">
+                                        <input type="hidden" name="_dt_ini" value="<?= e($dt_inicio) ?>">
+                                        <input type="hidden" name="_dt_fim" value="<?= e($dt_fim) ?>">
                                         <button class="dropdown-item text-success">
                                             <i class="bi bi-check-circle me-2"></i>
-                                            <?= $isF ? 'Aprovar' : 'Aprovar → Financeiro' ?>
+                                            <?= $s === 'faturamento' ? 'Confirmar Faturamento' : ($isF ? 'Aprovar → Faturamento' : 'Aprovar → Financeiro') ?>
                                         </button>
                                     </form>
                                 </li>
@@ -349,6 +346,9 @@ $cardDefs = [
                                         <input type="hidden" name="action" value="retornar">
                                         <input type="hidden" name="id" value="<?= $p['id'] ?>">
                                         <input type="hidden" name="_from" value="list">
+                                        <input type="hidden" name="_filtro" value="<?= e($filtro) ?>">
+                                        <input type="hidden" name="_dt_ini" value="<?= e($dt_inicio) ?>">
+                                        <input type="hidden" name="_dt_fim" value="<?= e($dt_fim) ?>">
                                         <button class="dropdown-item text-warning">
                                             <i class="bi bi-arrow-counterclockwise me-2"></i>Retornar ao Comercial
                                         </button>
@@ -358,12 +358,15 @@ $cardDefs = [
                                 <?php if ($canReprovar): ?>
                                 <li>
                                     <form method="POST" action="<?= BASE_URL ?>/admin/pedido.php"
-                                          onsubmit="return confirm('Reprovar pedido <?= e($p['numero_pedido']) ?>?')">
+                                          onsubmit="return confirm('Cancelar pedido <?= e($p['numero_pedido']) ?>?')">
                                         <input type="hidden" name="action" value="reprovar">
                                         <input type="hidden" name="id" value="<?= $p['id'] ?>">
                                         <input type="hidden" name="_from" value="list">
+                                        <input type="hidden" name="_filtro" value="<?= e($filtro) ?>">
+                                        <input type="hidden" name="_dt_ini" value="<?= e($dt_inicio) ?>">
+                                        <input type="hidden" name="_dt_fim" value="<?= e($dt_fim) ?>">
                                         <button class="dropdown-item text-danger">
-                                            <i class="bi bi-x-circle me-2"></i>Reprovar
+                                            <i class="bi bi-x-circle me-2"></i>Cancelar
                                         </button>
                                     </form>
                                 </li>
@@ -441,7 +444,7 @@ $cardDefs = [
             + campo('Telefone 1', c.telefone1)
             + campo('Telefone 2', c.telefone2)
             + campo('E-mail (login)', c.email)
-            + campo('Vendedor', c.vendedor)
+            + campo('Supervisor', c.supervisor || c.vendedor)
             + campo('Canal de Venda', c.canal)
             + campo('Desconto do Cliente %', c.desconto_cliente)
             + campo('Desconto do Canal %', c.desconto_canal)

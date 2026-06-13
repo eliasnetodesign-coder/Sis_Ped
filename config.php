@@ -31,6 +31,14 @@ function db() {
             try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN credito_utilizado DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE clientes ADD COLUMN email VARCHAR(120) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE clientes ADD COLUMN senha VARCHAR(255) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE pedidos MODIFY COLUMN status ENUM('comercial','financeiro','faturamento','faturado','cancelado','reprovado') DEFAULT 'comercial'"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE usuarios MODIFY COLUMN tipo_acesso ENUM('comercial','financeiro','supervisor','tecnologia da informacao','recursos humanos','marketing','diretoria','centro tecnico','contabilidade','recepcao','expedicao') NOT NULL DEFAULT 'comercial'"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE clientes ADD COLUMN desconto_canal DECIMAL(10,4) DEFAULT 0"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN canal_venda_id INT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE clientes ADD COLUMN supervisor VARCHAR(100) NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("UPDATE clientes SET supervisor = vendedor WHERE supervisor IS NULL AND vendedor IS NOT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN supervisor VARCHAR(100) NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("UPDATE pedidos SET supervisor = vendedor WHERE supervisor IS NULL AND vendedor IS NOT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS grupo_empresas (
                 id         INT AUTO_INCREMENT PRIMARY KEY,
                 nome       VARCHAR(120) NOT NULL,
@@ -90,7 +98,7 @@ function requireLogin() {
 
 function requireAdmin() {
     $u = usuario();
-    if (!$u || !in_array($u['tipo'], ['comercial', 'financeiro', 'vendedor'])) {
+    if (!$u || !in_array($u['tipo'], ['comercial', 'financeiro', 'supervisor', 'tecnologia da informacao', 'vendedor'])) {
         header('Location: ' . BASE_URL . '/login.php');
         exit;
     }
@@ -98,7 +106,7 @@ function requireAdmin() {
 
 function requireComercial() {
     $u = usuario();
-    if (!$u || !in_array($u['tipo'], ['comercial', 'vendedor'])) {
+    if (!$u || !in_array($u['tipo'], ['comercial', 'supervisor', 'tecnologia da informacao', 'vendedor'])) {
         flash('danger', 'Acesso restrito ao módulo Comercial.');
         header('Location: ' . BASE_URL . '/admin/dashboard.php');
         exit;
@@ -136,15 +144,17 @@ function statusBadge($s) {
     $map = [
         'comercial'   => ['primary',   'Aguardando Comercial'],
         'financeiro'  => ['warning',   'Aguardando Financeiro'],
-        'faturado'    => ['success',   'Aguardando Faturamento'],
-        'reprovado'   => ['danger',    'Reprovado'],
+        'faturamento' => ['info',      'Aguardando Faturamento'],
+        'faturado'    => ['success',   'Faturado'],
+        'cancelado'   => ['danger',    'Cancelado'],
+        'reprovado'   => ['danger',    'Cancelado'],
         'ativo'       => ['success',   'Ativo'],
         'inativo'     => ['secondary', 'Inativo'],
         'aberto'      => ['warning',   'Aberto'],
         'pago'        => ['success',   'Pago'],
         'vencido'     => ['danger',    'Vencido'],
-        'cancelado'   => ['secondary', 'Cancelado'],
         'aprovado'    => ['success',   'Aprovado'],
+        'pendente'    => ['secondary', 'Pendente'],
     ];
     [$cls, $label] = $map[$s] ?? ['secondary', ucfirst($s)];
     return '<span class="badge bg-' . $cls . '">' . $label . '</span>';

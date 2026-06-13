@@ -10,7 +10,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_POST['cep'], $_POST['endereco'], $_POST['numero'], $_POST['complemento'],
             $_POST['bairro'], $_POST['cidade'], $_POST['estado'], $_POST['pais'],
             $_POST['telefone1'], $_POST['telefone2'], $_POST['email'],
-            $_POST['vendedor'], $_POST['canal_venda_id'] ?: null,
+            $_POST['supervisor'], $_POST['canal_venda_id'] ?: null,
             (float)$_POST['desconto_cliente'], (float)$_POST['limite_credito'],
             $_POST['idioma'], $_POST['moeda'], $_POST['status'],
             min(4.0, max(0.0, (float)($_POST['bonus_desempenho'] ?? 0))),
@@ -32,11 +32,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($a === 'criar') {
             if (!$_POST['senha']) throw new Exception('Senha obrigatória.');
             $d[] = $_POST['senha'];
-            db()->prepare('INSERT INTO clientes (codigo_cliente,cnpj,cpf,razao_social,cep,endereco,numero,complemento,bairro,cidade,estado,pais,telefone1,telefone2,email,vendedor,canal_venda_id,desconto_cliente,desconto_canal,limite_credito,idioma,moeda,status,bonus_desempenho,material_apoio,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
+            db()->prepare('INSERT INTO clientes (codigo_cliente,cnpj,cpf,razao_social,cep,endereco,numero,complemento,bairro,cidade,estado,pais,telefone1,telefone2,email,supervisor,canal_venda_id,desconto_cliente,desconto_canal,limite_credito,idioma,moeda,status,bonus_desempenho,material_apoio,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
             flash('success', 'Cliente criado com sucesso!');
         } elseif ($a === 'editar') {
             $d[] = (int)$_POST['id'];
-            db()->prepare('UPDATE clientes SET codigo_cliente=?,cnpj=?,cpf=?,razao_social=?,cep=?,endereco=?,numero=?,complemento=?,bairro=?,cidade=?,estado=?,pais=?,telefone1=?,telefone2=?,email=?,vendedor=?,canal_venda_id=?,desconto_cliente=?,desconto_canal=?,limite_credito=?,idioma=?,moeda=?,status=?,bonus_desempenho=?,material_apoio=? WHERE id=?')->execute($d);
+            db()->prepare('UPDATE clientes SET codigo_cliente=?,cnpj=?,cpf=?,razao_social=?,cep=?,endereco=?,numero=?,complemento=?,bairro=?,cidade=?,estado=?,pais=?,telefone1=?,telefone2=?,email=?,supervisor=?,canal_venda_id=?,desconto_cliente=?,desconto_canal=?,limite_credito=?,idioma=?,moeda=?,status=?,bonus_desempenho=?,material_apoio=? WHERE id=?')->execute($d);
             if ($_POST['senha']) {
                 db()->prepare('UPDATE clientes SET senha=? WHERE id=?')->execute([$_POST['senha'], (int)$_POST['id']]);
             }
@@ -99,7 +99,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'pais'           => trim($row['pais']          ?? '') ?: 'Brasil',
                     'telefone1'      => trim($row['telefone1']     ?? ''),
                     'email'          => $email ?: null,
-                    'vendedor'       => trim($row['vendedor']      ?? ''),
+                    'supervisor'     => trim($row['supervisor'] ?? $row['vendedor'] ?? ''),
                     'status'         => $status,
                 ];
                 if ($existing) {
@@ -109,8 +109,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $upd++;
                 } else {
                     $senha = str_pad(rand(0, 9999999), 8, '0', STR_PAD_LEFT);
-                    db()->prepare('INSERT INTO clientes (codigo_cliente,cnpj,cpf,razao_social,cep,endereco,numero,complemento,bairro,cidade,estado,pais,telefone1,telefone2,email,vendedor,canal_venda_id,desconto_cliente,limite_credito,idioma,moeda,status,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                        ->execute([$f['codigo_cliente'],$f['cnpj'],'',$f['razao_social'],$f['cep'],$f['endereco'],$f['numero'],$f['complemento'],$f['bairro'],$f['cidade'],$f['estado'],$f['pais'],$f['telefone1'],'',$f['email'],$f['vendedor'],null,0,0,'pt','BRL',$f['status'],$senha]);
+                    db()->prepare('INSERT INTO clientes (codigo_cliente,cnpj,cpf,razao_social,cep,endereco,numero,complemento,bairro,cidade,estado,pais,telefone1,telefone2,email,supervisor,canal_venda_id,desconto_cliente,limite_credito,idioma,moeda,status,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                        ->execute([$f['codigo_cliente'],$f['cnpj'],'',$f['razao_social'],$f['cep'],$f['endereco'],$f['numero'],$f['complemento'],$f['bairro'],$f['cidade'],$f['estado'],$f['pais'],$f['telefone1'],'',$f['email'],$f['supervisor'],null,0,0,'pt','BRL',$f['status'],$senha]);
                     $ins++;
                 }
             }
@@ -139,8 +139,8 @@ $filtro_canal  = $_GET['canal']  ?? '';
 $conditions = [];
 $params     = [];
 
-if ($u['tipo'] === 'vendedor') {
-    $conditions[] = 'c.vendedor = ?';
+if (in_array($u['tipo'], ['supervisor', 'vendedor'])) {
+    $conditions[] = 'COALESCE(c.supervisor, c.vendedor) = ?';
     $params[] = $u['nome'];
 }
 if ($busca) {
@@ -163,7 +163,7 @@ $clientes->execute($params);
 $clientes = $clientes->fetchAll();
 
 $canais     = db()->query('SELECT * FROM canal_venda ORDER BY canal')->fetchAll();
-$vendedores = db()->query("SELECT nome FROM usuarios WHERE tipo_acesso='vendedor' AND status='ativo' ORDER BY nome")->fetchAll(PDO::FETCH_COLUMN);
+$vendedores = db()->query("SELECT nome FROM usuarios WHERE tipo_acesso IN ('supervisor','vendedor') AND status='ativo' ORDER BY nome")->fetchAll(PDO::FETCH_COLUMN);
 
 $pageTitle = 'Cadastro de Clientes';
 require_once LAYOUT_PATH . '/header.php';
@@ -218,7 +218,7 @@ require_once LAYOUT_PATH . '/header.php';
         <div class="table-responsive">
         <table class="table table-hover mb-0">
             <thead class="table-light">
-                <tr><th>Código</th><th>Razão Social</th><th>CNPJ/CPF</th><th>Cidade/UF</th><th>E-mail</th><th>Vendedor</th><th>Canal</th><th>Status</th><th>Ações</th></tr>
+                <tr><th>Código</th><th>Razão Social</th><th>CNPJ/CPF</th><th>Cidade/UF</th><th>E-mail</th><th>Supervisor</th><th>Canal</th><th>Status</th><th>Ações</th></tr>
             </thead>
             <tbody>
             <?php if ($clientes): foreach ($clientes as $c): ?>
@@ -228,7 +228,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <td><small><?= e($c['cnpj'] ?: $c['cpf']) ?></small></td>
                     <td><?= e($c['cidade']) ?><?= $c['estado'] ? '/' . e($c['estado']) : '' ?></td>
                     <td><small><?= e($c['email']) ?></small></td>
-                    <td><?= e($c['vendedor']) ?></td>
+                    <td><?= e($c['supervisor'] ?? $c['vendedor']) ?></td>
                     <td><?= e($c['canal'] ?? '—') ?></td>
                     <td><?= statusBadge($c['status']) ?></td>
                     <td>
@@ -280,8 +280,8 @@ require_once LAYOUT_PATH . '/header.php';
                         <div class="col-md-3"><label class="form-label fw-semibold">Telefone 1</label><input type="text" name="telefone1" id="f12" class="form-control"></div>
                         <div class="col-md-3"><label class="form-label fw-semibold">Telefone 2</label><input type="text" name="telefone2" id="f13" class="form-control"></div>
                         <div class="col-md-6"><label class="form-label fw-semibold">E-mail (login) <span class="text-danger">*</span></label><input type="email" name="email" id="f14" class="form-control" required></div>
-                        <div class="col-md-4"><label class="form-label fw-semibold">Vendedor</label>
-                            <select name="vendedor" id="f15" class="form-select">
+                        <div class="col-md-4"><label class="form-label fw-semibold">Supervisor</label>
+                            <select name="supervisor" id="f15" class="form-select">
                                 <option value="">— Nenhum —</option>
                                 <?php foreach ($vendedores as $v): ?><option value="<?= e($v) ?>"><?= e($v) ?></option><?php endforeach; ?>
                             </select>
@@ -351,7 +351,7 @@ require_once LAYOUT_PATH . '/header.php';
                                 'H'=>'Endereço','I'=>'Número','J'=>'Complemento',
                                 'K'=>'Bairro','L'=>'Cidade','N'=>'Estado','O'=>'País',
                                 'P'=>'CEP','Q'=>'Telefone 1','Y'=>'E-mail',
-                                'AC'=>'Vendedor','BW'=>'Status'
+                                'AC'=>'Supervisor','BW'=>'Status'
                             ] as $col => $label): ?>
                             <span class="badge bg-light text-dark border">
                                 <span class="fw-bold text-primary"><?= $col ?></span> → <?= $label ?>
@@ -398,7 +398,7 @@ require_once LAYOUT_PATH . '/header.php';
                                     <th>Cidade/UF</th>
                                     <th>Telefone</th>
                                     <th>E-mail</th>
-                                    <th>Vendedor</th>
+                                    <th>Supervisor</th>
                                     <th>Status</th>
                                 </tr>
                             </thead>
@@ -443,7 +443,7 @@ var _exportClientes = <?= json_encode(array_map(function($c) {
         'E-mail'             => $c['email']          ?? '',
         'Telefone 1'         => $c['telefone1']      ?? '',
         'Telefone 2'         => $c['telefone2']      ?? '',
-        'Vendedor'           => $c['vendedor']       ?? '',
+        'Supervisor'         => $c['supervisor'] ?? $c['vendedor'] ?? '',
         'CEP'                => $c['cep']            ?? '',
         'Endereço'           => $c['endereco']       ?? '',
         'Número'             => $c['numero']         ?? '',
@@ -486,7 +486,7 @@ var IMP_MAP = {
     15: 'cep',
     16: 'telefone1',
     24: 'email',
-    28: 'vendedor',
+    28: 'supervisor',
     74: 'status'
 };
 
@@ -571,7 +571,7 @@ function processarLinhas(rows) {
             '<td><small>' + esc(cidade_uf) + '</small></td>' +
             '<td><small>' + esc(obj.telefone1) + '</small></td>' +
             '<td><small>' + esc(obj.email) + '</small></td>' +
-            '<td><small>' + esc(obj.vendedor) + '</small></td>' +
+            '<td><small>' + esc(obj.supervisor) + '</small></td>' +
             '<td><span class="badge bg-' + (obj.status.toLowerCase() === 'inativo' ? 'secondary' : 'success') + '">' + (obj.status || 'Ativo') + '</span></td>';
         body.appendChild(tr);
     });
@@ -602,7 +602,7 @@ function resetImport() {
 
 <script>
 var campos = ['f0','f1','f2','f3','f4','f5','f6','f7','f8','f9','f10','f11','f12','f13','f14','f15','f16','f17','f18','f19','f20','f21'];
-var chaves = ['codigo_cliente','cnpj','cpf','razao_social','cep','endereco','numero','complemento','bairro','cidade','estado','pais','telefone1','telefone2','email','vendedor','canal_venda_id','desconto_cliente','limite_credito','idioma','moeda',''];
+var chaves = ['codigo_cliente','cnpj','cpf','razao_social','cep','endereco','numero','complemento','bairro','cidade','estado','pais','telefone1','telefone2','email','supervisor','canal_venda_id','desconto_cliente','limite_credito','idioma','moeda',''];
 function atualizarDescCanal(autofill) {
     var sel = document.getElementById('f16');
     var opt = sel.options[sel.selectedIndex];
@@ -659,7 +659,7 @@ function editarReg(d) {
     document.getElementById('f12').value=d.telefone1||'';
     document.getElementById('f13').value=d.telefone2||'';
     document.getElementById('f14').value=d.email||'';
-    document.getElementById('f15').value=d.vendedor||'';
+    document.getElementById('f15').value=d.supervisor||d.vendedor||'';
     document.getElementById('f16').value=d.canal_venda_id||'';
     document.getElementById('f17').value=d.desconto_cliente||0;
     document.getElementById('f_desc_canal').value=d.desconto_canal||0;

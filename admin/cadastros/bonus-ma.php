@@ -25,7 +25,7 @@ $dtFim = date('Y-m-t', mktime(0, 0, 0, $mes, 1, $ano));
 
 $rows = db()->prepare("
     SELECT
-        c.id, c.codigo_cliente, c.razao_social, c.vendedor,
+        c.id, c.codigo_cliente, c.razao_social, COALESCE(c.supervisor, c.vendedor) AS supervisor,
         cv.canal,
         c.desconto_canal,
         CAST(c.material_apoio AS UNSIGNED) AS ma_pct,
@@ -165,7 +165,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <tr>
                     <th>Código</th>
                     <th>Cliente</th>
-                    <th>Vendedor</th>
+                    <th>Supervisor</th>
                     <th>Canal</th>
                     <th class="text-center">Desconto do Canal</th>
                     <th class="text-end">Faturado (Mês passado)</th>
@@ -183,7 +183,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <tr>
                     <td><span class="badge bg-secondary"><?= e($r['codigo_cliente']) ?></span></td>
                     <td class="fw-semibold"><?= e($r['razao_social']) ?></td>
-                    <td class="text-muted"><?= e($r['vendedor'] ?: '—') ?></td>
+                    <td class="text-muted"><?= e($r['supervisor'] ?: '—') ?></td>
                     <td><?= $r['canal'] ? '<span class="badge bg-light text-dark border">'.e($r['canal']).'</span>' : '—' ?></td>
                     <td class="text-center"><?= number_format($r['desconto_canal'], 2) ?>%</td>
                     <td class="text-end fw-semibold"><?= moedaBR($r['faturamento']) ?></td>

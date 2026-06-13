@@ -42,7 +42,7 @@ const FIELD_MAP = [
     'email'          => 'email',
 
     // Comercial
-    'vendedor'       => 'vendedor',
+    'supervisor'     => 'supervisor',
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

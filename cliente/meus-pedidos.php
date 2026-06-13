@@ -45,7 +45,7 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="card-body py-2">
         <div class="d-flex flex-wrap gap-2">
             <?php
-            $filtros = [''=>'Todos','comercial'=>'Aguardando Comercial','financeiro'=>'Aguardando Financeiro','faturado'=>'Aguardando Faturamento','reprovado'=>'Reprovado'];
+            $filtros = [''=>'Todos','comercial'=>'Aguardando Comercial','financeiro'=>'Aguardando Financeiro','faturado'=>'Aguardando Faturamento','reprovado'=>'Cancelado'];
             $cores   = [''=>'secondary','comercial'=>'primary','financeiro'=>'warning','faturado'=>'success','reprovado'=>'danger'];
             foreach ($filtros as $val => $label):
                 $ativo = $filtro === $val;

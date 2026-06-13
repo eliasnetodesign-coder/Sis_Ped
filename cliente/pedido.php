@@ -89,7 +89,8 @@ $statusInfo = [
     'comercial'  => ['icon' => 'bi-hourglass-split', 'color' => 'primary',   'msg' => 'Aguardando análise do time Comercial.'],
     'financeiro' => ['icon' => 'bi-currency-dollar', 'color' => 'warning',   'msg' => 'Em análise pelo time Financeiro.'],
     'faturado'   => ['icon' => 'bi-check-circle',    'color' => 'success',   'msg' => 'Pedido aprovado e faturado.'],
-    'reprovado'  => ['icon' => 'bi-x-circle',        'color' => 'danger',    'msg' => 'Pedido reprovado. Entre em contato com seu vendedor.'],
+    'cancelado'  => ['icon' => 'bi-x-circle',        'color' => 'danger',    'msg' => 'Pedido cancelado. Entre em contato com seu supervisor.'],
+    'reprovado'  => ['icon' => 'bi-x-circle',        'color' => 'danger',    'msg' => 'Pedido cancelado. Entre em contato com seu supervisor.'],
 ];
 $si = $statusInfo[$pedido['status']] ?? ['icon' => 'bi-question-circle', 'color' => 'secondary', 'msg' => ''];
 

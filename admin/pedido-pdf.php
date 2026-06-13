@@ -49,7 +49,7 @@ if (empty($pedidos)) {
 
 $total_geral = array_sum(array_column($pedidos, 'valor_total'));
 $data_pedido = $pedidos[0]['data_pedido'];
-$vendedor    = $pedidos[0]['vendedor'];
+$supervisor  = $pedidos[0]['supervisor'] ?? $pedidos[0]['vendedor'];
 $observacoes = $pedidos[0]['observacoes'];
 
 $porLinha = [];
@@ -63,8 +63,10 @@ ksort($porLinha);
 $statusLabels = [
     'comercial'  => 'Aguardando Comercial',
     'financeiro' => 'Aguardando Financeiro',
-    'faturado'   => 'Aguardando Faturamento',
-    'reprovado'  => 'Reprovado',
+    'faturamento'=> 'Aguardando Faturamento',
+    'faturado'   => 'Faturado',
+    'cancelado'  => 'Cancelado',
+    'reprovado'  => 'Cancelado',
 ];
 $statusLabel = $statusLabels[$pedido['status']] ?? ucfirst($pedido['status']);
 ?>
@@ -225,9 +227,9 @@ $statusLabel = $statusLabels[$pedido['status']] ?? ucfirst($pedido['status']);
         <div class="doc-num">
             <div style="font-size:.8rem;opacity:.8">Data do Pedido</div>
             <span><?= date('d/m/Y', strtotime($data_pedido)) ?></span>
-            <?php if ($vendedor): ?>
-            <div style="font-size:.8rem;opacity:.8;margin-top:8px">Vendedor</div>
-            <span style="font-size:.95rem"><?= e($vendedor) ?></span>
+            <?php if ($supervisor): ?>
+            <div style="font-size:.8rem;opacity:.8;margin-top:8px">Supervisor</div>
+            <span style="font-size:.95rem"><?= e($supervisor) ?></span>
             <?php endif; ?>
         </div>
     </div>

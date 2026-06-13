@@ -158,10 +158,11 @@ require_once LAYOUT_PATH . '/header.php';
                         <div><?= e($cliente['cnpj']) ?></div>
                     </div>
                     <?php endif; ?>
-                    <?php if (!empty($cliente['vendedor'])): ?>
+                    <?php $_supCli = $cliente['supervisor'] ?? $cliente['vendedor'] ?? ''; ?>
+                    <?php if (!empty($_supCli)): ?>
                     <div class="col-12">
-                        <div class="text-muted small fw-semibold text-uppercase">Vendedor</div>
-                        <div><?= e($cliente['vendedor']) ?></div>
+                        <div class="text-muted small fw-semibold text-uppercase">Supervisor</div>
+                        <div><?= e($_supCli) ?></div>
                     </div>
                     <?php endif; ?>
                     <?php if (!empty($cliente['canal'])): ?>

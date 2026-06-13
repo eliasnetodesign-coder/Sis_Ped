@@ -101,11 +101,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 flash('success', 'Pedido aprovado e enviado ao Financeiro.');
             } elseif ($u['tipo'] === 'financeiro' && $ped['status'] === 'financeiro') {
                 if ($ped['lote_id']) {
+                    db()->prepare('UPDATE pedidos SET status = "faturamento" WHERE lote_id = ?')->execute([$ped['lote_id']]);
+                } else {
+                    db()->prepare('UPDATE pedidos SET status = "faturamento" WHERE id = ?')->execute([$id]);
+                }
+                logPedido($id, $numPed, 'Aprovado → Faturamento', 'financeiro', 'faturamento');
+                flash('success', 'Pedido aprovado e enviado ao Faturamento.');
+            } elseif (($u['tipo'] === 'financeiro' || $u['tipo'] === 'comercial') && $ped['status'] === 'faturamento') {
+                if ($ped['lote_id']) {
                     db()->prepare('UPDATE pedidos SET status = "faturado" WHERE lote_id = ?')->execute([$ped['lote_id']]);
                 } else {
                     db()->prepare('UPDATE pedidos SET status = "faturado" WHERE id = ?')->execute([$id]);
                 }
-                logPedido($id, $numPed, 'Aprovado / Faturado', 'financeiro', 'faturado');
+                logPedido($id, $numPed, 'Faturado', 'faturamento', 'faturado');
                 flash('success', 'Pedido faturado com sucesso!');
             } else {
                 flash('warning', 'Ação não permitida para o status atual.');
@@ -120,8 +128,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 db()->prepare('UPDATE pedidos SET status = "reprovado" WHERE id = ?')->execute([$id]);
             }
-            logPedido($id, $numPed, 'Reprovado', $statusAntes, 'reprovado');
-            flash('danger', 'Pedido reprovado.');
+            logPedido($id, $numPed, 'Cancelado', $statusAntes, 'reprovado');
+            flash('danger', 'Pedido cancelado.');
         } elseif ($action === 'retornar' && $u['tipo'] === 'financeiro') {
             $ped = db()->prepare('SELECT lote_id FROM pedidos WHERE id = ?');
             $ped->execute([$id]);
@@ -201,8 +209,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $lote_id = 'L' . date('Ymd') . str_pad($id, 6, '0', STR_PAD_LEFT);
                 db()->prepare('UPDATE pedidos SET lote_id = ? WHERE id = ?')->execute([$lote_id, $id]);
             }
-            db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,vendedor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                ->execute([$ped['numero_pedido'], $tipo, $ped['data_pedido'], $ped['cliente_id'], $produto_id, $ped['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $ped['status'], $obs, $lote_id, null]);
+            db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$ped['numero_pedido'], $tipo, $ped['data_pedido'], $ped['cliente_id'], $produto_id, $ped['supervisor'] ?? $ped['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $ped['status'], $obs, $lote_id, null]);
             recalcularDescontosCampanha($lote_id, $dCliente, $dCanal);
             $det = "Adicionado: {$prod['descricao_pt']} | Qtd: {$qtd} | Tipo: {$tipo}";
             logPedido($id, $numPed, 'Produto adicionado', $ped['status'], $ped['status'], $det);
@@ -278,7 +286,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($from === 'list') {
-        header('Location: ' . BASE_URL . '/admin/pedidos.php');
+        $qs = http_build_query(array_filter([
+            'status' => $_POST['_filtro'] ?? '',
+            'dt_ini' => $_POST['_dt_ini'] ?? '',
+            'dt_fim' => $_POST['_dt_fim'] ?? '',
+        ], fn($v) => $v !== ''));
+        header('Location: ' . BASE_URL . '/admin/pedidos.php' . ($qs ? '?' . $qs : ''));
     } else {
         $rId = isset($redirectRemover) && $redirectRemover ? $redirectRemover : $id;
         header('Location: ' . BASE_URL . '/admin/pedido.php?id=' . $rId);
@@ -349,9 +362,11 @@ $isComercial  = $u['tipo'] === 'comercial';
 $isFinanceiro = $u['tipo'] === 'financeiro';
 $canEdit      = $isComercial  && $status === 'comercial';
 $canAprovar   = ($isComercial  && $status === 'comercial')
-             || ($isFinanceiro && $status === 'financeiro');
-$canReprovar  = $canAprovar;
-$canRetornar  = $isFinanceiro && $status === 'financeiro';
+             || ($isFinanceiro && $status === 'financeiro')
+             || (($isComercial || $isFinanceiro) && $status === 'faturamento');
+$canReprovar  = ($isComercial  && $status === 'comercial')
+             || ($isFinanceiro && ($status === 'financeiro' || $status === 'faturamento'));
+$canRetornar  = $isFinanceiro && ($status === 'financeiro' || $status === 'faturamento');
 
 $pageTitle = 'Pedido ' . e($pedido['numero_pedido']);
 require_once LAYOUT_PATH . '/header.php';
@@ -401,7 +416,10 @@ require_once LAYOUT_PATH . '/header.php';
                     <?php
                     $acaoCor = [
                         'Aprovado → Financeiro'       => ['success', 'bi-check-circle'],
+                        'Aprovado → Faturamento'      => ['success', 'bi-check-circle-fill'],
+                        'Faturado'                    => ['success', 'bi-check2-all'],
                         'Aprovado / Faturado'         => ['success', 'bi-check2-all'],
+                        'Cancelado'                   => ['danger',  'bi-x-circle'],
                         'Reprovado'                   => ['danger',  'bi-x-circle'],
                         'Retornado ao Comercial'      => ['warning', 'bi-arrow-counterclockwise'],
                         'Pedido editado'              => ['primary', 'bi-pencil'],
@@ -413,7 +431,7 @@ require_once LAYOUT_PATH . '/header.php';
                     ];
                     foreach ($pedidoLogs as $log):
                         [$cor, $icon] = $acaoCor[$log['acao']] ?? ['secondary', 'bi-circle'];
-                        $statusLabels = ['comercial'=>'Ag. Comercial','financeiro'=>'Ag. Financeiro','faturado'=>'Ag. Faturamento','reprovado'=>'Reprovado'];
+                        $statusLabels = ['comercial'=>'Ag. Comercial','financeiro'=>'Ag. Financeiro','faturamento'=>'Ag. Faturamento','faturado'=>'Faturado','cancelado'=>'Cancelado','reprovado'=>'Cancelado'];
                     ?>
                     <li class="d-flex gap-3 mb-4">
                         <div class="log-dot bg-<?= $cor ?> bg-opacity-10 text-<?= $cor ?>">
@@ -487,13 +505,14 @@ require_once LAYOUT_PATH . '/header.php';
                         <div class="fw-semibold"><?= dataBR($pedido['data_pedido']) ?></div>
                         <div class="text-muted small"><?= $pedido['created_at'] ? date('H:i', strtotime($pedido['created_at'])) : '' ?></div>
                     </div>
-                    <?php if (!empty($pedido['vendedor'])): ?>
+                    <?php $_sup = $pedido['supervisor'] ?? $pedido['vendedor'] ?? ''; ?>
+                    <?php if (!empty($_sup)): ?>
                     <div class="col-sm-6">
-                        <div class="text-muted small">Vendedor</div>
-                        <div class="fw-semibold"><?= e($pedido['vendedor']) ?></div>
+                        <div class="text-muted small">Supervisor</div>
+                        <div class="fw-semibold"><?= e($_sup) ?></div>
                     </div>
                     <?php endif; ?>
-                    <div class="col-sm-<?= !empty($pedido['vendedor']) ? '6' : '12' ?>">
+                    <div class="col-sm-<?= !empty($_sup) ? '6' : '12' ?>">
                         <div class="text-muted small"><?= $creditoUsadoAdmin > 0 ? 'Total a Pagar' : 'Valor Total' ?></div>
                         <div class="fw-bold fs-5 text-primary"><?= moedaBR(max(0, $valorTotalGeral - $creditoUsadoAdmin)) ?></div>
                         <?php if ($creditoUsadoAdmin > 0): ?>
@@ -903,7 +922,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <input type="hidden" name="id" value="<?= $pedido['id'] ?>">
                     <button class="btn btn-success w-100">
                         <i class="bi bi-check-circle me-1"></i>
-                        <?= $isFinanceiro ? 'Aprovar' : 'Aprovar → Financeiro' ?>
+                        <?= $status === 'faturamento' ? 'Confirmar Faturamento' : ($isFinanceiro ? 'Aprovar → Faturamento' : 'Aprovar → Financeiro') ?>
                     </button>
                 </form>
                 <?php endif; ?>
@@ -921,11 +940,11 @@ require_once LAYOUT_PATH . '/header.php';
 
                 <?php if ($canReprovar): ?>
                 <form method="POST"
-                      onsubmit="return confirm('Reprovar o pedido <?= e($pedido['numero_pedido']) ?>?')">
+                      onsubmit="return confirm('Cancelar o pedido <?= e($pedido['numero_pedido']) ?>?')">
                     <input type="hidden" name="action" value="reprovar">
                     <input type="hidden" name="id" value="<?= $pedido['id'] ?>">
                     <button class="btn btn-danger w-100">
-                        <i class="bi bi-x-circle me-1"></i>Reprovar
+                        <i class="bi bi-x-circle me-1"></i>Cancelar
                     </button>
                 </form>
                 <?php endif; ?>

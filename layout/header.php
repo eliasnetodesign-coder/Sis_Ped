@@ -207,8 +207,8 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 <?php endif; ?>
             </ul>
 
-        <?php else: // admin (comercial | financeiro | vendedor) ?>
-            <?php $tipoLabels = ['comercial'=>'Comercial','financeiro'=>'Financeiro','vendedor'=>'Vendedor']; ?>
+        <?php else: // admin (comercial | financeiro | supervisor) ?>
+            <?php $tipoLabels = ['comercial'=>'Comercial','financeiro'=>'Financeiro','supervisor'=>'Supervisor','vendedor'=>'Supervisor']; ?>
             <div class="px-3 pb-2 text-uppercase text-muted small fw-semibold">
                 <?= $tipoLabels[$_usuario['tipo']] ?? ucfirst($_usuario['tipo']) ?>
             </div>
@@ -227,7 +227,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                         <i class="bi bi-list-check me-2"></i>Pedidos
                     </a>
                 </li>
-                <?php if (in_array($_usuario['tipo'], ['comercial', 'vendedor'])): ?>
+                <?php if (in_array($_usuario['tipo'], ['comercial', 'supervisor', 'vendedor'])): ?>
                 <li class="nav-item">
                     <a class="nav-link <?= $_pg === 'novo-pedido' ? 'active' : '' ?>"
                        href="<?= BASE_URL ?>/admin/novo-pedido.php"
@@ -238,7 +238,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 <?php endif; ?>
             </ul>
 
-            <?php if (in_array($_usuario['tipo'], ['comercial', 'vendedor'])): ?>
+            <?php if (in_array($_usuario['tipo'], ['comercial', 'supervisor', 'vendedor'])): ?>
             <?php
             $cadAtivo = $_inCadastros && $_pg !== 'usuarios';
             $relAtivo = $_inRelatorios;
@@ -264,7 +264,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 ['slug'=>'faturamento-anual',    'label'=>'Fat. Anual',          'icon'=>'bi-calendar'],
                 ['slug'=>'faturamento-cliente',  'label'=>'Fat. por Cliente',    'icon'=>'bi-person-lines-fill'],
                 ['slug'=>'faturamento-canal',    'label'=>'Fat. por Canal',      'icon'=>'bi-diagram-3'],
-                ['slug'=>'faturamento-vendedor', 'label'=>'Fat. por Vendedor',   'icon'=>'bi-person-badge'],
+                ['slug'=>'faturamento-supervisor', 'label'=>'Fat. por Supervisor', 'icon'=>'bi-person-badge'],
                 ['slug'=>'faturamento-estado',   'label'=>'Fat. por Estado',     'icon'=>'bi-geo-alt'],
                 ['slug'=>'faturamento-regiao',   'label'=>'Fat. por Região',     'icon'=>'bi-map'],
             ];
@@ -320,7 +320,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 </li>
             </ul>
 
-            <?php endif; // comercial/vendedor ?>
+            <?php endif; // comercial/supervisor ?>
 
             <?php if ($_usuario['tipo'] === 'financeiro'): ?>
             <?php

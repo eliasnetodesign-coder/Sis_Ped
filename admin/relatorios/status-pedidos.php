@@ -2,7 +2,7 @@
 require_once __DIR__ . '/../../config.php';
 requireComercial();
 
-$status_list = ['comercial','financeiro','faturado','reprovado'];
+$status_list = ['comercial','financeiro','faturamento','faturado','cancelado','reprovado'];
 
 $rows = db()->query("SELECT p.status,
     COUNT(*) AS qtd,
@@ -10,7 +10,7 @@ $rows = db()->query("SELECT p.status,
     GROUP_CONCAT(DISTINCT c.razao_social ORDER BY c.razao_social SEPARATOR ', ') AS clientes
 FROM pedidos p
 LEFT JOIN clientes c ON c.id = p.cliente_id
-GROUP BY p.status ORDER BY FIELD(p.status,'comercial','financeiro','faturado','reprovado')")->fetchAll();
+GROUP BY p.status ORDER BY FIELD(p.status,'comercial','financeiro','faturamento','faturado','cancelado','reprovado')")->fetchAll();
 
 $recentes = db()->query("SELECT p.*, c.razao_social FROM pedidos p
     LEFT JOIN clientes c ON c.id = p.cliente_id
@@ -27,7 +27,7 @@ require_once LAYOUT_PATH . '/header.php';
 <!-- Cards por status -->
 <div class="row g-3 mb-4">
 <?php
-$cores = ['comercial'=>'primary','financeiro'=>'warning','faturado'=>'success','reprovado'=>'danger'];
+$cores = ['comercial'=>'primary','financeiro'=>'warning','faturamento'=>'info','faturado'=>'success','cancelado'=>'danger','reprovado'=>'danger'];
 $total_geral = 0;
 foreach ($rows as $r): $total_geral += $r['qtd']; ?>
 <div class="col-6 col-xl">
@@ -47,14 +47,14 @@ foreach ($rows as $r): $total_geral += $r['qtd']; ?>
     <div class="card-header bg-white fw-semibold">Últimos 20 Pedidos</div>
     <div class="card-body p-0"><div class="table-responsive">
     <table class="table table-hover mb-0">
-        <thead class="table-light"><tr><th>Pedido</th><th>Cliente</th><th>Produto</th><th>Vendedor</th><th>Data</th><th>Valor</th><th>Status</th></tr></thead>
+        <thead class="table-light"><tr><th>Pedido</th><th>Cliente</th><th>Produto</th><th>Supervisor</th><th>Data</th><th>Valor</th><th>Status</th></tr></thead>
         <tbody>
         <?php foreach ($recentes as $p): ?>
             <tr>
                 <td><strong><?= e($p['numero_pedido']) ?></strong></td>
                 <td><?= e($p['razao_social']?:'—') ?></td>
                 <td class="text-truncate" style="max-width:160px"><?= e($p['descricao_produto']?:'—') ?></td>
-                <td><?= e($p['vendedor']) ?></td>
+                <td><?= e($p['supervisor'] ?? $p['vendedor'] ?? '—') ?></td>
                 <td><?= dataBR($p['data_pedido']) ?></td>
                 <td><?= moedaBR($p['valor_total']) ?></td>
                 <td><?= statusBadge($p['status']) ?></td>

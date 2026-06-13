@@ -141,8 +141,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ids_criados[]  = $loteMap[$produto_id];
             } else {
                 $num = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
-                db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,vendedor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha,forma_pagamento) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?)')
-                    ->execute([$num,$tipoVenda,$data,$u['id'],$produto_id,$cli['vendedor']??'',$prod['codigo_barra'],$prod['descricao_pt'],$qtd,$valor_total,$obs_geral,$lote_id,$campDesc ?: null,$formaPagamento ?: null]);
+                db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha,forma_pagamento) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?)')
+                    ->execute([$num,$tipoVenda,$data,$u['id'],$produto_id,$cli['supervisor']??$cli['vendedor']??'',$prod['codigo_barra'],$prod['descricao_pt'],$qtd,$valor_total,$obs_geral,$lote_id,$campDesc ?: null,$formaPagamento ?: null]);
                 $newId = (int)db()->lastInsertId();
                 $processedIds[] = $newId;
                 $ids_criados[]  = $newId;

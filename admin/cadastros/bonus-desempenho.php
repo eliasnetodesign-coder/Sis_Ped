@@ -36,7 +36,7 @@ $nomeMes3 = $mesesAbr[$mes3 - 1];
 
 $rows = db()->prepare("
     SELECT
-        c.id, c.codigo_cliente, c.razao_social, c.vendedor,
+        c.id, c.codigo_cliente, c.razao_social, COALESCE(c.supervisor, c.vendedor) AS supervisor,
         cv.canal,
         c.desconto_cliente,
         CAST(c.bonus_desempenho AS DECIMAL(10,2)) AS bonus_pct,
@@ -183,7 +183,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <tr>
                     <th class="text-center" style="white-space:nowrap">Código</th>
                     <th style="white-space:nowrap">Cliente</th>
-                    <th style="white-space:nowrap">Vendedor</th>
+                    <th style="white-space:nowrap">Supervisor</th>
                     <th class="text-center" style="white-space:nowrap">Canal</th>
                     <th class="text-center" style="white-space:nowrap">Desconto</th>
                     <th class="text-end" style="white-space:nowrap"><?= $nomeMes1 ?></th>
@@ -206,7 +206,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <tr>
                     <td class="text-center"><span class="badge bg-secondary"><?= e($r['codigo_cliente']) ?></span></td>
                     <td class="fw-semibold"><?= e($r['razao_social']) ?></td>
-                    <td class="text-muted"><?= e($r['vendedor'] ?: '—') ?></td>
+                    <td class="text-muted"><?= e($r['supervisor'] ?: '—') ?></td>
                     <td class="text-center"><?= $r['canal'] ? '<span class="badge bg-light text-dark border">'.e($r['canal']).'</span>' : '<span class="text-muted">—</span>' ?></td>
                     <td class="text-center"><?= number_format($r['desconto_cliente'], 2) ?>%</td>
                     <td class="text-end"><?= $r['fat_mes1'] > 0 ? moedaBR($r['fat_mes1']) : '<span class="text-muted">—</span>' ?></td>

@@ -4,21 +4,21 @@ requireComercial();
 
 $ano = (int)($_GET['ano'] ?? date('Y'));
 
-$rows = db()->prepare("SELECT p.vendedor, COUNT(*) AS pedidos,
+$rows = db()->prepare("SELECT COALESCE(p.supervisor, p.vendedor) AS supervisor, COUNT(*) AS pedidos,
     COALESCE(SUM(p.valor_total),0) AS valor,
     COUNT(DISTINCT p.cliente_id) AS clientes
 FROM pedidos p
 WHERE p.status = 'faturado' AND YEAR(p.data_pedido) = ?
-GROUP BY p.vendedor ORDER BY valor DESC");
+GROUP BY COALESCE(p.supervisor, p.vendedor) ORDER BY valor DESC");
 $rows->execute([$ano]);
 $rows = $rows->fetchAll();
 $total = array_sum(array_column($rows, 'valor'));
 
-$pageTitle = 'Faturamento por Vendedor';
+$pageTitle = 'Faturamento por Supervisor';
 require_once LAYOUT_PATH . '/header.php';
 ?>
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
-    <h4 class="fw-bold mb-0"><i class="bi bi-person-badge me-2"></i>Faturamento por Vendedor</h4>
+    <h4 class="fw-bold mb-0"><i class="bi bi-person-badge me-2"></i>Faturamento por Supervisor</h4>
 </div>
 <form class="card shadow-sm border-0 mb-4 p-3">
     <div class="row g-2 align-items-end">
@@ -29,12 +29,12 @@ require_once LAYOUT_PATH . '/header.php';
 </form>
 <div class="card shadow-sm border-0"><div class="card-body p-0"><div class="table-responsive">
 <table class="table table-hover mb-0">
-    <thead class="table-light"><tr><th>Rank</th><th>Vendedor</th><th>Clientes</th><th>Pedidos</th><th>Valor</th><th>Participação</th></tr></thead>
+    <thead class="table-light"><tr><th>Rank</th><th>Supervisor</th><th>Clientes</th><th>Pedidos</th><th>Valor</th><th>Participação</th></tr></thead>
     <tbody>
     <?php if ($rows): $i=1; foreach ($rows as $r): ?>
         <tr>
             <td><span class="badge bg-<?= $i<=3?'warning':'secondary' ?>">#<?= $i++ ?></span></td>
-            <td><strong><?= e($r['vendedor'] ?: 'Sem Vendedor') ?></strong></td>
+            <td><strong><?= e($r['supervisor'] ?: 'Sem Supervisor') ?></strong></td>
             <td><?= $r['clientes'] ?></td>
             <td><?= $r['pedidos'] ?></td>
             <td class="fw-semibold"><?= moedaBR($r['valor']) ?></td>

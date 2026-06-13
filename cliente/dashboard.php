@@ -177,7 +177,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-danger">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Reprovados</div>
+                <div class="text-muted small fw-semibold text-uppercase">Cancelados</div>
                 <div class="display-5 fw-bold text-danger"><?= $t['reprovados'] ?></div>
             </div>
         </div>
