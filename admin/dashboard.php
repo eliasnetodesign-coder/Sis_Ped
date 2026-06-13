@@ -3,41 +3,62 @@ require_once __DIR__ . '/../config.php';
 requireAdmin();
 $u = usuario();
 
+$d_join  = '';
+$d_where = '';
+$d_params = [];
 if ($u['tipo'] === 'vendedor') {
-    $vNome = $u['nome'];
-    $totais = db()->prepare('SELECT
-        COUNT(*) AS total,
-        SUM(p.status="comercial")  AS comercial,
-        SUM(p.status="financeiro") AS financeiro,
-        SUM(p.status="faturado")   AS faturados,
-        SUM(p.status="reprovado")  AS reprovados,
-        COALESCE(SUM(CASE WHEN p.status="faturado" THEN p.valor_total ELSE 0 END),0) AS valor_faturado
-    FROM pedidos p JOIN clientes c ON c.id = p.cliente_id WHERE c.vendedor = ?');
-    $totais->execute([$vNome]);
-    $totais = $totais->fetch();
+    $d_join  = 'LEFT JOIN clientes c ON c.id = p.cliente_id';
+    $d_where = 'WHERE c.vendedor = ?';
+    $d_params[] = $u['nome'];
+}
 
+// Totais agrupados por lote (mesmo modelo de pedidos.php)
+$totais_stmt = db()->prepare("
+    SELECT status, COUNT(*) AS qtd, SUM(valor_total) AS total
+    FROM (
+        SELECT MIN(p.status) AS status, SUM(p.valor_total) AS valor_total
+        FROM pedidos p $d_join $d_where
+        GROUP BY COALESCE(p.lote_id, CAST(p.id AS CHAR))
+    ) g
+    GROUP BY status
+");
+$totais_stmt->execute($d_params);
+$totais_rows = $totais_stmt->fetchAll();
+$totais = [];
+foreach ($totais_rows as $t) $totais[$t['status']] = $t;
+$total_geral_qtd = array_sum(array_column($totais_rows, 'qtd'));
+$total_geral_val = array_sum(array_column($totais_rows, 'total'));
+
+// Breakdown venda/bonificação por status
+$tipo_stmt = db()->prepare("
+    SELECT g.status, g.tipo_venda, SUM(g.valor_total) AS total
+    FROM (
+        SELECT MIN(p.status) AS status, MIN(p.tipo_venda) AS tipo_venda, SUM(p.valor_total) AS valor_total
+        FROM pedidos p $d_join $d_where
+        GROUP BY COALESCE(p.lote_id, CAST(p.id AS CHAR))
+    ) g
+    GROUP BY g.status, g.tipo_venda
+");
+$tipo_stmt->execute($d_params);
+$totais_tipo = [];
+$totais_tipo_geral = [];
+foreach ($tipo_stmt->fetchAll() as $tt) {
+    $totais_tipo[$tt['status']][$tt['tipo_venda']] = (float)$tt['total'];
+    $totais_tipo_geral[$tt['tipo_venda']] = ($totais_tipo_geral[$tt['tipo_venda']] ?? 0) + (float)$tt['total'];
+}
+
+// Últimos pedidos
+if ($u['tipo'] === 'vendedor') {
     $recentes = db()->prepare('SELECT p.*, c.razao_social FROM pedidos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
-        WHERE c.vendedor = ?
-        ORDER BY p.created_at DESC LIMIT 10');
-    $recentes->execute([$vNome]);
+        WHERE c.vendedor = ? ORDER BY p.created_at DESC LIMIT 10');
+    $recentes->execute([$u['nome']]);
     $recentes = $recentes->fetchAll();
-
     $emComercial = 0;
 } else {
-    $totais = db()->query('SELECT
-        COUNT(*) AS total,
-        SUM(status="comercial")  AS comercial,
-        SUM(status="financeiro") AS financeiro,
-        SUM(status="faturado")   AS faturados,
-        SUM(status="reprovado")  AS reprovados,
-        COALESCE(SUM(CASE WHEN status="faturado" THEN valor_total ELSE 0 END),0) AS valor_faturado
-    FROM pedidos')->fetch();
-
     $recentes = db()->query('SELECT p.*, c.razao_social FROM pedidos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         ORDER BY p.created_at DESC LIMIT 10')->fetchAll();
-
     $emComercial = db()->query('SELECT COUNT(*) FROM pedidos WHERE status = "comercial"')->fetchColumn();
 }
 
@@ -59,57 +80,42 @@ require_once LAYOUT_PATH . '/header.php';
 </div>
 
 <!-- Resumo de pedidos -->
+<?php
+$cardDefs = [
+    ''           => ['label'=>'Total Geral',     'icon'=>'bi-list-check',    'cor'=>'secondary', 'qtd'=>$total_geral_qtd,                    'val'=>$total_geral_val,                    'tipo'=>$totais_tipo_geral],
+    'comercial'  => ['label'=>'Ag. Comercial',   'icon'=>'bi-clock-history', 'cor'=>'primary',   'qtd'=>$totais['comercial']['qtd']  ?? 0,   'val'=>$totais['comercial']['total']  ?? 0, 'tipo'=>$totais_tipo['comercial']  ?? []],
+    'financeiro' => ['label'=>'Ag. Financeiro',  'icon'=>'bi-bank',          'cor'=>'warning',   'qtd'=>$totais['financeiro']['qtd'] ?? 0,   'val'=>$totais['financeiro']['total'] ?? 0, 'tipo'=>$totais_tipo['financeiro'] ?? []],
+    'faturado'   => ['label'=>'Ag. Faturamento', 'icon'=>'bi-box-seam',      'cor'=>'success',   'qtd'=>$totais['faturado']['qtd']   ?? 0,   'val'=>$totais['faturado']['total']   ?? 0, 'tipo'=>$totais_tipo['faturado']   ?? []],
+    'reprovado'  => ['label'=>'Reprovados',      'icon'=>'bi-x-circle',      'cor'=>'danger',    'qtd'=>$totais['reprovado']['qtd']  ?? 0,   'val'=>$totais['reprovado']['total']  ?? 0, 'tipo'=>$totais_tipo['reprovado']  ?? []],
+];
+?>
 <div class="row g-3 mb-4">
-    <div class="col-6 col-xl-3">
-        <div class="card shadow-sm border-0 border-start border-4 border-primary">
-            <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Aguardando Comercial</div>
-                <div class="display-5 fw-bold text-primary"><?= $totais['comercial'] ?></div>
+<?php foreach ($cardDefs as $val => $cd): ?>
+    <div class="col-6 col-md">
+        <a href="<?= BASE_URL ?>/admin/pedidos.php<?= $val ? '?status='.$val : '' ?>" class="text-decoration-none">
+            <div class="card shadow-sm border-0 h-100">
+                <div class="card-body py-3 px-3">
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <i class="bi <?= $cd['icon'] ?> text-<?= $cd['cor'] ?> fs-5"></i>
+                        <span class="small fw-semibold text-muted text-uppercase" style="font-size:.7rem;letter-spacing:.05em"><?= $cd['label'] ?></span>
+                    </div>
+                    <div class="fw-bold fs-5 text-<?= $cd['cor'] ?>"><?= $cd['qtd'] ?> <span class="fw-normal fs-6 text-muted">pedido<?= $cd['qtd'] != 1 ? 's' : '' ?></span></div>
+                    <div class="small text-muted"><?= moedaBR($cd['val']) ?></div>
+                    <?php if (!empty($cd['tipo'])): ?>
+                    <div class="mt-1 pt-1 border-top d-flex flex-column gap-0" style="font-size:.72rem">
+                        <?php if (isset($cd['tipo']['venda'])): ?>
+                        <span class="text-muted"><span class="text-primary fw-semibold">Venda:</span> <?= moedaBR($cd['tipo']['venda']) ?></span>
+                        <?php endif; ?>
+                        <?php if (isset($cd['tipo']['bonificacao'])): ?>
+                        <span class="text-muted"><span class="text-success fw-semibold">Bonif.:</span> <?= moedaBR($cd['tipo']['bonificacao']) ?></span>
+                        <?php endif; ?>
+                    </div>
+                    <?php endif; ?>
+                </div>
             </div>
-        </div>
+        </a>
     </div>
-    <div class="col-6 col-xl-3">
-        <div class="card shadow-sm border-0 border-start border-4 border-warning">
-            <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">No Financeiro</div>
-                <div class="display-5 fw-bold" style="color:#c8880a"><?= $totais['financeiro'] ?></div>
-            </div>
-        </div>
-    </div>
-    <div class="col-6 col-xl-3">
-        <div class="card shadow-sm border-0 border-start border-4 border-success">
-            <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Faturados</div>
-                <div class="display-5 fw-bold text-success"><?= $totais['faturados'] ?></div>
-            </div>
-        </div>
-    </div>
-</div>
-<div class="row g-3 mb-4">
-    <div class="col-6 col-xl-3">
-        <div class="card shadow-sm border-0 border-start border-4 border-danger">
-            <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Reprovados</div>
-                <div class="display-5 fw-bold text-danger"><?= $totais['reprovados'] ?></div>
-            </div>
-        </div>
-    </div>
-    <div class="col-6 col-xl-3">
-        <div class="card shadow-sm border-0 border-start border-4 border-info">
-            <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Total Pedidos</div>
-                <div class="display-5 fw-bold text-info"><?= $totais['total'] ?></div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-6">
-        <div class="card shadow-sm border-0 border-start border-4 border-success">
-            <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Valor Total Faturado</div>
-                <div class="fw-bold text-success" style="font-size:1.8rem"><?= moedaBR($totais['valor_faturado']) ?></div>
-            </div>
-        </div>
-    </div>
+<?php endforeach; ?>
 </div>
 
 <!-- Últimos pedidos -->

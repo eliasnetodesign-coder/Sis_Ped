@@ -13,8 +13,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $senha = trim($_POST['senha'] ?? '');
 
     if ($login && $senha) {
-        // Verificar clientes pelo código
-        $stmt = db()->prepare('SELECT * FROM clientes WHERE codigo_cliente = ? AND status = "ativo"');
+        // Verificar clientes pelo e-mail
+        $stmt = db()->prepare('SELECT * FROM clientes WHERE email = ? AND status = "ativo"');
         $stmt->execute([$login]);
         $cliente = $stmt->fetch();
 
@@ -23,9 +23,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'id'    => $cliente['id'],
                 'nome'  => $cliente['razao_social'],
                 'email' => $cliente['email'],
+                'cnpj'  => $cliente['cnpj'] ?? '',
                 'tipo'  => 'cliente',
             ];
-            header('Location: ' . BASE_URL . '/cliente/dashboard.php');
+
+            // Verifica se pertence a um grupo de empresas com outros membros
+            $grupoStmt = db()->prepare("
+                SELECT DISTINCT c.id, c.razao_social, c.cnpj, c.codigo_cliente
+                FROM grupo_empresas_clientes gc1
+                JOIN grupo_empresas_clientes gc2 ON gc2.grupo_id = gc1.grupo_id
+                JOIN clientes c ON c.id = gc2.cliente_id
+                WHERE gc1.cliente_id = ? AND c.status = 'ativo'
+                ORDER BY c.razao_social
+            ");
+            $grupoStmt->execute([$cliente['id']]);
+            $grupoMembros = $grupoStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if (count($grupoMembros) > 1) {
+                $_SESSION['grupo_opcoes']  = $grupoMembros;
+                $_SESSION['grupo_selecao'] = $grupoMembros;
+                header('Location: ' . BASE_URL . '/cliente/selecionar-cnpj.php');
+            } else {
+                header('Location: ' . BASE_URL . '/cliente/dashboard.php');
+            }
             exit;
         }
 
@@ -45,11 +65,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        flash('danger', 'Código/e-mail ou senha inválidos.');
+        flash('danger', 'E-mail ou senha inválidos.');
         header('Location: ' . BASE_URL . '/login.php');
         exit;
     } else {
-        flash('danger', 'Preencha o código/e-mail e a senha.');
+        flash('danger', 'Preencha o e-mail e a senha.');
         header('Location: ' . BASE_URL . '/login.php');
         exit;
     }
@@ -96,12 +116,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <form method="POST" action="<?= BASE_URL ?>/login.php" novalidate>
                     <div class="mb-3">
                         <label class="form-label fw-semibold" for="login">
-                            <i class="bi bi-person me-1"></i>Código <span class="text-muted fw-normal small">/ E-mail (admin)</span>
+                            <i class="bi bi-envelope me-1"></i>E-mail
                         </label>
-                        <input type="text" class="form-control form-control-lg" id="login"
-                               name="login" placeholder="Seu código de cliente"
+                        <input type="email" class="form-control form-control-lg" id="login"
+                               name="login" placeholder="Seu e-mail de acesso"
                                value="<?= e($_POST['login'] ?? '') ?>"
-                               required autofocus autocomplete="username">
+                               required autofocus autocomplete="email">
                     </div>
                     <div class="mb-4">
                         <label class="form-label fw-semibold" for="senha">
@@ -125,7 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <div class="card-footer text-center text-muted py-3 small">
                 <strong>Usuários de teste</strong><br>
-                Cliente: código <code>CLI001</code> &bull; Admin: <code>comercial@teste.com</code> / <code>financeiro@teste.com</code><br>
+                Cliente: <code>cliente@teste.com</code> &bull; Admin: <code>comercial@teste.com</code><br>
                 Senha: <code>123</code>
                 &nbsp;|&nbsp;<a href="<?= BASE_URL ?>/install.php" class="text-decoration-none">Instalar banco</a>
             </div>

@@ -16,23 +16,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $chk->execute([$email, $usr['id']]);
                 if ($chk->fetchColumn()) throw new Exception('Este e-mail já está em uso por outro cliente.');
             }
-            db()->prepare('UPDATE clientes SET
-                email=?,telefone1=?,telefone2=?,
-                cep=?,endereco=?,numero=?,complemento=?,
-                bairro=?,cidade=?,estado=?,pais=?
-                WHERE id=?')
+            db()->prepare('UPDATE clientes SET email=?,telefone1=?,telefone2=? WHERE id=?')
                 ->execute([
                     $email,
-                    trim($_POST['telefone1']   ?? ''),
-                    trim($_POST['telefone2']   ?? ''),
-                    trim($_POST['cep']         ?? ''),
-                    trim($_POST['endereco']    ?? ''),
-                    trim($_POST['numero']      ?? ''),
-                    trim($_POST['complemento'] ?? ''),
-                    trim($_POST['bairro']      ?? ''),
-                    trim($_POST['cidade']      ?? ''),
-                    trim($_POST['estado']      ?? ''),
-                    trim($_POST['pais']        ?? ''),
+                    trim($_POST['telefone1'] ?? ''),
+                    trim($_POST['telefone2'] ?? ''),
                     $usr['id'],
                 ]);
             $_SESSION['usuario']['email'] = $email;
@@ -92,44 +80,47 @@ require_once LAYOUT_PATH . '/header.php';
                                    value="<?= e($cliente['telefone2'] ?? '') ?>">
                         </div>
                         <div class="col-12"><hr class="my-1"></div>
+                        <div class="col-12">
+                            <p class="text-muted small mb-2"><i class="bi bi-lock me-1"></i>Endereço — somente visualização. Para alterar, entre em contato com o suporte.</p>
+                        </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-semibold">CEP</label>
-                            <input type="text" name="cep" class="form-control"
-                                   value="<?= e($cliente['cep'] ?? '') ?>">
+                            <label class="form-label fw-semibold text-muted small">CEP</label>
+                            <input type="text" class="form-control bg-light" readonly
+                                   value="<?= e($cliente['cep'] ?? '—') ?>">
                         </div>
                         <div class="col-md-7">
-                            <label class="form-label fw-semibold">Endereço</label>
-                            <input type="text" name="endereco" class="form-control"
-                                   value="<?= e($cliente['endereco'] ?? '') ?>">
+                            <label class="form-label fw-semibold text-muted small">Endereço</label>
+                            <input type="text" class="form-control bg-light" readonly
+                                   value="<?= e($cliente['endereco'] ?? '—') ?>">
                         </div>
                         <div class="col-md-2">
-                            <label class="form-label fw-semibold">Número</label>
-                            <input type="text" name="numero" class="form-control"
-                                   value="<?= e($cliente['numero'] ?? '') ?>">
+                            <label class="form-label fw-semibold text-muted small">Número</label>
+                            <input type="text" class="form-control bg-light" readonly
+                                   value="<?= e($cliente['numero'] ?? '—') ?>">
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label fw-semibold">Complemento</label>
-                            <input type="text" name="complemento" class="form-control"
-                                   value="<?= e($cliente['complemento'] ?? '') ?>">
+                            <label class="form-label fw-semibold text-muted small">Complemento</label>
+                            <input type="text" class="form-control bg-light" readonly
+                                   value="<?= e($cliente['complemento'] ?? '—') ?>">
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-semibold">Bairro</label>
-                            <input type="text" name="bairro" class="form-control"
-                                   value="<?= e($cliente['bairro'] ?? '') ?>">
+                            <label class="form-label fw-semibold text-muted small">Bairro</label>
+                            <input type="text" class="form-control bg-light" readonly
+                                   value="<?= e($cliente['bairro'] ?? '—') ?>">
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-semibold">Cidade</label>
-                            <input type="text" name="cidade" class="form-control"
-                                   value="<?= e($cliente['cidade'] ?? '') ?>">
+                            <label class="form-label fw-semibold text-muted small">Cidade</label>
+                            <input type="text" class="form-control bg-light" readonly
+                                   value="<?= e($cliente['cidade'] ?? '—') ?>">
                         </div>
                         <div class="col-md-1">
-                            <label class="form-label fw-semibold">UF</label>
-                            <input type="text" name="estado" class="form-control"
-                                   value="<?= e($cliente['estado'] ?? '') ?>" maxlength="2">
+                            <label class="form-label fw-semibold text-muted small">UF</label>
+                            <input type="text" class="form-control bg-light" readonly
+                                   value="<?= e($cliente['estado'] ?? '—') ?>">
                         </div>
                         <div class="col-md-1">
-                            <label class="form-label fw-semibold">País</label>
-                            <input type="text" name="pais" class="form-control"
+                            <label class="form-label fw-semibold text-muted small">País</label>
+                            <input type="text" class="form-control bg-light" readonly
                                    value="<?= e($cliente['pais'] ?? 'Brasil') ?>">
                         </div>
                     </div>

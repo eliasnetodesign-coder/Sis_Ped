@@ -29,6 +29,29 @@ function db() {
             try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN forma_pagamento VARCHAR(60) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE creditos ADD COLUMN valor_utilizado DECIMAL(12,2) NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN credito_utilizado DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE clientes ADD COLUMN email VARCHAR(120) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE clientes ADD COLUMN senha VARCHAR(255) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS grupo_empresas (
+                id         INT AUTO_INCREMENT PRIMARY KEY,
+                nome       VARCHAR(120) NOT NULL,
+                descricao  TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS grupo_empresas_clientes (
+                id        INT AUTO_INCREMENT PRIMARY KEY,
+                grupo_id  INT NOT NULL,
+                cliente_id INT NOT NULL,
+                UNIQUE KEY uq_grupo_cliente (grupo_id, cliente_id)
+            )"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS webhook_logs (
+                id         INT AUTO_INCREMENT PRIMARY KEY,
+                origem     VARCHAR(50)  NOT NULL,
+                evento     VARCHAR(100) NOT NULL,
+                status     VARCHAR(20)  NOT NULL,
+                detalhe    TEXT,
+                cliente_id INT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS pedido_logs (
                 id            INT AUTO_INCREMENT PRIMARY KEY,
                 pedido_id     INT          NOT NULL,
