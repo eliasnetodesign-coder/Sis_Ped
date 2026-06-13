@@ -63,9 +63,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $chk->execute([$codigo]);
                     $existing = $chk->fetchColumn();
                 }
-                $linha    = trim($row['linha']       ?? '');
-                $grupo    = trim($row['grupo']       ?? '');
-                $subgrupo = trim($row['subgrupo']    ?? '');
+                $linha    = trim(preg_replace('/\d+/', '', $row['linha']    ?? ''));
+                $grupo    = trim(preg_replace('/\d+/', '', $row['grupo']    ?? ''));
+                $subgrupo = trim(preg_replace('/\d+/', '', $row['subgrupo'] ?? ''));
                 $cbarra   = trim($row['codigo_barra'] ?? '');
                 $cest     = trim($row['cest']        ?? '');
                 if ($existing) {
