@@ -123,10 +123,12 @@ $produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descri
     FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
     WHERE p.status = "ativo" ORDER BY p.linha, p.descricao_pt')->fetchAll();
 
+$MA_MERGE = ['MAT APOIO ITALLIAN - BRINDE', 'MAT APOIO ITALLIAN - VENDIDO'];
 $porLinha = [];
 foreach ($produtos as $p) {
     $linha = trim($p['linha'] ?? '');
     $linha = $linha !== '' ? $linha : 'Outros';
+    if (in_array($linha, $MA_MERGE, true)) $linha = 'MATERIAL DE APOIO';
     $porLinha[$linha][] = $p;
 }
 ksort($porLinha);

@@ -272,10 +272,12 @@ $campanhas = db()->query('SELECT c.*, p.descricao_pt FROM campanhas c LEFT JOIN 
 $cliCanalId = (int)($cli_data['canal_venda_id'] ?? 0);
 $campanhas  = array_filter($campanhas, fn($c) => !$c['canal_venda_id'] || (int)$c['canal_venda_id'] === $cliCanalId);
 
+$MA_MERGE = ['MAT APOIO ITALLIAN - BRINDE', 'MAT APOIO ITALLIAN - VENDIDO'];
 $porLinha = [];
 foreach ($produtos as $p) {
     $linha = trim($p['linha'] ?? '');
     $linha = $linha !== '' ? $linha : 'Outros';
+    if (in_array($linha, $MA_MERGE, true)) $linha = 'MATERIAL DE APOIO';
     $porLinha[$linha][] = $p;
 }
 ksort($porLinha);
