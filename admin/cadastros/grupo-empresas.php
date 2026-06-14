@@ -97,16 +97,17 @@ require_once LAYOUT_PATH . '/header.php';
 </div>
 <?php else: ?>
 
-<div class="row g-4">
+<div class="accordion" id="grupoAccordion">
 <?php foreach ($grupos as $g):
     $gmembros = $membros[$g['id']] ?? [];
     // IDs já no grupo (para filtrar o select)
     $idsNoGrupo = array_column($gmembros, 'id');
 ?>
-<div class="col-12" id="grupo-<?= $g['id'] ?>">
-    <div class="card border-0 shadow-sm">
-        <div class="card-header bg-white py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
-            <div class="d-flex align-items-center gap-3">
+<div class="accordion-item border-0 shadow-sm mb-3" id="grupo-<?= $g['id'] ?>">
+    <h2 class="accordion-header">
+        <button class="accordion-button collapsed bg-white" type="button"
+                data-bs-toggle="collapse" data-bs-target="#colg<?= $g['id'] ?>">
+            <div class="d-flex flex-wrap align-items-center gap-3 w-100 pe-3">
                 <i class="bi bi-diagram-2 text-primary fs-5"></i>
                 <div>
                     <div class="fw-bold"><?= e($g['nome']) ?></div>
@@ -116,7 +117,13 @@ require_once LAYOUT_PATH . '/header.php';
                 </div>
                 <span class="badge bg-primary rounded-pill"><?= $g['total_membros'] ?> empresa<?= $g['total_membros'] != 1 ? 's' : '' ?></span>
             </div>
-            <div class="d-flex gap-2">
+        </button>
+    </h2>
+    <div id="colg<?= $g['id'] ?>" class="accordion-collapse collapse" data-bs-parent="#grupoAccordion">
+        <div class="accordion-body p-0">
+
+            <!-- Ações do grupo -->
+            <div class="d-flex gap-2 px-3 pt-3">
                 <button class="btn btn-sm btn-outline-secondary"
                         data-bs-toggle="modal" data-bs-target="#modalEditarGrupo"
                         data-id="<?= $g['id'] ?>"
@@ -130,13 +137,11 @@ require_once LAYOUT_PATH . '/header.php';
                     <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Excluir</button>
                 </form>
             </div>
-        </div>
-        <div class="card-body p-0">
 
             <?php if (empty($gmembros)): ?>
             <div class="text-center text-muted py-4 small">Nenhuma empresa neste grupo ainda.</div>
             <?php else: ?>
-            <table class="table table-hover align-middle mb-0">
+            <table class="table table-hover align-middle mb-0 mt-3">
                 <thead class="table-light">
                     <tr>
                         <th class="ps-3 small">Código</th>
@@ -332,6 +337,14 @@ function geValidar(form) {
     }
     return true;
 }
+
+// Reabre o grupo indicado na âncora da URL (após adicionar/remover empresa)
+(function() {
+    var m = (window.location.hash || '').match(/^#grupo-(\d+)$/);
+    if (!m) return;
+    var col = document.getElementById('colg' + m[1]);
+    if (col) new bootstrap.Collapse(col, { toggle: true });
+})();
 </script>
 
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>
