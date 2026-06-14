@@ -248,7 +248,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <?php endforeach; ?>
                     <td><?= statusBadge($p['status']) ?></td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="editarRegistro(<?= htmlspecialchars(json_encode($p), ENT_QUOTES) ?>)">
+                        <button class="btn btn-sm btn-outline-primary" onclick="editarRegistro(<?= htmlspecialchars(json_encode($p), ENT_QUOTES) ?>, this)">
                             <i class="bi bi-pencil"></i>
                         </button>
                         <form method="POST" class="d-inline" onsubmit="return confirm('Excluir este produto?')">
@@ -678,7 +678,7 @@ function toggleVenda(el) {
         el.textContent   = novoValor ? 'Sim' : 'Não';
     });
 }
-function editarRegistro(d) {
+function editarRegistro(d, btn) {
     document.getElementById('modalTitle').textContent = 'Editar Produto';
     document.getElementById('formAction').value = 'editar';
     document.getElementById('formId').value = d.id;
@@ -690,9 +690,18 @@ function editarRegistro(d) {
     document.getElementById('f_descricao_pt').value = d.descricao_pt||'';
     document.getElementById('f_nuance').value = d.nuance||'';
     document.getElementById('f_multiplo').value = d.multiplo||1;
-    document.getElementById('f_vd').value = d.vendas_distribuidor > 0 ? '1' : '0';
-    document.getElementById('f_vv').value = d.vendas_varejo > 0 ? '1' : '0';
-    document.getElementById('f_ve').value = d.vendas_exportacao > 0 ? '1' : '0';
+    // Lê os valores ao vivo dos badges da linha (refletindo toggles sem reload)
+    var tr = btn ? btn.closest('tr') : null;
+    function vendaVivo(campo, fallback) {
+        if (tr) {
+            var b = tr.querySelector('[data-campo="' + campo + '"]');
+            if (b) return b.dataset.valor == '1' ? '1' : '0';
+        }
+        return fallback > 0 ? '1' : '0';
+    }
+    document.getElementById('f_vd').value = vendaVivo('vendas_distribuidor', d.vendas_distribuidor);
+    document.getElementById('f_vv').value = vendaVivo('vendas_varejo', d.vendas_varejo);
+    document.getElementById('f_ve').value = vendaVivo('vendas_exportacao', d.vendas_exportacao);
     document.getElementById('f_preco').value = d.preco_padrao||0;
     document.getElementById('f_ncm').value = d.ncm_id||'';
     document.getElementById('f_cest').value = d.cest||'';
