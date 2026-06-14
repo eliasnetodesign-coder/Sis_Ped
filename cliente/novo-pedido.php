@@ -26,7 +26,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $cli->execute([$u['id']]);
     $cli = $cli->fetch();
 
-    $desconto = ((float)($cli['desconto_cliente'] ?? 0) + (float)($cli['desconto_canal'] ?? 0)) / 100;
+    // Bonificação: sem desconto de canal/cliente; demais vendas aplicam desconto
+    $desconto = ($tipoVenda === 'bonificacao')
+        ? 0.0
+        : ((float)($cli['desconto_cliente'] ?? 0) + (float)($cli['desconto_canal'] ?? 0)) / 100;
+    // Bonificação usa a tabela de preços Network; venda normal usa a Padrão
+    $colPreco = ($tipoVenda === 'bonificacao') ? 't.preco_network' : 't.preco_padrao';
     $data          = date('Y-m-d');
     $campanhas_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas')->fetchAll();
     $canalVendaId  = (int)($cli['canal_venda_id'] ?? 0);
@@ -71,7 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $qtd = max(0, (int)($item['quantidade'] ?? 0));
             if ($qtd <= 0) continue;
             $produto_id = (int)($item['produto_id'] ?? $pid);
-            $stmtP = db()->prepare('SELECT p.*, COALESCE(t.preco_padrao, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ? AND p.status = "ativo"');
+            $stmtP = db()->prepare("SELECT p.*, COALESCE($colPreco, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ? AND p.status = \"ativo\"");
             $stmtP->execute([$produto_id]);
             $prod = $stmtP->fetch();
             if (!$prod) continue;
@@ -239,7 +244,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $cli_data = db()->prepare('SELECT desconto_cliente, desconto_canal, canal_venda_id, idioma FROM clientes WHERE id = ?');
 $cli_data->execute([$u['id']]);
 $cli_data     = $cli_data->fetch();
-$desconto_pct = (float)($cli_data['desconto_cliente'] ?? 0) + (float)($cli_data['desconto_canal'] ?? 0);
+
+// Bonificação: por URL (?modo=ma_bonus) ou ao editar um pedido de bonificação
+$bonifFlag = (isset($_GET['modo']) && $_GET['modo'] === 'ma_bonus');
+if (!$bonifFlag && !empty($_GET['editar'])) {
+    $tvStmt = db()->prepare('SELECT tipo_venda FROM pedidos WHERE id = ? AND cliente_id = ?');
+    $tvStmt->execute([(int)$_GET['editar'], $u['id']]);
+    $bonifFlag = ($tvStmt->fetchColumn() === 'bonificacao');
+}
+// Bonificação não aplica desconto de canal/cliente
+$desconto_pct = $bonifFlag ? 0.0 : (float)($cli_data['desconto_cliente'] ?? 0) + (float)($cli_data['desconto_canal'] ?? 0);
 
 // Crédito aprovado disponível para o cliente
 $creditoStmt = db()->prepare("
@@ -261,10 +275,11 @@ $creditoStmt->execute([$u['id']]);
 $creditosDisponiveis = $creditoStmt->fetchAll();
 $creditoDisponivel   = array_sum(array_column($creditosDisponiveis, 'saldo'));
 
-$produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
-    COALESCE(t.preco_padrao, p.vendas_varejo, 0) as preco
+$colPrecoExib = $bonifFlag ? 't.preco_network' : 't.preco_padrao';
+$produtos = db()->query("SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
+    COALESCE($colPrecoExib, p.vendas_varejo, 0) as preco
     FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
-    WHERE p.status = "ativo" ORDER BY p.linha, p.descricao_pt')->fetchAll();
+    WHERE p.status = \"ativo\" ORDER BY p.linha, p.descricao_pt")->fetchAll();
 $idiomaCliente = $cli_data['idioma'] ?? 'pt';
 
 $campanhas = db()->query('SELECT c.*, p.descricao_pt FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id ORDER BY c.codigo_campanha')
