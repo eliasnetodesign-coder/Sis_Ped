@@ -23,7 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($a === 'criar' || $a === 'editar') {
             $d = [
                 $_POST['codigo_produto'], $_POST['linha'], $_POST['grupo'], $_POST['subgrupo'],
-                $_POST['codigo_barra'], $_POST['descricao_pt'], $_POST['descricao_en'], $_POST['descricao_es'],
+                $_POST['codigo_barra'], $_POST['descricao_pt'], $_POST['descricao_en'] ?? '', $_POST['descricao_es'] ?? '',
                 $_POST['desc_cliente_pt'] ?? '', $_POST['desc_cliente_en'] ?? '', $_POST['desc_cliente_es'] ?? '',
                 $_POST['nuance'], (int)$_POST['multiplo'],
                 (float)$_POST['vendas_distribuidor'], (float)$_POST['vendas_varejo'], (float)$_POST['vendas_exportacao'],
@@ -317,14 +317,6 @@ require_once LAYOUT_PATH . '/header.php';
                                 <div class="col-md-9">
                                     <label class="form-label fw-semibold">Descrição (Português) <span class="text-danger">*</span></label>
                                     <input type="text" name="descricao_pt" id="f_descricao_pt" class="form-control" required>
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="form-label fw-semibold">Descrição (Inglês)</label>
-                                    <input type="text" name="descricao_en" id="f_descricao_en" class="form-control">
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="form-label fw-semibold">Descrição (Espanhol)</label>
-                                    <input type="text" name="descricao_es" id="f_descricao_es" class="form-control">
                                 </div>
                                 <div class="col-md-3">
                                     <label class="form-label fw-semibold">Nuance</label>
@@ -666,7 +658,7 @@ function novoRegistro() {
     document.getElementById('modalTitle').textContent = 'Novo Produto';
     document.getElementById('formAction').value = 'criar';
     document.getElementById('formId').value = '';
-    ['codigo','linha','grupo','subgrupo','codigo_barra','descricao_pt','descricao_en','descricao_es','nuance','cest'].forEach(function(f){ document.getElementById('f_'+f).value=''; });
+    ['codigo','linha','grupo','subgrupo','codigo_barra','descricao_pt','nuance','cest'].forEach(function(f){ document.getElementById('f_'+f).value=''; });
     ['desc_cliente_pt','desc_cliente_en','desc_cliente_es'].forEach(function(f){ document.getElementById('f_'+f).value=''; });
     ['multiplo'].forEach(function(f){ document.getElementById('f_'+f).value='1'; });
     ['vd','vv','ve','preco'].forEach(function(f){ document.getElementById('f_'+f).value='0'; });
@@ -696,8 +688,6 @@ function editarRegistro(d) {
     document.getElementById('f_subgrupo').value = d.subgrupo||'';
     document.getElementById('f_codigo_barra').value = d.codigo_barra||'';
     document.getElementById('f_descricao_pt').value = d.descricao_pt||'';
-    document.getElementById('f_descricao_en').value = d.descricao_en||'';
-    document.getElementById('f_descricao_es').value = d.descricao_es||'';
     document.getElementById('f_nuance').value = d.nuance||'';
     document.getElementById('f_multiplo').value = d.multiplo||1;
     document.getElementById('f_vd').value = d.vendas_distribuidor > 0 ? '1' : '0';
