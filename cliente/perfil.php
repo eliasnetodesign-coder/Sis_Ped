@@ -13,7 +13,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'senha
         if (!$nova)            throw new Exception('Informe a nova senha.');
         if ($nova !== $conf)   throw new Exception('As senhas não conferem.');
         if (strlen($nova) < 4) throw new Exception('A senha deve ter pelo menos 4 caracteres.');
-        db()->prepare('UPDATE clientes SET senha=? WHERE id=?')->execute([$nova, $usr['id']]);
+        db()->prepare('UPDATE clientes SET senha=?, senha_temporaria=0 WHERE id=?')->execute([$nova, $usr['id']]);
+        $_SESSION['usuario']['must_change'] = false;
         flash('success', 'Senha alterada com sucesso!');
     } catch (Exception $e) {
         flash('danger', 'Erro: ' . $e->getMessage());

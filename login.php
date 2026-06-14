@@ -25,6 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'email' => $cliente['email'],
                 'cnpj'  => $cliente['cnpj'] ?? '',
                 'tipo'  => 'cliente',
+                'must_change' => ((int)($cliente['senha_temporaria'] ?? 0) === 1),
             ];
 
             // Verifica se pertence a um grupo de empresas com outros membros
@@ -60,6 +61,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'nome'  => $usuario['nome'],
                 'email' => $usuario['email'],
                 'tipo'  => $usuario['tipo_acesso'],
+                'must_change' => ((int)($usuario['senha_temporaria'] ?? 0) === 1),
             ];
             header('Location: ' . BASE_URL . '/admin/dashboard.php');
             exit;
