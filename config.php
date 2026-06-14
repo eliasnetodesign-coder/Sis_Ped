@@ -74,6 +74,14 @@ function db() {
                 INDEX idx_pedido (pedido_id),
                 INDEX idx_numero (numero_pedido)
             )"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN tipo VARCHAR(20) NOT NULL DEFAULT 'desconto'"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_bonificacao (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_campanha VARCHAR(50) NOT NULL,
+                produto_id      INT NOT NULL,
+                quantidade      INT NOT NULL DEFAULT 1,
+                KEY idx_camp_bonif (codigo_campanha)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
         } catch (PDOException $e) {
             die('Erro de conexão com o banco de dados. <a href="' . BASE_URL . '/install.php">Clique aqui para configurar.</a>');
         }
@@ -158,4 +166,94 @@ function statusBadge($s) {
     ];
     [$cls, $label] = $map[$s] ?? ['secondary', ucfirst($s)];
     return '<span class="badge bg-' . $cls . '">' . $label . '</span>';
+}
+
+/**
+ * Gera um pedido bonificado a partir das campanhas do tipo "bonificacao"
+ * acionadas pelos itens de uma venda. A quantidade bonificada multiplica
+ * conforme o total comprado: mult = floor(qtd_alvo / quantidade_minima).
+ *
+ * @param array $itensVenda  itens da venda, cada um: ['produto_id','qtd','linha','grupo','subgrupo']
+ * @return array  itens bonificados criados: ['produto_id','descricao','quantidade','pedido_id']
+ */
+function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $supervisor, string $dataPedido, array $itensVenda, ?string $refNumero = null): array {
+    $camps = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade
+                          FROM campanhas WHERE tipo = 'bonificacao'")->fetchAll();
+    if (!$camps) return [];
+
+    // Totais da venda por produto e por categoria (mesma lógica do desconto)
+    $totProd = $totL = $totG = $totS = [];
+    foreach ($itensVenda as $it) {
+        $q = (int)($it['qtd'] ?? 0); if ($q <= 0) continue;
+        $pid = (int)($it['produto_id'] ?? 0);
+        if ($pid) $totProd[$pid] = ($totProd[$pid] ?? 0) + $q;
+        $l = trim($it['linha']    ?? ''); if ($l) $totL[$l] = ($totL[$l] ?? 0) + $q;
+        $g = trim($it['grupo']    ?? ''); if ($g) $totG[$g] = ($totG[$g] ?? 0) + $q;
+        $s = trim($it['subgrupo'] ?? ''); if ($s) $totS[$s] = ($totS[$s] ?? 0) + $q;
+    }
+
+    $byCode = [];
+    foreach ($camps as $c) $byCode[$c['codigo_campanha']][] = $c;
+
+    $bonusAcc = [];          // produto_id => quantidade bonificada
+    $codigosAcionados = [];
+    foreach ($byCode as $code => $rows) {
+        $min = (int)$rows[0]['quantidade']; if ($min <= 0) continue;
+        $canal = $rows[0]['canal_venda_id'];
+        if ($canal && (int)$canal !== $canalVendaId) continue;
+
+        $prodIds = array_values(array_unique(array_filter(array_map(fn($r) => (int)$r['produto_id'], $rows))));
+        $trigger = 0;
+        if ($prodIds) {
+            foreach ($prodIds as $pid) $trigger += $totProd[$pid] ?? 0;
+        } else {
+            foreach ($rows as $r) {
+                $cL = trim(preg_replace('/\d+/', '', $r['linha']    ?? ''));
+                $cG = trim(preg_replace('/\d+/', '', $r['grupo']    ?? ''));
+                $cS = trim(preg_replace('/\d+/', '', $r['subgrupo'] ?? ''));
+                if ($cL)     $trigger = max($trigger, $totL[$cL] ?? 0);
+                elseif ($cG) $trigger = max($trigger, $totG[$cG] ?? 0);
+                elseif ($cS) $trigger = max($trigger, $totS[$cS] ?? 0);
+            }
+        }
+        $mult = intdiv($trigger, $min);
+        if ($mult < 1) continue;
+
+        $bp = db()->prepare("SELECT produto_id, quantidade FROM campanha_bonificacao WHERE codigo_campanha = ?");
+        $bp->execute([$code]);
+        $temBonus = false;
+        foreach ($bp->fetchAll() as $b) {
+            $pid = (int)$b['produto_id']; $q = (int)$b['quantidade'] * $mult;
+            if ($pid && $q > 0) { $bonusAcc[$pid] = ($bonusAcc[$pid] ?? 0) + $q; $temBonus = true; }
+        }
+        if ($temBonus) $codigosAcionados[] = $code;
+    }
+    if (!$bonusAcc) return [];
+
+    // Cria o pedido bonificado (lote separado; valor pelo preço Network)
+    $lote = uniqid('LB', true);
+    $num  = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
+    $obs  = 'Bonificação automática de campanha' . ($refNumero ? ' (ref. ' . $refNumero . ')' : '')
+          . ($codigosAcionados ? ' — ' . implode(', ', $codigosAcionados) : '');
+    $ins  = db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?)');
+    $criados = [];
+    foreach ($bonusAcc as $pid => $q) {
+        // Pedido bonificado usa o preço Network (fallback: venda varejo)
+        $pr = db()->prepare('SELECT p.descricao_pt, p.codigo_barra, COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
+                             FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
+                             WHERE p.id = ? AND p.status = "ativo"');
+        $pr->execute([$pid]); $pr = $pr->fetch();
+        if (!$pr) continue;
+        $valor = $q * (float)$pr['preco'];
+        $ins->execute([$num, 'bonificacao', $dataPedido, $clienteId, $pid, $supervisor, $pr['codigo_barra'], $pr['descricao_pt'], $q, $valor, $obs, $lote]);
+        $criados[] = ['produto_id' => $pid, 'descricao' => $pr['descricao_pt'], 'quantidade' => $q, 'pedido_id' => (int)db()->lastInsertId()];
+    }
+    if (!$criados) return [];
+
+    try {
+        db()->prepare('INSERT INTO pedido_logs (pedido_id,numero_pedido,usuario_nome,usuario_tipo,acao,status_antes,status_depois,detalhes) VALUES (?,?,?,?,?,?,?,?)')
+            ->execute([$criados[0]['pedido_id'], $num, 'Sistema', 'sistema', 'Bonificação gerada por campanha', null, 'comercial', $obs]);
+    } catch (PDOException $e) {}
+
+    return $criados;
 }

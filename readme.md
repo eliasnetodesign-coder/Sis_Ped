@@ -90,7 +90,9 @@ Os preços aplicados em cada pedido combinam até 3 camadas:
 3. **Desconto de Campanha** — ativado por quantidade mínima:
    - **Por produto:** uma campanha pode conter vários produtos; o mínimo considera a **soma** das quantidades de todos os produtos da campanha no pedido e, atingido, o desconto vale para **todos** eles.
    - **Por categoria:** Linha, Grupo e/ou Subgrupo podem ser combinados; o mínimo é avaliado pelo total da categoria.
-   - Aplica-se o **maior** desconto elegível; bonificações sempre têm valor zero.
+   - Aplica-se o **maior** desconto elegível.
+
+Cada campanha é de um **tipo**: **Desconto** (percentual, acima) ou **Produtos Bonificados**. Campanhas de bonificação não dão desconto: ao acionar numa venda, geram um **pedido bonificado separado** com produtos brinde cuja quantidade multiplica conforme o total comprado (ex.: mínimo 50, comprou 100 → bônus ×2) e notificam o cliente.
 
 Pedidos de bonificação usam a tabela de preços **Network** e têm `valor_total = 0`.
 

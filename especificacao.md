@@ -119,7 +119,13 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - O valor de Desconto serve de teto para `desconto_canal` nos clientes.
 
 #### 3.2.5 Campanhas (`admin/cadastros/campanhas.php`)
-**Campos:** Código da Campanha*, Canal de Venda (opcional — "Todos" ou canal específico), Quantidade Mínima*, Desconto %, e o alvo da campanha em **um dos dois modos** abaixo.
+**Campos:** Código da Campanha*, Canal de Venda (opcional — "Todos" ou canal específico), **Tipo de Campanha** (Desconto **ou** Produtos Bonificados), Quantidade Mínima*, e o alvo (gatilho) da campanha em **um dos dois modos** abaixo.
+
+**Tipo de Campanha:**
+- **Desconto:** mantém o comportamento clássico — campo **Desconto %** aplicado ao(s) item(ns) que atingem a quantidade mínima.
+- **Produtos Bonificados:** em vez de desconto, define-se uma lista de **produtos + quantidades** que serão dados como brinde. A quantidade bonificada **multiplica** conforme o total comprado: `mult = floor(qtd_alvo / quantidade_minima)`. Armazenada na tabela `campanha_bonificacao`.
+  - *Exemplo:* alvo Grupo "Coloração", mínimo 50, bônus "2x Oxidante". Cliente compra 100 → `floor(100/50)=2` → **4 oxidantes** bonificados.
+  - Ao finalizar uma **venda** que aciona a campanha, o sistema cria um **pedido bonificado separado** (`tipo_venda=bonificacao`, lote próprio, status comercial), com **valor pelo preço Network** (fallback: venda varejo), e **notifica** o cliente/operador. Gerado apenas em vendas novas (não em edição).
 
 **Modo Produtos:**
 - Busca de produtos por **código ou nome** (autocomplete) e botão **Adicionar**; permite **vários produtos** na mesma campanha (lista com remoção).
@@ -400,6 +406,7 @@ Acesso a todas as telas: `comercial` **ou** `financeiro`.
    - **Campanha por categoria:** referência é o total da Linha / Grupo / Subgrupo no pedido; Linha, Grupo e Subgrupo podem coexistir (avaliados independentemente, OR).
    - Restrição de canal: campanha com `canal_venda_id` afeta somente clientes do mesmo canal.
    - Aplica o **maior** desconto de campanha elegível.
+   - **Campanhas tipo Bonificação:** não alteram o preço; ao acionar (mesma lógica de gatilho), geram um **pedido bonificado separado** com os produtos brinde × multiplicador (`floor(qtd_alvo / mínimo)`). Ver 3.2.5. A geração ocorre no fechamento de vendas novas (`gerarBonificacaoCampanha` em `config.php`), em `cliente/novo-pedido.php` e `admin/novo-pedido.php`.
 
 **Fórmula:** `valor = qtd × preco × (1 − dCliente/100 − dCanal/100) × (1 − campDesc/100)`
 
@@ -448,7 +455,7 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 ### 5.9 Migrações de Schema
 - Executadas automaticamente via `try/ALTER TABLE` e `CREATE TABLE IF NOT EXISTS` na função `db()` do `config.php` a cada conexão.
 - **Colunas:** `lote_id`, `desconto_campanha`, `forma_pagamento`, `credito_utilizado`, `supervisor` em `pedidos`; `email`, `senha`, `desconto_canal`, `supervisor` em `clientes`; `preco_network`, `preco_auxiliar` em `tabela_precos`; `canal_venda_id` em `campanhas`; `valor_utilizado` em `bonus_ma_logs` e `creditos`; ajustes de enum em `pedidos.status` e `usuarios.tipo_acesso`.
-- **Tabelas criadas:** `pedido_logs`, `grupo_empresas`, `grupo_empresas_clientes`, `webhook_logs`.
+- **Tabelas criadas:** `pedido_logs`, `grupo_empresas`, `grupo_empresas_clientes`, `webhook_logs`, `campanha_bonificacao`; coluna `tipo` em `campanhas`.
 - A tabela `kit_composicao` **não** é criada no `config.php`: é criada e semeada sob demanda em `admin/cadastros/produtos.php` na primeira abertura da tela.
 
 ---
@@ -480,7 +487,8 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 | `tabela_precos` | Preços por produto | id, produto_id (FK), preco_padrao, preco_network, preco_auxiliar |
 | `ncm` | Classificação fiscal | id, nome_categoria, ncm, cest, ipi |
 | `canal_venda` | Canais de venda | id, canal, faixa_faturamento, desconto (teto para clientes) |
-| `campanhas` | Campanhas de desconto (uma linha por produto/critério; agrupadas por `codigo_campanha`) | id, codigo_campanha, produto_id (FK opt), linha, grupo, subgrupo, canal_venda_id (FK opt), quantidade, desconto |
+| `campanhas` | Campanhas de desconto/bonificação (uma linha por produto/critério; agrupadas por `codigo_campanha`) | id, codigo_campanha, produto_id (FK opt), linha, grupo, subgrupo, canal_venda_id (FK opt), quantidade, desconto, **tipo** (desconto/bonificacao) |
+| `campanha_bonificacao` | Produtos bonificados de campanhas tipo bonificação | id, codigo_campanha, produto_id, quantidade |
 | `kit_composicao` | Composição de produtos do grupo Kit | id, kit_codigo, produto_codigo, nome, qtd |
 | `grupo_empresas` | Grupos de empresas (CNPJs) | id, nome, descricao, created_at |
 | `grupo_empresas_clientes` | Vínculo grupo ↔ cliente | id, grupo_id, cliente_id (UNIQUE grupo+cliente) |

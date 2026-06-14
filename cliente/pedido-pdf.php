@@ -212,6 +212,17 @@ ksort($porLinha);
 </head>
 <body>
 
+<?php $bonusAviso = $_SESSION['bonus_aviso'] ?? null; unset($_SESSION['bonus_aviso']); ?>
+<?php if (!empty($bonusAviso)): ?>
+<div class="action-bar mt-3 no-print">
+    <div class="alert alert-warning mb-0 w-100">
+        <i class="bi bi-gift-fill me-1"></i>
+        <strong>Você foi bonificado!</strong> Um pedido bonificado foi gerado com:
+        <?= e(implode(', ', $bonusAviso)) ?>.
+    </div>
+</div>
+<?php endif; ?>
+
 <div class="action-bar mt-3">
     <a href="<?= BASE_URL ?>/cliente/meus-pedidos.php" class="btn btn-outline-secondary btn-sm">
         <i class="bi bi-list-ul me-1"></i>Meus Pedidos

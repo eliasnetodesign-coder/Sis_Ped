@@ -122,7 +122,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($criados > 0) {
-            flash('success', $criados . ' item(ns) adicionado(s) com sucesso!');
+            $msg = $criados . ' item(ns) adicionado(s) com sucesso!';
+            // Bonificação automática de campanha (apenas em vendas)
+            if ($tipoVenda === 'venda') {
+                $itensVenda = array_map(function ($it) {
+                    return [
+                        'produto_id' => $it['produto_id'],
+                        'qtd'        => $it['qtd'],
+                        'linha'      => $it['prod']['linha']    ?? '',
+                        'grupo'      => $it['prod']['grupo']    ?? '',
+                        'subgrupo'   => $it['prod']['subgrupo'] ?? '',
+                    ];
+                }, $items_data);
+                try {
+                    $refNum = db()->query('SELECT numero_pedido FROM pedidos WHERE id = ' . (int)$ids_criados[0])->fetchColumn();
+                    $bonus  = gerarBonificacaoCampanha($cliente_id, $canalVendaId, $cli['supervisor'] ?? $cli['vendedor'] ?? '', $data, $itensVenda, $refNum ?: null);
+                    if ($bonus) {
+                        $msg .= ' Bonificação gerada: ' . implode(', ', array_map(fn($b) => $b['quantidade'] . 'x ' . $b['descricao'], $bonus)) . '.';
+                    }
+                } catch (Exception $e) { /* bônus não deve impedir a confirmação da venda */ }
+            }
+            flash('success', $msg);
             header('Location: ' . BASE_URL . '/admin/pedido.php?id=' . $ids_criados[0]); exit;
         } else {
             flash('warning', 'Adicione ao menos um produto ao carrinho.');
@@ -135,6 +155,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $clientes  = db()->query('SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, canal_venda_id, idioma FROM clientes WHERE status = "ativo" ORDER BY razao_social')->fetchAll();
 $campanhas = db()->query('SELECT c.*, p.descricao_pt, cv.canal FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id ORDER BY c.codigo_campanha')->fetchAll();
+
+// Produtos bonificados por campanha (chips de campanhas de bonificação)
+$bonifByCode = [];
+foreach (db()->query('SELECT cb.codigo_campanha, cb.quantidade, p.descricao_pt, p.codigo_produto
+    FROM campanha_bonificacao cb JOIN produtos p ON p.id = cb.produto_id ORDER BY cb.id')->fetchAll() as $b) {
+    $bonifByCode[$b['codigo_campanha']][] = (int)$b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']);
+}
+
+// Agrupa campanhas por código (uma campanha pode ter vários alvos: produtos/linha/grupo/subgrupo)
+$campGroup = [];
+foreach ($campanhas as $c) {
+    $code = $c['codigo_campanha'];
+    if (!isset($campGroup[$code])) {
+        $campGroup[$code] = [
+            'codigo_campanha' => $code,
+            'tipo'            => $c['tipo'] ?? 'desconto',
+            'desconto'        => $c['desconto'],
+            'quantidade'      => $c['quantidade'],
+            'alvos'           => [],
+        ];
+    }
+    $alvo = $c['descricao_pt']
+        ?? ($c['linha']    ? 'Linha '    . trim($c['linha'])    : null)
+        ?? ($c['grupo']    ? 'Grupo '    . trim($c['grupo'])    : null)
+        ?? ($c['subgrupo'] ? 'Subgrupo ' . trim($c['subgrupo']) : 'Todos os produtos');
+    if (!in_array($alvo, $campGroup[$code]['alvos'], true)) $campGroup[$code]['alvos'][] = $alvo;
+}
 
 $produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
     COALESCE(t.preco_padrao, p.vendas_varejo, 0) as preco,
@@ -187,19 +234,28 @@ require_once LAYOUT_PATH . '/header.php';
         <span class="fw-semibold text-primary small text-uppercase">Campanhas Ativas</span>
     </div>
     <div class="d-flex flex-wrap gap-2">
-        <?php foreach ($campanhas as $c):
-            $alvo = $c['descricao_pt']
-                ?? ($c['linha']     ? 'Linha '     . trim($c['linha'])     : null)
-                ?? ($c['grupo']     ? 'Grupo '     . trim($c['grupo'])     : null)
-                ?? ($c['subgrupo']  ? 'Subgrupo '  . trim($c['subgrupo'])  : 'Todos os produtos');
+        <?php foreach ($campGroup as $c):
+            $ehBonif = $c['tipo'] === 'bonificacao';
+            $alvoTxt = implode(', ', $c['alvos']);
             $pct = rtrim(rtrim(number_format((float)$c['desconto'], 2, ',', '.'), '0'), ',');
         ?>
         <div class="d-flex align-items-center gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
+            <?php if ($ehBonif): ?>
+            <span class="badge bg-warning text-dark fs-6 fw-bold px-2"><i class="bi bi-gift"></i></span>
+            <div style="line-height:1.3">
+                <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
+                <div class="text-muted" style="font-size:.76rem"><?= e($alvoTxt) ?> &middot; a partir de <?= (int)$c['quantidade'] ?> un.</div>
+                <div class="text-warning fw-semibold" style="font-size:.74rem">
+                    <i class="bi bi-gift-fill me-1"></i>Brinde: <?= e(implode(', ', $bonifByCode[$c['codigo_campanha']] ?? ['—'])) ?>
+                </div>
+            </div>
+            <?php else: ?>
             <span class="badge bg-success fs-6 fw-bold px-2">−<?= $pct ?>%</span>
             <div style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
-                <div class="text-muted" style="font-size:.76rem"><?= e($alvo) ?> &middot; a partir de <?= (int)$c['quantidade'] ?> un.</div>
+                <div class="text-muted" style="font-size:.76rem"><?= e($alvoTxt) ?> &middot; a partir de <?= (int)$c['quantidade'] ?> un.</div>
             </div>
+            <?php endif; ?>
         </div>
         <?php endforeach; ?>
     </div>
