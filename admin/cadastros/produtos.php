@@ -2,6 +2,28 @@
 require_once __DIR__ . '/../../config.php';
 requireComercial();
 
+// Tabela de composição dos KITs — criada e semeada uma única vez a partir da planilha
+if (!db()->query("SHOW TABLES LIKE 'kit_composicao'")->fetch()) {
+    db()->exec("CREATE TABLE kit_composicao (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        kit_codigo VARCHAR(60) NOT NULL,
+        produto_codigo VARCHAR(60) NOT NULL,
+        nome VARCHAR(255) NULL,
+        qtd DECIMAL(10,2) NOT NULL DEFAULT 1,
+        KEY idx_kit (kit_codigo)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $seedFile = __DIR__ . '/kit_composicao.php';
+    if (is_file($seedFile)) {
+        $seed = require $seedFile;
+        $insSeed = db()->prepare('INSERT INTO kit_composicao (kit_codigo, produto_codigo, nome, qtd) VALUES (?,?,?,?)');
+        foreach ($seed as $kitCodigo => $itens) {
+            foreach ($itens as $it) {
+                $insSeed->execute([(string)$kitCodigo, $it['codigo'], $it['nome'], $it['qtd']]);
+            }
+        }
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $a = $_POST['action'] ?? '';
     if ($a === 'toggle_venda') {
@@ -51,8 +73,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 flash('success', 'Produto atualizado com sucesso!');
             }
+            // Composição do kit (somente para produtos do grupo "Kit")
+            $grupoNorm = strtoupper(preg_replace('/[^A-Za-z]/', '', $_POST['grupo'] ?? ''));
+            if ($grupoNorm === 'KIT') {
+                $kitCod = trim($_POST['codigo_produto'] ?? '');
+                db()->prepare('DELETE FROM kit_composicao WHERE kit_codigo=?')->execute([$kitCod]);
+                $insK = db()->prepare('INSERT INTO kit_composicao (kit_codigo, produto_codigo, nome, qtd) VALUES (?,?,?,?)');
+                foreach (($_POST['kit_itens'] ?? []) as $it) {
+                    $pc = trim($it['produto_codigo'] ?? '');
+                    if ($pc === '') continue;
+                    $q = (float)str_replace(',', '.', $it['qtd'] ?? '1');
+                    if ($q <= 0) $q = 1;
+                    $insK->execute([$kitCod, $pc, trim($it['nome'] ?? ''), $q]);
+                }
+            }
         } elseif ($a === 'excluir') {
+            $cod = db()->prepare('SELECT codigo_produto FROM produtos WHERE id=?');
+            $cod->execute([(int)$_POST['id']]);
+            $cod = $cod->fetchColumn();
             db()->prepare('DELETE FROM produtos WHERE id=?')->execute([(int)$_POST['id']]);
+            if ($cod !== false) db()->prepare('DELETE FROM kit_composicao WHERE kit_codigo=?')->execute([$cod]);
             flash('success', 'Produto excluído!');
         } elseif ($a === 'importar') {
             $dados = json_decode($_POST['dados'] ?? '[]', true);
@@ -149,6 +189,24 @@ $produtos = $produtos->fetchAll();
 $linhas = db()->query("SELECT DISTINCT linha FROM produtos WHERE linha IS NOT NULL AND linha <> '' ORDER BY linha")->fetchAll(PDO::FETCH_COLUMN);
 
 $ncms = db()->query('SELECT * FROM ncm ORDER BY nome_categoria')->fetchAll();
+
+// Composição dos KITs (banco) — nome resolvido pelo produto atual, com fallback ao snapshot
+$kitComposicao = [];
+foreach (db()->query("
+    SELECT k.kit_codigo, k.produto_codigo, k.qtd, COALESCE(NULLIF(p.descricao_pt,''), k.nome) AS nome
+    FROM kit_composicao k
+    LEFT JOIN produtos p ON p.codigo_produto = k.produto_codigo
+    ORDER BY k.id
+")->fetchAll() as $r) {
+    $kitComposicao[$r['kit_codigo']][] = [
+        'codigo' => $r['produto_codigo'],
+        'nome'   => $r['nome'],
+        'qtd'    => (float)$r['qtd'],
+    ];
+}
+
+// Lista de produtos para o seletor de composição do kit
+$produtosKit = db()->query("SELECT codigo_produto, descricao_pt FROM produtos WHERE status='ativo' ORDER BY descricao_pt")->fetchAll();
 
 $pageTitle = 'Cadastro de Produtos';
 require_once LAYOUT_PATH . '/header.php';
@@ -289,6 +347,9 @@ require_once LAYOUT_PATH . '/header.php';
                         <li class="nav-item">
                             <button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-desc-cliente">Descrição Área do Cliente</button>
                         </li>
+                        <li class="nav-item" id="tabKitItem" style="display:none">
+                            <button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-kit">KIT</button>
+                        </li>
                     </ul>
                     <div class="tab-content">
                         <!-- Aba: Dados do Produto -->
@@ -388,6 +449,53 @@ require_once LAYOUT_PATH . '/header.php';
                                     <label class="form-label fw-semibold">Espanhol</label>
                                     <textarea name="desc_cliente_es" id="f_desc_cliente_es" class="form-control" rows="4"></textarea>
                                 </div>
+                            </div>
+                        </div>
+                        <!-- Aba: KIT (composição) -->
+                        <div class="tab-pane fade" id="tab-kit">
+                            <div class="d-flex align-items-center gap-2 mb-3">
+                                <i class="bi bi-box-seam text-primary"></i>
+                                <span class="fw-semibold">Composição do Kit</span>
+                                <span class="badge bg-secondary" id="kitCount">0 itens</span>
+                            </div>
+
+                            <!-- Adicionar produto à composição -->
+                            <div class="row g-2 align-items-end mb-3">
+                                <div class="col-md-7">
+                                    <label class="form-label fw-semibold small mb-1">Produto</label>
+                                    <div class="position-relative">
+                                        <input type="text" id="kitSearch" class="form-control form-control-sm"
+                                               placeholder="Digite código ou descrição..." autocomplete="off">
+                                        <div id="kitDropdown" class="list-group position-absolute w-100 shadow-sm"
+                                             style="display:none;z-index:1056;top:100%;left:0;max-height:220px;overflow-y:auto"></div>
+                                    </div>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label fw-semibold small mb-1">Qtd</label>
+                                    <input type="number" id="kitQtd" class="form-control form-control-sm" value="1" min="1" step="1">
+                                </div>
+                                <div class="col-md-3">
+                                    <button type="button" class="btn btn-sm btn-success w-100" onclick="kitAdicionar()">
+                                        <i class="bi bi-plus-lg me-1"></i>Adicionar
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div id="kitVazio" class="text-muted text-center py-4 d-none">
+                                Nenhum produto na composição. Use o campo acima para adicionar.
+                            </div>
+                            <div class="table-responsive" id="kitTabela">
+                                <table class="table table-sm table-bordered align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th style="width:140px">Cód. Produto</th>
+                                            <th>Nome do Produto</th>
+                                            <th class="text-center" style="width:110px">Quantidade</th>
+                                            <th class="text-center" style="width:70px">Remover</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="kitBody"></tbody>
+                                </table>
                             </div>
                         </div>
                     </div>
@@ -654,6 +762,136 @@ function resetImport() {
 </script>
 
 <script>
+// Composição dos kits, indexada pelo código do produto (kit)
+var _kitComposicao = <?= json_encode($kitComposicao, JSON_UNESCAPED_UNICODE) ?>;
+// Produtos disponíveis para compor o kit
+var _kitProdutos   = <?= json_encode($produtosKit, JSON_UNESCAPED_UNICODE) ?>;
+var _kitSel        = null;   // produto selecionado no autocomplete
+var kitRowSeq      = 0;      // índice único por linha (para name="kit_itens[i][...]")
+
+// Verifica se o grupo é "Kit" (normaliza removendo não-letras: "-KIT" => "KIT")
+function ehGrupoKit(grupo) {
+    return String(grupo || '').replace(/[^A-Za-z]/g, '').toUpperCase() === 'KIT';
+}
+
+function escAttr(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function kitNormalizar(s) {
+    return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+// Mostra/esconde e preenche a aba KIT conforme o produto
+function montarKit(codigo, grupo) {
+    var tabItem = document.getElementById('tabKitItem');
+    document.getElementById('kitBody').innerHTML = '';
+    document.getElementById('kitSearch').value = '';
+    document.getElementById('kitDropdown').style.display = 'none';
+    document.getElementById('kitQtd').value = '1';
+    _kitSel = null;
+    kitRowSeq = 0;
+
+    if (!ehGrupoKit(grupo)) { tabItem.style.display = 'none'; kitAtualizarEstado(); return; }
+    tabItem.style.display = '';
+
+    (_kitComposicao[String(codigo)] || []).forEach(function(it) {
+        kitAddRow(it.codigo, it.nome, it.qtd);
+    });
+    kitAtualizarEstado();
+}
+
+// Adiciona uma linha de componente na tabela
+function kitAddRow(codigo, nome, qtd) {
+    var idx = kitRowSeq++;
+    var q   = parseFloat(qtd) || 1;
+    var tr  = document.createElement('tr');
+    tr.innerHTML =
+        '<td class="fw-semibold">' + esc(codigo) +
+            '<input type="hidden" name="kit_itens[' + idx + '][produto_codigo]" value="' + escAttr(codigo) + '">' +
+            '<input type="hidden" name="kit_itens[' + idx + '][nome]" value="' + escAttr(nome) + '"></td>' +
+        '<td>' + esc(nome) + '</td>' +
+        '<td class="text-center"><input type="number" min="1" step="1" value="' + q + '"' +
+            ' name="kit_itens[' + idx + '][qtd]" class="form-control form-control-sm text-center mx-auto" style="max-width:80px"></td>' +
+        '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" title="Remover" onclick="kitRemover(this)">' +
+            '<i class="bi bi-x-lg"></i></button></td>';
+    document.getElementById('kitBody').appendChild(tr);
+}
+
+function kitRemover(btn) { btn.closest('tr').remove(); kitAtualizarEstado(); }
+
+// Códigos já presentes na composição (para evitar duplicados no autocomplete)
+function kitCodigosAtuais() {
+    return Array.prototype.map.call(
+        document.querySelectorAll('#kitBody input[name$="[produto_codigo]"]'),
+        function(i) { return String(i.value); }
+    );
+}
+
+function kitAtualizarEstado() {
+    var n = document.querySelectorAll('#kitBody tr').length;
+    document.getElementById('kitCount').textContent = n + ' ' + (n === 1 ? 'item' : 'itens');
+    document.getElementById('kitVazio').classList.toggle('d-none', n > 0);
+    document.getElementById('kitTabela').classList.toggle('d-none', n === 0);
+}
+
+function kitAdicionar() {
+    if (!_kitSel) { document.getElementById('kitSearch').focus(); alert('Selecione um produto da lista.'); return; }
+    var qtd = parseInt(document.getElementById('kitQtd').value, 10) || 1;
+    if (qtd < 1) qtd = 1;
+    kitAddRow(_kitSel.codigo, _kitSel.nome, qtd);
+    kitAtualizarEstado();
+    _kitSel = null;
+    document.getElementById('kitSearch').value = '';
+    document.getElementById('kitQtd').value = '1';
+    document.getElementById('kitSearch').focus();
+}
+
+// Autocomplete de produtos
+(function() {
+    var inp = document.getElementById('kitSearch');
+    if (!inp) return;
+    var dd = document.getElementById('kitDropdown');
+
+    inp.addEventListener('input', function() {
+        var q = kitNormalizar(inp.value.trim());
+        _kitSel = null;
+        if (q.length < 1) { dd.style.display = 'none'; return; }
+        var existentes = kitCodigosAtuais();
+        var lista = _kitProdutos.filter(function(c) {
+            if (existentes.indexOf(String(c.codigo_produto)) !== -1) return false;
+            return kitNormalizar(c.descricao_pt).includes(q) || kitNormalizar(c.codigo_produto).includes(q);
+        }).slice(0, 12);
+
+        if (!lista.length) {
+            dd.innerHTML = '<div class="list-group-item small text-muted py-2">Nenhum produto encontrado</div>';
+        } else {
+            dd.innerHTML = lista.map(function(c) {
+                return '<button type="button" class="list-group-item list-group-item-action py-2 px-3 small"' +
+                    ' data-codigo="' + escAttr(c.codigo_produto) + '" data-nome="' + escAttr(c.descricao_pt) + '">' +
+                    '<span class="badge bg-secondary me-2">' + esc(c.codigo_produto) + '</span>' + esc(c.descricao_pt) + '</button>';
+            }).join('');
+            dd.querySelectorAll('button').forEach(function(b) {
+                b.addEventListener('mousedown', function(ev) {
+                    ev.preventDefault();
+                    _kitSel = { codigo: b.dataset.codigo, nome: b.dataset.nome };
+                    inp.value = b.dataset.nome + ' (' + b.dataset.codigo + ')';
+                    dd.style.display = 'none';
+                });
+            });
+        }
+        dd.style.display = '';
+    });
+
+    inp.addEventListener('blur', function() { setTimeout(function() { dd.style.display = 'none'; }, 150); });
+
+    // Exibe/esconde a aba KIT ao digitar o Grupo (ex.: produto novo)
+    var grupoInp = document.getElementById('f_grupo');
+    if (grupoInp) grupoInp.addEventListener('input', function() {
+        document.getElementById('tabKitItem').style.display = ehGrupoKit(this.value) ? '' : 'none';
+    });
+})();
+
 function novoRegistro() {
     document.getElementById('modalTitle').textContent = 'Novo Produto';
     document.getElementById('formAction').value = 'criar';
@@ -664,6 +902,8 @@ function novoRegistro() {
     ['vd','vv','ve','preco'].forEach(function(f){ document.getElementById('f_'+f).value='0'; });
     document.getElementById('f_ncm').value='';
     document.getElementById('f_status').value='ativo';
+    montarKit('', '');
+    ativarPrimeiraAba();
 }
 function toggleVenda(el) {
     var novoValor = el.dataset.valor == '1' ? 0 : 1;
@@ -709,7 +949,20 @@ function editarRegistro(d, btn) {
     document.getElementById('f_desc_cliente_pt').value = d.desc_cliente_pt||'';
     document.getElementById('f_desc_cliente_en').value = d.desc_cliente_en||'';
     document.getElementById('f_desc_cliente_es').value = d.desc_cliente_es||'';
+    montarKit(d.codigo_produto, d.grupo);
+    ativarPrimeiraAba();
     new bootstrap.Modal(document.getElementById('modalProduto')).show();
+}
+
+// Volta para a aba "Dados do Produto" ao (re)abrir o modal
+function ativarPrimeiraAba() {
+    document.querySelectorAll('#tabsProduto .nav-link').forEach(function(b, i){
+        b.classList.toggle('active', i === 0);
+    });
+    document.querySelectorAll('#modalProduto .tab-pane').forEach(function(p, i){
+        p.classList.toggle('show', i === 0);
+        p.classList.toggle('active', i === 0);
+    });
 }
 </script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>
