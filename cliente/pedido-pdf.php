@@ -3,25 +3,37 @@ require_once __DIR__ . '/../config.php';
 requireCliente();
 $u = usuario();
 
-$ids = $_SESSION['pdf_pedidos_ids'] ?? [];
-unset($_SESSION['pdf_pedidos_ids']);
-
-if (empty($ids)) {
-    header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit;
-}
-
-$placeholders = implode(',', array_fill(0, count($ids), '?'));
-$stmt = db()->prepare(
-    "SELECT p.*, pr.linha, pr.codigo_produto,
+$selCols = "p.*, pr.linha, pr.codigo_produto,
             COALESCE(t.preco_padrao, pr.vendas_varejo, 0) AS preco_padrao
      FROM pedidos p
      LEFT JOIN produtos pr ON pr.id = p.produto_id
-     LEFT JOIN tabela_precos t ON t.produto_id = p.produto_id
-     WHERE p.id IN ($placeholders) AND p.cliente_id = ?
-     ORDER BY pr.linha, p.descricao_produto"
-);
-$stmt->execute(array_merge($ids, [$u['id']]));
-$pedidos = $stmt->fetchAll();
+     LEFT JOIN tabela_precos t ON t.produto_id = p.produto_id";
+
+$getId = (int)($_GET['id'] ?? 0);
+if ($getId > 0) {
+    // Acesso pelo detalhe do pedido: valida posse e carrega o lote (ou item único)
+    $chk = db()->prepare('SELECT id, lote_id FROM pedidos WHERE id = ? AND cliente_id = ?');
+    $chk->execute([$getId, $u['id']]);
+    $base = $chk->fetch();
+    if (!$base) { header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit; }
+    if (!empty($base['lote_id'])) {
+        $stmt = db()->prepare("SELECT $selCols WHERE p.lote_id = ? AND p.cliente_id = ? ORDER BY pr.linha, p.descricao_produto");
+        $stmt->execute([$base['lote_id'], $u['id']]);
+    } else {
+        $stmt = db()->prepare("SELECT $selCols WHERE p.id = ? AND p.cliente_id = ? ORDER BY pr.linha, p.descricao_produto");
+        $stmt->execute([$getId, $u['id']]);
+    }
+    $pedidos = $stmt->fetchAll();
+} else {
+    // Fluxo de confirmação pós-pedido (ids guardados em sessão)
+    $ids = $_SESSION['pdf_pedidos_ids'] ?? [];
+    unset($_SESSION['pdf_pedidos_ids']);
+    if (empty($ids)) { header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit; }
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = db()->prepare("SELECT $selCols WHERE p.id IN ($placeholders) AND p.cliente_id = ? ORDER BY pr.linha, p.descricao_produto");
+    $stmt->execute(array_merge($ids, [$u['id']]));
+    $pedidos = $stmt->fetchAll();
+}
 
 if (empty($pedidos)) {
     header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit;
@@ -37,6 +49,15 @@ $supervisor      = $pedidos[0]['supervisor'] ?? $pedidos[0]['vendedor'];
 $observacoes     = $pedidos[0]['observacoes'];
 $forma_pagamento = $pedidos[0]['forma_pagamento'] ?? '';
 $tipo_venda      = ($pedidos[0]['tipo_venda'] ?? 'venda') === 'bonificacao' ? 'Bonificação' : 'Venda';
+$statusLabels    = [
+    'comercial'   => 'Aguardando Comercial',
+    'financeiro'  => 'Aguardando Financeiro',
+    'faturamento' => 'Aguardando Faturamento',
+    'faturado'    => 'Faturado',
+    'cancelado'   => 'Cancelado',
+    'reprovado'   => 'Cancelado',
+];
+$statusLabel     = $statusLabels[$pedidos[0]['status']] ?? ucfirst($pedidos[0]['status']);
 
 // Crédito utilizado (gravado no primeiro item do lote)
 $credito_utilizado = 0.0;
@@ -209,7 +230,7 @@ ksort($porLinha);
             <div class="subtitle">Confirmação de Pedido</div>
             <div class="mt-2">
                 <span class="badge-status" style="background:rgba(255,255,255,.25);color:#fff;border:1px solid rgba(255,255,255,.5)">
-                    Aguardando Comercial
+                    <?= e($statusLabel) ?>
                 </span>
                 <span class="badge-status" style="background:rgba(255,255,255,.25);color:#fff;border:1px solid rgba(255,255,255,.5)">
                     <i class="bi bi-tag me-1"></i><?= $tipo_venda ?>
@@ -343,8 +364,10 @@ ksort($porLinha);
 
 </div><!-- /pdf-wrapper -->
 
+<?php if ($getId === 0): // auto-imprime apenas na confirmação pós-pedido ?>
 <script>
 window.addEventListener('load', function () { window.print(); });
 </script>
+<?php endif; ?>
 </body>
 </html>

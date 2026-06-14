@@ -103,9 +103,15 @@ require_once LAYOUT_PATH . '/header.php';
         <h4 class="fw-bold mb-1"><?= e($pedido['numero_pedido']) ?></h4>
         <div><?= statusBadge($pedido['status']) ?></div>
     </div>
-    <a href="<?= BASE_URL ?>/cliente/meus-pedidos.php" class="btn btn-outline-secondary">
-        <i class="bi bi-arrow-left me-1"></i>Voltar
-    </a>
+    <div class="d-flex gap-2">
+        <a href="<?= BASE_URL ?>/cliente/pedido-pdf.php?id=<?= $pedidoId ?>" target="_blank"
+           class="btn btn-outline-secondary">
+            <i class="bi bi-file-earmark-pdf me-1"></i>PDF
+        </a>
+        <a href="<?= BASE_URL ?>/cliente/meus-pedidos.php" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Voltar
+        </a>
+    </div>
 </div>
 
 <div class="row g-4">
