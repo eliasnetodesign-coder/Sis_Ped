@@ -101,7 +101,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ped = db()->prepare('SELECT status, lote_id FROM pedidos WHERE id = ?');
             $ped->execute([$id]);
             $ped = $ped->fetch();
-            if ($u['tipo'] === 'comercial' && $ped['status'] === 'comercial') {
+            if (in_array($u['tipo'], ['comercial', 'supervisor']) && $ped['status'] === 'comercial') {
                 if ($ped['lote_id']) {
                     db()->prepare('UPDATE pedidos SET status = "financeiro" WHERE lote_id = ?')->execute([$ped['lote_id']]);
                 } else {
@@ -133,13 +133,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ped->execute([$id]);
             $ped = $ped->fetch();
             $statusAntes = $ped['status'];
-            if ($ped['lote_id']) {
-                db()->prepare('UPDATE pedidos SET status = "reprovado" WHERE lote_id = ?')->execute([$ped['lote_id']]);
+            // Comercial e Supervisor cancelam na etapa Comercial; Financeiro na etapa Financeiro/Faturamento
+            $podeCancelar = (in_array($u['tipo'], ['comercial', 'supervisor']) && $statusAntes === 'comercial')
+                         || ($u['tipo'] === 'financeiro' && in_array($statusAntes, ['financeiro', 'faturamento']));
+            if (!$podeCancelar) {
+                flash('warning', 'Ação não permitida para o status atual.');
             } else {
-                db()->prepare('UPDATE pedidos SET status = "reprovado" WHERE id = ?')->execute([$id]);
+                if ($ped['lote_id']) {
+                    db()->prepare('UPDATE pedidos SET status = "reprovado" WHERE lote_id = ?')->execute([$ped['lote_id']]);
+                } else {
+                    db()->prepare('UPDATE pedidos SET status = "reprovado" WHERE id = ?')->execute([$id]);
+                }
+                logPedido($id, $numPed, 'Cancelado', $statusAntes, 'reprovado');
+                flash('danger', 'Pedido cancelado.');
             }
-            logPedido($id, $numPed, 'Cancelado', $statusAntes, 'reprovado');
-            flash('danger', 'Pedido cancelado.');
         } elseif ($action === 'retornar' && $u['tipo'] === 'financeiro') {
             $ped = db()->prepare('SELECT lote_id FROM pedidos WHERE id = ?');
             $ped->execute([$id]);
@@ -370,11 +377,12 @@ $pedidoLogs = $logsStmt->fetchAll();
 $status       = $pedido['status'];
 $isComercial  = $u['tipo'] === 'comercial';
 $isFinanceiro = $u['tipo'] === 'financeiro';
+$isSupervisor = $u['tipo'] === 'supervisor';
 $canEdit      = $isComercial  && $status === 'comercial';
-$canAprovar   = ($isComercial  && $status === 'comercial')
+$canAprovar   = (($isComercial || $isSupervisor) && $status === 'comercial')
              || ($isFinanceiro && $status === 'financeiro')
              || (($isComercial || $isFinanceiro) && $status === 'faturamento');
-$canReprovar  = ($isComercial  && $status === 'comercial')
+$canReprovar  = (($isComercial || $isSupervisor) && $status === 'comercial')
              || ($isFinanceiro && ($status === 'financeiro' || $status === 'faturamento'));
 $canRetornar  = $isFinanceiro && ($status === 'financeiro' || $status === 'faturamento');
 

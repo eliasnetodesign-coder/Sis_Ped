@@ -30,16 +30,15 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 |--------|--------|-----------|
 | `comercial` | Admin | Acesso total: todos os pedidos, relatórios; aprova e cancela pedidos na etapa Comercial |
 | `financeiro` | Admin | Acesso ao módulo financeiro e cadastros financeiros; aprova, cancela e retorna pedidos na etapa Financeiro |
-| `supervisor` | Admin | Visão filtrada somente aos próprios clientes e pedidos; pode criar pedidos |
-| `vendedor` | Admin | Acesso operacional a pedidos e cadastros comerciais (equivalente ao comercial nas rotas) |
+| `supervisor` | Admin | Visão filtrada somente aos próprios clientes e pedidos; pode criar pedidos e **aprovar pedidos na etapa Comercial** |
 | `tecnologia da informacao` | Admin | Acesso amplo aos módulos; vê campos sensíveis nos cadastros (ex.: desconto do canal em clientes) |
 | `cliente` | Cliente | Acesso apenas ao próprio portal: pedidos, financeiro, perfil, troca de CNPJ |
 
 > O enum de `tipo_acesso` em `usuarios` ainda inclui `recursos humanos`, `marketing`, `diretoria`, `centro tecnico`, `contabilidade`, `recepcao`, `expedicao`, sem rotas/módulos dedicados.
 
 ### 2.3 Proteção de Rotas
-- `requireAdmin()` — permite `comercial`, `financeiro`, `supervisor`, `tecnologia da informacao`, `vendedor`
-- `requireComercial()` — permite `comercial`, `supervisor`, `tecnologia da informacao`, `vendedor`
+- `requireAdmin()` — permite `comercial`, `financeiro`, `supervisor`, `tecnologia da informacao`
+- `requireComercial()` — permite `comercial`, `supervisor`, `tecnologia da informacao`
 - `requireCliente()` — permite somente `cliente`
 - `requireLogin()` — qualquer usuário autenticado (ex.: `trocar-senha.php`)
 - Rotas do financeiro admin aceitam `comercial` ou `financeiro` diretamente
@@ -232,7 +231,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Pedidos agrupados por `lote_id` (exibe valor total do lote; badge "N itens" quando > 1).
 - Colunas: Nº Pedido, Cliente, Data (+ hora), Tipo (Venda/Bonificação), Valor, Status, Observações (truncado 2 linhas + tooltip), Ações.
 - **Ações inline por perfil/status:**
-  - `comercial` + status `comercial`: Aprovar → Financeiro, Cancelar.
+  - `comercial` ou `supervisor` + status `comercial`: Aprovar → Financeiro (o `supervisor` aprova; cancelar permanece com o `comercial`).
   - `financeiro` + status `financeiro`: Aprovar → Faturado, Retornar ao Comercial, Cancelar.
 - Contagem de resultados no rodapé.
 
@@ -241,6 +240,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Log de ações (`pedido_logs`): usuário, tipo, ação, status antes/depois, data/hora.
 - Ações (conforme perfil e status atual):
   - `comercial`: Aprovar (→ financeiro) ou Cancelar.
+  - `supervisor`: Aprovar (→ financeiro) pedidos na etapa Comercial.
   - `financeiro`: Aprovar (→ faturamento), Retornar ao Comercial ou Cancelar.
 - Recalcula descontos de campanha ao aprovar/alterar (`recalcularDescontosCampanha`).
 - Forma de Pagamento registrável.

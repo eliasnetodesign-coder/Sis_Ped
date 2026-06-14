@@ -26,7 +26,7 @@ $where_parts = [];
 
 if ($dt_inicio) { $where_parts[] = 'DATE(p.data_pedido) >= ?'; $params[] = $dt_inicio; }
 if ($dt_fim)    { $where_parts[] = 'DATE(p.data_pedido) <= ?'; $params[] = $dt_fim;    }
-if (in_array($u['tipo'], ['supervisor', 'vendedor'])) { $where_parts[] = 'COALESCE(c.supervisor, c.vendedor) = ?'; $params[] = $u['nome']; }
+if ($u['tipo'] === 'supervisor') { $where_parts[] = 'COALESCE(c.supervisor, c.vendedor) = ?'; $params[] = $u['nome']; }
 if ($where_parts) $where = 'WHERE ' . implode(' AND ', $where_parts);
 if ($filtro)      { $having = 'HAVING MIN(p.status) = ?'; $params[] = $filtro; }
 
@@ -64,7 +64,7 @@ $t_where_parts = [];
 if ($dt_inicio) { $t_where_parts[] = 'DATE(p.data_pedido) >= ?'; $t_params[] = $dt_inicio; }
 if ($dt_fim)    { $t_where_parts[] = 'DATE(p.data_pedido) <= ?'; $t_params[] = $dt_fim;    }
 $t_join = '';
-if (in_array($u['tipo'], ['supervisor', 'vendedor'])) {
+if ($u['tipo'] === 'supervisor') {
     $t_join = 'LEFT JOIN clientes c ON c.id = p.cliente_id';
     $t_where_parts[] = 'COALESCE(c.supervisor, c.vendedor) = ?';
     $t_params[] = $u['nome'];
@@ -261,10 +261,11 @@ $cardDefs = [
                     $s           = $p['status'];
                     $isC         = $u['tipo'] === 'comercial';
                     $isF         = $u['tipo'] === 'financeiro';
-                    $canAprovar  = ($isC && $s === 'comercial') || ($isF && $s === 'financeiro') || (($isC || $isF) && $s === 'faturamento');
-                    $canReprovar = ($isC && $s === 'comercial') || ($isF && ($s === 'financeiro' || $s === 'faturamento'));
+                    $isS         = $u['tipo'] === 'supervisor';
+                    $canAprovar  = (($isC || $isS) && $s === 'comercial') || ($isF && $s === 'financeiro') || (($isC || $isF) && $s === 'faturamento');
+                    $canReprovar = (($isC || $isS) && $s === 'comercial') || ($isF && ($s === 'financeiro' || $s === 'faturamento'));
                     $canRetornar = $isF && ($s === 'financeiro' || $s === 'faturamento');
-                    $temAcao     = $canAprovar || $canRetornar;
+                    $temAcao     = $canAprovar || $canReprovar || $canRetornar;
                 ?>
                 <tr>
                     <td class="ps-3">

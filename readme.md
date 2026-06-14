@@ -52,8 +52,7 @@ Sis_Ped/
 |--------|--------|--------|
 | `comercial` | Admin | Acesso completo: cadastros, pedidos, relatórios, aprovação na etapa Comercial |
 | `financeiro` | Admin | Módulo financeiro; aprova/retorna/cancela na etapa Financeiro |
-| `supervisor` | Admin | Visão filtrada aos próprios clientes/pedidos; cria pedidos |
-| `vendedor` | Admin | Equivalente operacional ao comercial para pedidos/cadastros |
+| `supervisor` | Admin | Visão filtrada aos próprios clientes/pedidos; cria pedidos e **aprova pedidos aguardando Comercial** |
 | `tecnologia da informacao` | Admin | Acesso amplo (inclui campos sensíveis em cadastros) |
 | `cliente` | Cliente | Pedidos próprios, títulos financeiros, perfil, troca de CNPJ |
 

@@ -208,7 +208,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
             </ul>
 
         <?php else: // admin (comercial | financeiro | supervisor) ?>
-            <?php $tipoLabels = ['comercial'=>'Comercial','financeiro'=>'Financeiro','supervisor'=>'Supervisor','vendedor'=>'Supervisor']; ?>
+            <?php $tipoLabels = ['comercial'=>'Comercial','financeiro'=>'Financeiro','supervisor'=>'Supervisor']; ?>
             <div class="px-3 pb-2 text-uppercase text-muted small fw-semibold">
                 <?= $tipoLabels[$_usuario['tipo']] ?? ucfirst($_usuario['tipo']) ?>
             </div>
@@ -227,7 +227,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                         <i class="bi bi-list-check me-2"></i>Pedidos
                     </a>
                 </li>
-                <?php if (in_array($_usuario['tipo'], ['comercial', 'supervisor', 'vendedor'])): ?>
+                <?php if (in_array($_usuario['tipo'], ['comercial', 'supervisor'])): ?>
                 <li class="nav-item">
                     <a class="nav-link <?= $_pg === 'novo-pedido' ? 'active' : '' ?>"
                        href="<?= BASE_URL ?>/admin/novo-pedido.php"
@@ -238,7 +238,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 <?php endif; ?>
             </ul>
 
-            <?php if (in_array($_usuario['tipo'], ['comercial', 'supervisor', 'vendedor'])): ?>
+            <?php if (in_array($_usuario['tipo'], ['comercial', 'supervisor'])): ?>
             <?php
             $cadAtivo = $_inCadastros && $_pg !== 'usuarios';
             $relAtivo = $_inRelatorios;

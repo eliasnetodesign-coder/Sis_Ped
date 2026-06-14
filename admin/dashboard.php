@@ -6,7 +6,7 @@ $u = usuario();
 $d_join  = '';
 $d_where = '';
 $d_params = [];
-if (in_array($u['tipo'], ['supervisor', 'vendedor'])) {
+if ($u['tipo'] === 'supervisor') {
     $d_join  = 'LEFT JOIN clientes c ON c.id = p.cliente_id';
     $d_where = 'WHERE COALESCE(c.supervisor, c.vendedor) = ?';
     $d_params[] = $u['nome'];
@@ -48,7 +48,7 @@ foreach ($tipo_stmt->fetchAll() as $tt) {
 }
 
 // Últimos pedidos
-if (in_array($u['tipo'], ['supervisor', 'vendedor'])) {
+if ($u['tipo'] === 'supervisor') {
     $recentes = db()->prepare('SELECT p.*, c.razao_social FROM pedidos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         WHERE COALESCE(c.supervisor, c.vendedor) = ? ORDER BY p.created_at DESC LIMIT 10');

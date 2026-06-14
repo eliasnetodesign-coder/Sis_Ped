@@ -48,7 +48,7 @@ require_once LAYOUT_PATH . '/header.php';
             <td><strong><?= e($u['nome']) ?></strong></td>
             <td><small><?= e($u['email']) ?></small></td>
             <td><?= e($u['departamento']) ?></td>
-            <?php $badgeColor = $u['tipo_acesso']==='comercial'?'primary':(in_array($u['tipo_acesso'],['supervisor','vendedor'])?'success':'warning'); ?>
+            <?php $badgeColor = $u['tipo_acesso']==='comercial'?'primary':($u['tipo_acesso']==='supervisor'?'success':'warning'); ?>
             <td><span class="badge bg-<?= $badgeColor ?>"><?= ucfirst($u['tipo_acesso']) ?></span></td>
             <td><?= e($u['telefone']) ?></td>
             <td><?= statusBadge($u['status']) ?></td>

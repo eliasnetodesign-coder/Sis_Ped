@@ -98,7 +98,7 @@ function requireLogin() {
 
 function requireAdmin() {
     $u = usuario();
-    if (!$u || !in_array($u['tipo'], ['comercial', 'financeiro', 'supervisor', 'tecnologia da informacao', 'vendedor'])) {
+    if (!$u || !in_array($u['tipo'], ['comercial', 'financeiro', 'supervisor', 'tecnologia da informacao'])) {
         header('Location: ' . BASE_URL . '/login.php');
         exit;
     }
@@ -106,7 +106,7 @@ function requireAdmin() {
 
 function requireComercial() {
     $u = usuario();
-    if (!$u || !in_array($u['tipo'], ['comercial', 'supervisor', 'tecnologia da informacao', 'vendedor'])) {
+    if (!$u || !in_array($u['tipo'], ['comercial', 'supervisor', 'tecnologia da informacao'])) {
         flash('danger', 'Acesso restrito ao módulo Comercial.');
         header('Location: ' . BASE_URL . '/admin/dashboard.php');
         exit;

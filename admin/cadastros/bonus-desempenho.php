@@ -3,7 +3,7 @@ require_once __DIR__ . '/../../config.php';
 $u = usuario();
 
 // Acesso: Comercial (e equivalentes) + Financeiro
-$tiposComercial  = ['comercial', 'supervisor', 'tecnologia da informacao', 'vendedor'];
+$tiposComercial  = ['comercial', 'supervisor', 'tecnologia da informacao'];
 $tiposFinanceiro = ['financeiro', 'tecnologia da informacao'];
 if (!$u || !in_array($u['tipo'], array_merge($tiposComercial, $tiposFinanceiro))) {
     flash('danger', 'Acesso restrito.');

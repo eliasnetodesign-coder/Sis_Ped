@@ -139,7 +139,7 @@ $filtro_canal  = $_GET['canal']  ?? '';
 $conditions = [];
 $params     = [];
 
-if (in_array($u['tipo'], ['supervisor', 'vendedor'])) {
+if ($u['tipo'] === 'supervisor') {
     $conditions[] = 'COALESCE(c.supervisor, c.vendedor) = ?';
     $params[] = $u['nome'];
 }
@@ -163,7 +163,7 @@ $clientes->execute($params);
 $clientes = $clientes->fetchAll();
 
 $canais     = db()->query('SELECT * FROM canal_venda ORDER BY canal')->fetchAll();
-$vendedores = db()->query("SELECT nome FROM usuarios WHERE tipo_acesso IN ('supervisor','vendedor') AND status='ativo' ORDER BY nome")->fetchAll(PDO::FETCH_COLUMN);
+$vendedores = db()->query("SELECT nome FROM usuarios WHERE tipo_acesso = 'supervisor' AND status='ativo' ORDER BY nome")->fetchAll(PDO::FETCH_COLUMN);
 
 $pageTitle = 'Cadastro de Clientes';
 require_once LAYOUT_PATH . '/header.php';
