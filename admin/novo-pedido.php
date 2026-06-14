@@ -21,7 +21,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: ' . BASE_URL . '/admin/novo-pedido.php'); exit;
     }
 
-    $desconto      = ((float)($cli['desconto_cliente'] ?? 0) + (float)($cli['desconto_canal'] ?? 0)) / 100;
+    $tipoVenda     = (($_POST['tipo_venda'] ?? 'venda') === 'bonificacao') ? 'bonificacao' : 'venda';
+    // Bonificação: sem desconto de canal/cliente e usa a tabela de preços Network
+    $desconto      = ($tipoVenda === 'bonificacao')
+        ? 0.0
+        : ((float)($cli['desconto_cliente'] ?? 0) + (float)($cli['desconto_canal'] ?? 0)) / 100;
+    $colPreco      = ($tipoVenda === 'bonificacao') ? 't.preco_network' : 't.preco_padrao';
     $data          = date('Y-m-d');
     $campanhas_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas')->fetchAll();
     $canalVendaId  = (int)($cli['canal_venda_id'] ?? 0);
@@ -40,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $qtd = max(0, (int)($item['quantidade'] ?? 0));
             if ($qtd <= 0) continue;
             $produto_id = (int)($item['produto_id'] ?? $pid);
-            $stmtP = db()->prepare('SELECT p.*, COALESCE(t.preco_padrao, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ? AND p.status = "ativo"');
+            $stmtP = db()->prepare("SELECT p.*, COALESCE($colPreco, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ? AND p.status = \"ativo\"");
             $stmtP->execute([$produto_id]);
             $prod = $stmtP->fetch();
             if (!$prod) continue;
@@ -60,6 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $campDescJS = (float)($itens[$produto_id]['camp_desc'] ?? 0);
             $campDesc   = 0;
+            if ($tipoVenda !== 'bonificacao')
             foreach ($campanhas_all as $camp) {
                 if ((int)$camp['quantidade'] <= 0) continue;
                 if ($camp['canal_venda_id'] && (int)$camp['canal_venda_id'] !== $canalVendaId) continue;
@@ -87,7 +93,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ((float)$camp['desconto'] > $campDesc) $campDesc = (float)$camp['desconto'];
             }
             // Se PHP não detectou campanha mas JS detectou, valida e usa o valor do JS
-            if ($campDescJS > $campDesc) {
+            if ($tipoVenda !== 'bonificacao' && $campDescJS > $campDesc) {
                 $validDesc = array_column($campanhas_all, 'desconto');
                 if (in_array(number_format($campDescJS, 4), array_map(fn($d) => number_format((float)$d, 4), $validDesc))) {
                     $campDesc = $campDescJS;
@@ -98,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $num = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
             db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?)')
-                ->execute([$num, 'venda', $data, $cliente_id, $produto_id, $cli['supervisor'] ?? $cli['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $obs_geral, $loteFinal, $campDesc ?: null]);
+                ->execute([$num, $tipoVenda, $data, $cliente_id, $produto_id, $cli['supervisor'] ?? $cli['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $obs_geral, $loteFinal, $campDesc ?: null]);
             $ids_criados[] = (int)db()->lastInsertId();
             $criados++;
         }
@@ -119,7 +125,8 @@ $clientes  = db()->query('SELECT id, razao_social, codigo_cliente, desconto_clie
 $campanhas = db()->query('SELECT c.*, p.descricao_pt, cv.canal FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id ORDER BY c.codigo_campanha')->fetchAll();
 
 $produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
-    COALESCE(t.preco_padrao, p.vendas_varejo, 0) as preco
+    COALESCE(t.preco_padrao, p.vendas_varejo, 0) as preco,
+    COALESCE(t.preco_network, p.vendas_varejo, 0) as preco_network
     FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
     WHERE p.status = "ativo" ORDER BY p.linha, p.descricao_pt')->fetchAll();
 
@@ -162,7 +169,7 @@ require_once LAYOUT_PATH . '/header.php';
 </div>
 
 <?php if ($campanhas): ?>
-<div class="mb-3 p-3 rounded-3 border bg-white">
+<div class="mb-3 p-3 rounded-3 border bg-white" id="campanhasPanel">
     <div class="d-flex align-items-center gap-2 mb-2">
         <i class="bi bi-megaphone-fill text-primary"></i>
         <span class="fw-semibold text-primary small text-uppercase">Campanhas Ativas</span>
@@ -218,7 +225,18 @@ require_once LAYOUT_PATH . '/header.php';
                     </div>
                 </div>
             </div>
+            <div class="col-md-3">
+                <label class="form-label fw-semibold">Tipo de Pedido</label>
+                <input type="hidden" name="tipo_venda" id="tipo_venda" value="venda">
+                <select id="tipo_venda_sel" class="form-select" onchange="onTipoVendaChange(this.value)">
+                    <option value="venda" selected>Venda</option>
+                    <option value="bonificacao">Bonificação</option>
+                </select>
+            </div>
             <input type="hidden" name="data_pedido" value="<?= date('Y-m-d') ?>">
+        </div>
+        <div id="alertBonificacao" class="alert alert-info py-2 mt-3 mb-0" style="display:none">
+            <i class="bi bi-gift-fill me-1"></i><strong>Bonificação:</strong> usa a tabela de preços <strong>Network</strong>, sem desconto de canal/cliente e sem campanhas.
         </div>
     </div>
 </div>
@@ -269,10 +287,12 @@ require_once LAYOUT_PATH . '/header.php';
                     $multiplo = (float)($p['multiplo'] ?? 0);
                     $multiplo = $multiplo > 0 ? $multiplo : 1;
                     $preco    = (float)$p['preco'];
+                    $precoNet = (float)$p['preco_network'];
                 ?>
                 <tr class="produto-row"
                     data-pid="<?= $pid ?>"
                     data-preco="<?= e($preco) ?>"
+                    data-preco-net="<?= e($precoNet) ?>"
                     data-nome="<?= e($p['descricao_pt']) ?>"
                     data-codigo="<?= e($p['codigo_produto']) ?>"
                     data-linha="<?= e($p['linha'] ?? '') ?>"
@@ -373,6 +393,23 @@ require_once LAYOUT_PATH . '/header.php';
 <script>
 var desconto   = 0;
 var _canalId   = 0;
+var tipoVenda  = 'venda';
+
+function onTipoVendaChange(val) {
+    tipoVenda = (val === 'bonificacao') ? 'bonificacao' : 'venda';
+    document.getElementById('tipo_venda').value = tipoVenda;
+    var alertBon = document.getElementById('alertBonificacao');
+    if (alertBon) alertBon.style.display = (tipoVenda === 'bonificacao') ? '' : 'none';
+    var campPanel = document.getElementById('campanhasPanel');
+    if (campPanel) campPanel.style.display = (tipoVenda === 'bonificacao') ? 'none' : '';
+    // Esconde alerta de desconto na bonificação (não se aplica)
+    if (tipoVenda === 'bonificacao') {
+        var alertDesc = document.getElementById('alertDesconto');
+        if (alertDesc) alertDesc.style.display = 'none';
+    }
+    recalcularTodas();
+    atualizar();
+}
 var _campanhas = <?= json_encode(array_map(function($c) {
     return [
         'produto_id'   => $c['produto_id'] ? (int)$c['produto_id'] : null,
@@ -402,7 +439,7 @@ function onClienteChange(dCli, dCan, canalId, idioma) {
 
     var alertEl  = document.getElementById('alertDesconto');
     var alertTxt = document.getElementById('alertDescontoTexto');
-    if (document.getElementById('cli_id').value && desconto > 0) {
+    if (tipoVenda !== 'bonificacao' && document.getElementById('cli_id').value && desconto > 0) {
         var partes = [];
         if (dCli > 0) partes.push('Cliente: ' + (dCli * 100).toFixed(2) + '%');
         if (dCan > 0) partes.push('Canal: '   + (dCan * 100).toFixed(2) + '%');
@@ -468,11 +505,13 @@ function recalcularTodas() {
         var linha    = row.dataset.linha    || '';
         var grupo    = row.dataset.grupo    || '';
         var subgrupo = row.dataset.subgrupo || '';
-        var precoBase    = parseFloat(row.dataset.preco) || 0;
-        var precoComDesc = precoBase * (1 - desconto);
+        var ehBonif      = (tipoVenda === 'bonificacao');
+        var precoBase    = parseFloat(ehBonif ? row.dataset.precoNet : row.dataset.preco) || 0;
+        var descAtual    = ehBonif ? 0 : desconto;
+        var precoComDesc = precoBase * (1 - descAtual);
 
         var campDesc = 0;
-        _campanhas.forEach(function(c) {
+        if (!ehBonif) _campanhas.forEach(function(c) {
             if (c.quantidade <= 0) return;
             // Filtra por canal: ignora campanha de canal diferente do cliente
             if (c.canal_id && c.canal_id !== _canalId) return;
@@ -534,8 +573,9 @@ function getItens() {
         if (actual > 0) {
             var visual       = parseInt(row.querySelector('.qtd-visual').value) || 0;
             var multiplo     = parseFloat(row.dataset.multiplo) || 1;
-            var precoBase    = parseFloat(row.dataset.preco) || 0;
-            var precoComDesc = precoBase * (1 - desconto);
+            var ehBonif      = (tipoVenda === 'bonificacao');
+            var precoBase    = parseFloat(ehBonif ? row.dataset.precoNet : row.dataset.preco) || 0;
+            var precoComDesc = precoBase * (1 - (ehBonif ? 0 : desconto));
             var campDesc     = parseFloat(row.dataset.campDesc) || 0;
             var preco        = campDesc > 0 ? precoComDesc * (1 - campDesc / 100) : precoComDesc;
             itens.push({
