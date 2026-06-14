@@ -30,7 +30,12 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
     $canalRow->execute([$lote_id]);
     $canalVendaId = (int)($canalRow->fetchColumn() ?: 0);
 
-    $camps = db()->query('SELECT produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas ORDER BY desconto DESC')->fetchAll();
+    $camps = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas ORDER BY desconto DESC')->fetchAll();
+    // Campanhas por produto: código -> lista de produto_id (mínimo soma todos os produtos da campanha)
+    $campProdIds = [];
+    foreach ($camps as $camp) {
+        if ($camp['produto_id'] !== null) $campProdIds[$camp['codigo_campanha']][] = (int)$camp['produto_id'];
+    }
     $stmt  = db()->prepare('
         SELECT p.id, p.produto_id, p.quantidade_total, p.tipo_venda,
                pr.linha, pr.grupo, pr.subgrupo,
@@ -49,7 +54,12 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
             if ($camp['canal_venda_id'] && (int)$camp['canal_venda_id'] !== $canalVendaId) continue;
             if ($camp['produto_id'] !== null) {
                 if ((int)$camp['produto_id'] !== (int)$item['produto_id']) continue;
-                $qtdCheck = (int)$item['quantidade_total'];
+                // Soma as quantidades de todos os itens do lote cujos produtos pertencem à campanha
+                $pidsCamp = $campProdIds[$camp['codigo_campanha']] ?? [(int)$camp['produto_id']];
+                $qtdCheck = 0;
+                foreach ($items as $other) {
+                    if (in_array((int)$other['produto_id'], $pidsCamp, true)) $qtdCheck += (int)$other['quantidade_total'];
+                }
             } else {
                 $l = trim($camp['linha'] ?? ''); $g = trim($camp['grupo'] ?? ''); $s = trim($camp['subgrupo'] ?? '');
                 if ($l && strtolower($l) !== strtolower(trim($item['linha']    ?? ''))) continue;

@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Bonificação usa a tabela de preços Network; venda normal usa a Padrão
     $colPreco = ($tipoVenda === 'bonificacao') ? 't.preco_network' : 't.preco_padrao';
     $data          = date('Y-m-d');
-    $campanhas_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas')->fetchAll();
+    $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas')->fetchAll();
     $canalVendaId  = (int)($cli['canal_venda_id'] ?? 0);
     $criados         = 0;
     $ids_criados     = [];
@@ -86,6 +86,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $s = trim($prod['subgrupo'] ?? ''); if ($s) $totaisSubgrupo[$s] = ($totaisSubgrupo[$s] ?? 0) + $qtd;
         }
 
+        // Soma das quantidades pedidas por produto e por campanha de produtos
+        // (campanha com vários produtos: o mínimo considera a soma de todos eles)
+        $qtdPorProduto = [];
+        foreach ($items_data as $it) $qtdPorProduto[$it['produto_id']] = ($qtdPorProduto[$it['produto_id']] ?? 0) + $it['qtd'];
+        $totaisCampanha = [];
+        foreach ($campanhas_all as $camp) {
+            if (!$camp['produto_id']) continue;
+            $cod = $camp['codigo_campanha'];
+            $totaisCampanha[$cod] = ($totaisCampanha[$cod] ?? 0) + ($qtdPorProduto[(int)$camp['produto_id']] ?? 0);
+        }
+
         // Passagem 2: gravar cada item aplicando desconto de campanha com base nos totais
         foreach ($items_data as $it) {
             $produto_id  = $it['produto_id'];
@@ -123,7 +134,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $qtdRef = $qtd;
                         }
                     } else {
-                        $qtdRef = $qtd;
+                        // Campanha por produto: usa a soma das quantidades de todos os produtos da campanha
+                        $qtdRef = $totaisCampanha[$camp['codigo_campanha']] ?? $qtd;
                     }
                     if ($qtdRef < (int)$camp['quantidade']) continue;
                     if ((float)$camp['desconto'] > $campDesc) $campDesc = (float)$camp['desconto'];
@@ -748,6 +760,7 @@ function restaurarCarrinho() {
 
 var _campanhas = <?= json_encode(array_values(array_map(function($c) {
     return [
+        'codigo'     => $c['codigo_campanha'],
         'produto_id' => $c['produto_id'] ? (int)$c['produto_id'] : null,
         'linha'      => trim(preg_replace('/\d+/', '', $c['linha']    ?? '')),
         'grupo'      => trim(preg_replace('/\d+/', '', $c['grupo']    ?? '')),
@@ -757,13 +770,19 @@ var _campanhas = <?= json_encode(array_values(array_map(function($c) {
     ];
 }, $campanhas))) ?>;
 
+// Campanhas por produto: código -> lista de produto_id (para somar a quantidade mínima)
+var _campProdIds = {};
+_campanhas.forEach(function(c) {
+    if (c.produto_id !== null) (_campProdIds[c.codigo] = _campProdIds[c.codigo] || []).push(c.produto_id);
+});
+
 function fmtBRL(v) {
     return 'R$ ' + v.toFixed(2).replace('.', ',');
 }
 
 function recalcularTodas() {
-    // Soma quantidades por linha, grupo e subgrupo
-    var totLinha = {}, totGrupo = {}, totSub = {};
+    // Soma quantidades por linha, grupo, subgrupo e por produto
+    var totLinha = {}, totGrupo = {}, totSub = {}, totProd = {};
     document.querySelectorAll('.produto-row').forEach(function(row) {
         var actual = parseInt(row.querySelector('.qtd-hidden').value) || 0;
         var l = row.dataset.linha    || '';
@@ -772,6 +791,15 @@ function recalcularTodas() {
         if (l) totLinha[l] = (totLinha[l] || 0) + actual;
         if (g) totGrupo[g] = (totGrupo[g] || 0) + actual;
         if (s) totSub[s]   = (totSub[s]   || 0) + actual;
+        totProd[parseInt(row.dataset.pid)] = (totProd[parseInt(row.dataset.pid)] || 0) + actual;
+    });
+
+    // Soma por campanha de produtos (mínimo considera todos os produtos da campanha)
+    var totCamp = {};
+    Object.keys(_campProdIds).forEach(function(cod) {
+        var soma = 0;
+        _campProdIds[cod].forEach(function(pid) { soma += (totProd[pid] || 0); });
+        totCamp[cod] = soma;
     });
 
     // Aplica desconto a cada linha
@@ -794,7 +822,7 @@ function recalcularTodas() {
                 var qtdRef;
                 if (c.produto_id !== null) {
                     if (c.produto_id !== pid) return;
-                    qtdRef = actual;
+                    qtdRef = (totCamp[c.codigo] !== undefined) ? totCamp[c.codigo] : actual;
                 } else if (c.linha) {
                     if (c.linha !== linha) return;
                     qtdRef = totLinha[linha] || 0;
