@@ -36,6 +36,7 @@ $data_pedido     = $pedidos[0]['data_pedido'];
 $supervisor      = $pedidos[0]['supervisor'] ?? $pedidos[0]['vendedor'];
 $observacoes     = $pedidos[0]['observacoes'];
 $forma_pagamento = $pedidos[0]['forma_pagamento'] ?? '';
+$tipo_venda      = ($pedidos[0]['tipo_venda'] ?? 'venda') === 'bonificacao' ? 'Bonificação' : 'Venda';
 
 // Crédito utilizado (gravado no primeiro item do lote)
 $credito_utilizado = 0.0;
@@ -209,6 +210,9 @@ ksort($porLinha);
             <div class="mt-2">
                 <span class="badge-status" style="background:rgba(255,255,255,.25);color:#fff;border:1px solid rgba(255,255,255,.5)">
                     Aguardando Comercial
+                </span>
+                <span class="badge-status" style="background:rgba(255,255,255,.25);color:#fff;border:1px solid rgba(255,255,255,.5)">
+                    <i class="bi bi-tag me-1"></i><?= $tipo_venda ?>
                 </span>
             </div>
         </div>

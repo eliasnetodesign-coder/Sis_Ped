@@ -69,6 +69,7 @@ $statusLabels = [
     'reprovado'  => 'Cancelado',
 ];
 $statusLabel = $statusLabels[$pedido['status']] ?? ucfirst($pedido['status']);
+$tipo_venda  = ($pedido['tipo_venda'] ?? 'venda') === 'bonificacao' ? 'Bonificação' : 'Venda';
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -222,6 +223,7 @@ $statusLabel = $statusLabels[$pedido['status']] ?? ucfirst($pedido['status']);
             <div class="subtitle">Pedido de Venda — <?= e($pedido['numero_pedido']) ?></div>
             <div class="mt-2">
                 <span class="badge-status"><?= e($statusLabel) ?></span>
+                <span class="badge-status" style="background:#6c757d"><i class="bi bi-tag me-1"></i><?= $tipo_venda ?></span>
             </div>
         </div>
         <div class="doc-num">
