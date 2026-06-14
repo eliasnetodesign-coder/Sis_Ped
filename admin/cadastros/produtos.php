@@ -64,13 +64,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!$codigo && !$descPT) { $skip++; continue; }
                 $status   = strtolower(trim($row['status'] ?? '')) === 'inativo' ? 'inativo' : 'ativo';
                 $multiplo = max(1, (int)($row['multiplo'] ?? 1));
-                // Lookup NCM pelo código
+                // Lookup NCM pelo código (normalizado: ignora pontos/espaços/traços e ponto final)
                 $ncm_id   = null;
                 $ncm_code = trim($row['ncm'] ?? '');
-                if ($ncm_code) {
-                    $nq = db()->prepare('SELECT id FROM ncm WHERE ncm = ?');
-                    $nq->execute([$ncm_code]);
+                $ncm_norm = preg_replace('/[^0-9]/', '', $ncm_code);
+                if ($ncm_norm !== '') {
+                    $nq = db()->prepare("SELECT id FROM ncm WHERE REPLACE(REPLACE(REPLACE(ncm,'.',''),' ',''),'-','') = ? ORDER BY id LIMIT 1");
+                    $nq->execute([$ncm_norm]);
                     $ncm_id = $nq->fetchColumn() ?: null;
+                    // NCM não cadastrado: cria automaticamente um registro mínimo (código limpo)
+                    if (!$ncm_id) {
+                        $ncm_limpo = rtrim($ncm_code, '. ');
+                        db()->prepare('INSERT INTO ncm (nome_categoria, ncm, cest) VALUES (?,?,?)')
+                            ->execute(['', $ncm_limpo, '']);
+                        $ncm_id = (int)db()->lastInsertId();
+                    }
                 }
                 // Verifica duplicata por código do produto
                 $existing = false;
