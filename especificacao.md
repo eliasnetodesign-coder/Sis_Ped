@@ -9,30 +9,39 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 ## 2. Autenticação e Controle de Acesso
 
 ### 2.1 Login (`login.php`)
-- Formulário único para todos os tipos de usuário.
-- **Clientes** autenticam com **e-mail de cliente** (`e-mail_cliente`) + senha.
-- **Usuários admin** autenticam com **e-mail** + senha.
+- Formulário único para todos os tipos de usuário; autenticação por **e-mail + senha**.
+- Verifica primeiro a tabela `clientes` (status ativo), depois `usuarios` (status ativo).
 - Botão de mostrar/ocultar senha.
 - Redirecionamento automático:
-  - Cliente → `cliente/dashboard.php`
+  - Cliente **sem** grupo de empresas (ou grupo com 1 membro) → `cliente/dashboard.php`
+  - Cliente **em** grupo de empresas com mais de um membro → `cliente/selecionar-cnpj.php` (escolha da empresa)
   - Admin → `admin/dashboard.php`
-- Caso já logado, redireciona para `index.php`.
+- Caso já logado, redireciona para `index.php` (que roteia por perfil).
 - Mensagens de erro via flash session.
+
+### 2.1.1 Senha Temporária (`trocar-senha.php`)
+- Usuários/clientes com `senha_temporaria = 1` recebem `must_change` na sessão e são direcionados a trocar a senha.
+- Validações: nova senha obrigatória, confirmação igual, mínimo 4 caracteres e diferente da senha padrão (`123`).
+- Atualiza `senha` e zera `senha_temporaria` na tabela correspondente (`clientes` ou `usuarios`).
 
 ### 2.2 Perfis de Usuário
 
 | Perfil | Portal | Permissões |
 |--------|--------|-----------|
-| `comercial` | Admin | Acesso total: todos os pedidos, relatórios; aprova e cancela pedidos na etapa Comercial | Acesso limitado aos cadastros, permitindo edição de descontos, limite de crédito, idioma e bonus
+| `comercial` | Admin | Acesso total: todos os pedidos, relatórios; aprova e cancela pedidos na etapa Comercial |
 | `financeiro` | Admin | Acesso ao módulo financeiro e cadastros financeiros; aprova, cancela e retorna pedidos na etapa Financeiro |
 | `supervisor` | Admin | Visão filtrada somente aos próprios clientes e pedidos; pode criar pedidos |
-| `tecnologia da informação` | Acesso total a todos os módulos |
-| `cliente` | Cliente | Acesso apenas ao próprio portal: pedidos, financeiro, perfil |
+| `vendedor` | Admin | Acesso operacional a pedidos e cadastros comerciais (equivalente ao comercial nas rotas) |
+| `tecnologia da informacao` | Admin | Acesso amplo aos módulos; vê campos sensíveis nos cadastros (ex.: desconto do canal em clientes) |
+| `cliente` | Cliente | Acesso apenas ao próprio portal: pedidos, financeiro, perfil, troca de CNPJ |
+
+> O enum de `tipo_acesso` em `usuarios` ainda inclui `recursos humanos`, `marketing`, `diretoria`, `centro tecnico`, `contabilidade`, `recepcao`, `expedicao`, sem rotas/módulos dedicados.
 
 ### 2.3 Proteção de Rotas
-- `requireAdmin()` — permite `comercial`, `financeiro`, `supervisor`
-- `requireComercial()` — permite `comercial`, `supervisor`
+- `requireAdmin()` — permite `comercial`, `financeiro`, `supervisor`, `tecnologia da informacao`, `vendedor`
+- `requireComercial()` — permite `comercial`, `supervisor`, `tecnologia da informacao`, `vendedor`
 - `requireCliente()` — permite somente `cliente`
+- `requireLogin()` — qualquer usuário autenticado (ex.: `trocar-senha.php`)
 - Rotas do financeiro admin aceitam `comercial` ou `financeiro` diretamente
 
 ---
@@ -74,12 +83,30 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Preview de até 200 linhas antes da confirmação.
 - Relatório final: inseridos, atualizados, ignorados (sem razão social), e-mails conflitantes.
 
+#### 3.2.1.1 Grupo de Empresas (`admin/cadastros/grupo-empresas.php`)
+**Objetivo:** agrupar CNPJs (clientes) para operações conjuntas e para a troca de empresa no portal do cliente.
+**Campos do grupo:** Nome*, Descrição (opcional).
+- **Operações:** Criar / Editar / Excluir grupo; **adicionar** e **remover** empresas (clientes) do grupo.
+- Cada grupo é um **item de accordion** (cabeçalho com nome, descrição e contagem de empresas) que **expande/recolhe** a lista de clientes — mesmo padrão visual do cadastro de NCM.
+- Adição de empresa por **autocomplete** (nome ou código), filtrando clientes já presentes no grupo.
+- Após adicionar/remover, o grupo correspondente é reaberto automaticamente (âncora `#grupo-ID`).
+- Tabelas: `grupo_empresas` e `grupo_empresas_clientes` (UNIQUE por grupo+cliente).
+
 #### 3.2.2 Cadastro de Produtos (`admin/cadastros/produtos.php`)
 **Campos:** Código (único), Linha, Grupo, Subgrupo, Código de Barras, Descrição PT / EN / ES, Nuance, Múltiplo de venda (int), Preço Padrão (gerenciado em `tabela_precos`), Vendas Distribuidor (R$), Vendas Varejo (R$), Vendas Exportação (R$), NCM (FK lookup), CEST, Status (ativo/inativo).
 
-**Operações:** Editar; Preço Padrão criado/atualizado junto.
-- **Importar Excel:** upsert por código; lookup de NCM pelo código; campos espelhados.
+**Operações:** Criar / Editar / Excluir; Preço Padrão criado/atualizado junto em `tabela_precos`.
+- Modal em abas: **Dados do Produto**, **Descrição Área do Cliente** (PT/EN/ES) e **KIT** (somente para grupo Kit).
+- Toggle inline de Vendas (Distribuidor/Varejo/Exportação) direto na listagem (AJAX).
+- **Importar Excel:** upsert por código; lookup de NCM pelo código (cria NCM mínimo se não existir); campos espelhados.
 - **Exportar Excel:** dados completos.
+
+**Aba KIT (composição):**
+- Exibida apenas para produtos cujo grupo normaliza para "KIT" (ex.: `-KIT`).
+- Permite **adicionar produtos** que compõem o kit: busca por código/nome (autocomplete), quantidade e botão Adicionar; cada item pode ser removido.
+- Persistida na tabela `kit_composicao` (`kit_codigo`, `produto_codigo`, `nome`, `qtd`), substituída por completo ao salvar o produto-kit; removida ao excluir o produto.
+- A tabela é **criada e semeada uma única vez** (a partir de `admin/cadastros/kit_composicao.php`, gerado da planilha `COMPOSICAO_KIT.xlsx`) na primeira abertura da tela.
+- O nome exibido usa a descrição atual do produto componente (fallback ao nome gravado).
 
 #### 3.2.3 Tabela de Preços (`admin/cadastros/tabela-precos.php`)
 - Associa produto a **três faixas de preço**: Preço Padrão*, Preço Network*, Preço Auxiliar (opcional).
@@ -93,11 +120,22 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - O valor de Desconto serve de teto para `desconto_canal` nos clientes.
 
 #### 3.2.5 Campanhas (`admin/cadastros/campanhas.php`)
-**Campos:** Código da Campanha*, Canal de Venda (opcional — "Todos" ou canal específico), critério exclusivo (apenas um de: Produto, Linha, Grupo, Subgrupo), Quantidade Mínima*, Desconto %.
-(Se selecionar Produto, pode adicionar mais de um Produto e bloqueia Linha, Grupo, Subgrupo, Se selecionar Linha, Grupo ou Subgrupo, pode selcionar mais uma categoria, e bloqueia Produto)
-- Regra de exclusividade: ao selecionar um critério, os demais são zerados e desabilitados via JS.
+**Campos:** Código da Campanha*, Canal de Venda (opcional — "Todos" ou canal específico), Quantidade Mínima*, Desconto %, e o alvo da campanha em **um dos dois modos** abaixo.
+
+**Modo Produtos:**
+- Busca de produtos por **código ou nome** (autocomplete) e botão **Adicionar**; permite **vários produtos** na mesma campanha (lista com remoção).
+- A quantidade mínima é avaliada pela **soma** das quantidades de todos os produtos da campanha no pedido; atingida, o desconto se aplica a **todos** eles.
+
+**Modo Categoria:**
+- **Linha, Grupo e/ou Subgrupo** podem ser **combinados** (não são mais mutuamente exclusivos entre si).
+- Cada critério preenchido é avaliado independentemente (semântica OR): o desconto vale para produtos que atendam qualquer um deles.
+
+**Exclusividade entre modos (JS):** ao adicionar produtos, os selects de categoria são desabilitados; ao escolher uma categoria, a busca de produtos é bloqueada. Os dois modos não se combinam.
+
+**Modelo de dados:** uma campanha é um conjunto de linhas na tabela `campanhas` que compartilham o mesmo `codigo_campanha` (uma linha por produto, ou uma por critério de categoria). Salvar **substitui** todas as linhas do código; excluir remove todas elas.
+
 - Campanha sem canal afeta todos os clientes; com canal, afeta somente clientes desse canal.
-- Listagem mostra: código, produto, linha/grupo, canal, qtd mínima, desconto%.
+- Listagem **agrupada por código**: mostra contagem/nomes de produtos ou critérios de categoria, canal, qtd mínima e desconto%.
 
 #### 3.2.6 NCM (`admin/cadastros/ncm.php`)
 **Campos:** Nome da Categoria, NCM* (código), CEST, IPI (%, 4 casas decimais).
@@ -255,10 +293,10 @@ Todos filtram somente pedidos com status `faturado`. Todos exibem percentual de 
 - Filtro: Ano.
 - Colunas: Canal, Clientes, Pedidos, Valor, Participação %.
 
-#### 3.4.7 Faturamento por supervisor (`admin/relatorios/faturamento-supervisor.php`)
-- Filtro: Ano.
-- Rankeia supervisores por valor DESC; badge dourado (#1, #2, #3).
-- Colunas: Rank, supervisor, Clientes, Pedidos, Valor, Participação %.
+#### 3.4.7 Faturamento por Supervisor (`admin/relatorios/faturamento-supervisor.php`)
+- Filtro: Ano. Título da página: "Faturamento por Supervisor".
+- Agrupa por `COALESCE(supervisor, vendedor)`; rankeia por valor DESC; badge dourado (#1, #2, #3).
+- Colunas: Rank, Supervisor, Clientes, Pedidos, Valor, Participação %.
 
 #### 3.4.8 Faturamento por Estado (`admin/relatorios/faturamento-estado.php`)
 - Filtro: Ano.
@@ -346,6 +384,10 @@ Acesso a todas as telas: `comercial` **ou** `financeiro`.
 **Campos somente leitura (sidebar):** Código do Cliente, Razão Social, CNPJ, supervisor, Canal de Venda, Status, CEP, Endereço, Número, Complemento, Bairro, Cidade, UF, País. Mensagem: "Para alterar dados cadastrais, entre em contato com o suporte."
 **Alteração de senha (formulário separado):** Nova Senha + Confirmar Senha; validações: ambas obrigatórias, devem ser iguais, mínimo 4 caracteres.
 
+### 4.7 Grupo de Empresas — Troca de CNPJ
+- **Seleção no login (`cliente/selecionar-cnpj.php`):** quando o cliente pertence a um grupo com mais de uma empresa ativa, escolhe com qual CNPJ entrar; a sessão passa a operar como o cliente selecionado.
+- **Troca durante a sessão (`cliente/trocar-cnpj.php`):** permite alternar para outra empresa do mesmo grupo sem novo login, retornando à página de origem. As opções vêm de `grupo_opcoes`/`grupo_selecao` na sessão e são validadas no servidor.
+
 ---
 
 ## 5. Regras de Negócio
@@ -353,10 +395,11 @@ Acesso a todas as telas: `comercial` **ou** `financeiro`.
 ### 5.1 Descontos no Pedido (3 camadas)
 1. **Desconto do Cliente** — `desconto_cliente` fixo no cadastro do cliente.
 2. **Desconto do Canal** — `desconto_canal` limitado ao teto do `canal_venda.desconto`; aplicado além do desconto do cliente.
-3. **Desconto de Campanha** — acionado quando quantidade total do critério ≥ mínimo da campanha.
-   - Hierarquia do critério: produto específico > linha > grupo > subgrupo.
+3. **Desconto de Campanha** — acionado quando a quantidade de referência ≥ mínimo da campanha.
+   - **Campanha por produto (1+ produtos):** a quantidade de referência é a **soma** das quantidades de todos os produtos da campanha presentes no pedido; atingido o mínimo, o desconto vale para **todos** esses produtos.
+   - **Campanha por categoria:** referência é o total da Linha / Grupo / Subgrupo no pedido; Linha, Grupo e Subgrupo podem coexistir (avaliados independentemente, OR).
    - Restrição de canal: campanha com `canal_venda_id` afeta somente clientes do mesmo canal.
-   - Aplica o maior desconto de campanha elegível.
+   - Aplica o **maior** desconto de campanha elegível.
 
 **Fórmula:** `valor = qtd × preco × (1 − dCliente/100 − dCanal/100) × (1 − campDesc/100)`
 
@@ -371,7 +414,7 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 - Pedido de produto único: `lote_id = null`.
 - Listagens agrupam por `COALESCE(lote_id, CAST(id AS CHAR))` para exibir como um único registro.
 - Aprovações e reprovações afetam todo o lote.
-- Recálculo de desconto de campanha (`recalcularDescontosCampanha`) considera quantidades totais de todos os itens do lote.
+- Recálculo de desconto de campanha (`recalcularDescontosCampanha`) considera quantidades totais de todos os itens do lote — por linha/grupo/subgrupo **e** pela soma dos produtos de cada campanha de produtos.
 
 ### 5.4 Log de Pedidos (`pedido_logs`)
 - Toda mudança de status é registrada com: pedido_id, numero_pedido, usuario_nome, usuario_tipo, acao, status_antes, status_depois, detalhes, created_at.
@@ -403,8 +446,10 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 - No cadastro manual, unicidade é garantida pelo banco (UNIQUE no schema).
 
 ### 5.9 Migrações de Schema
-- Executadas automaticamente via `try/ALTER TABLE` na função `db()` do `config.php` a cada requisição.
-- Colunas adicionadas desta forma: `lote_id`, `desconto_campanha`, `forma_pagamento`, `credito_utilizado` em pedidos; `preco_network`, `preco_auxiliar` em tabela_precos; `valor_utilizado` em bonus_ma_logs e creditos; tabela `pedido_logs`.
+- Executadas automaticamente via `try/ALTER TABLE` e `CREATE TABLE IF NOT EXISTS` na função `db()` do `config.php` a cada conexão.
+- **Colunas:** `lote_id`, `desconto_campanha`, `forma_pagamento`, `credito_utilizado`, `supervisor` em `pedidos`; `email`, `senha`, `desconto_canal`, `supervisor` em `clientes`; `preco_network`, `preco_auxiliar` em `tabela_precos`; `canal_venda_id` em `campanhas`; `valor_utilizado` em `bonus_ma_logs` e `creditos`; ajustes de enum em `pedidos.status` e `usuarios.tipo_acesso`.
+- **Tabelas criadas:** `pedido_logs`, `grupo_empresas`, `grupo_empresas_clientes`, `webhook_logs`.
+- A tabela `kit_composicao` **não** é criada no `config.php`: é criada e semeada sob demanda em `admin/cadastros/produtos.php` na primeira abertura da tela.
 
 ---
 
@@ -416,6 +461,12 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 | Bootstrap | 5.3.2 / jsdelivr | Framework CSS/JS; modais, offcanvas, toasts, badges |
 | Bootstrap Icons | 1.11.3 / jsdelivr | Ícones em toda a interface |
 | PDF de Pedido | Geração server-side PHP | Layout formatado com dados do pedido |
+| Webhook Pipefy | `api/webhook-pipefy.php` | Recebe POST do Pipefy (header `X-Webhook-Token`), faz upsert de clientes via `FIELD_MAP` e registra em `webhook_logs` |
+
+### 6.1 Webhook Pipefy (`api/webhook-pipefy.php`)
+- Endpoint `POST /Sis_Ped/api/webhook-pipefy.php`, autenticado por token no header `X-Webhook-Token` (`WEBHOOK_SECRET`).
+- `FIELD_MAP` mapeia campos do card do Pipefy para colunas da tabela `clientes` (identificação, endereço, contato, supervisor).
+- Faz upsert de cliente e grava cada evento (sucesso/erro) em `webhook_logs`.
 
 ---
 
@@ -429,7 +480,11 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 | `tabela_precos` | Preços por produto | id, produto_id (FK), preco_padrao, preco_network, preco_auxiliar |
 | `ncm` | Classificação fiscal | id, nome_categoria, ncm, cest, ipi |
 | `canal_venda` | Canais de venda | id, canal, faixa_faturamento, desconto (teto para clientes) |
-| `campanhas` | Campanhas de desconto | id, codigo_campanha, produto_id (FK opt), linha, grupo, subgrupo, canal_venda_id (FK opt), quantidade, desconto |
+| `campanhas` | Campanhas de desconto (uma linha por produto/critério; agrupadas por `codigo_campanha`) | id, codigo_campanha, produto_id (FK opt), linha, grupo, subgrupo, canal_venda_id (FK opt), quantidade, desconto |
+| `kit_composicao` | Composição de produtos do grupo Kit | id, kit_codigo, produto_codigo, nome, qtd |
+| `grupo_empresas` | Grupos de empresas (CNPJs) | id, nome, descricao, created_at |
+| `grupo_empresas_clientes` | Vínculo grupo ↔ cliente | id, grupo_id, cliente_id (UNIQUE grupo+cliente) |
+| `webhook_logs` | Log de webhooks recebidos (Pipefy) | id, origem, evento, status, detalhe, cliente_id, created_at |
 | `metas` | Metas trimestrais por cliente | id, cliente_id (FK), trimestre, ano, meta_cliente |
 | `pedidos` | Pedidos (1 reg. por item) | id, numero_pedido (UNIQUE), tipo_venda, data_pedido, cliente_id (FK), produto_id (FK), supervisor, lote_id, quantidade_total, valor_total, desconto_campanha, forma_pagamento, credito_utilizado, status, observacoes |
 | `pedido_logs` | Histórico de ações | id, pedido_id, numero_pedido, usuario_nome, usuario_tipo, acao, status_antes, status_depois, detalhes, created_at |
