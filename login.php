@@ -102,10 +102,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="login-header text-white text-center py-4">
                 <img src="/sistema/assets/img/Logo.png"
                      alt="Itallian Hairtech"
-                     style="max-height:70px; width:auto; filter:invert(1); mix-blend-mode:screen;"
+                     style="max-height:180px; width:auto; filter:invert(1); mix-blend-mode:screen;"
                      onerror="this.style.display='none'">
-                <h5 class="mt-2 mb-0 fw-bold">Sis_Ped</h5>
-                <div class="small text-white-50">Portal de Acesso</div>
+                <div class="small text-white-50 mt-2">Portal de Acesso</div>
             </div>
 
             <div class="card-body p-4">
@@ -149,7 +148,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <strong>Usuários de teste</strong><br>
                 Cliente: <code>cliente@teste.com</code> &bull; Admin: <code>comercial@teste.com</code><br>
                 Senha: <code>123</code>
-                &nbsp;|&nbsp;<a href="<?= BASE_URL ?>/install.php" class="text-decoration-none">Instalar banco</a>
             </div>
         </div>
     </div>
