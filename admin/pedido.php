@@ -373,7 +373,7 @@ $ehLocal    = ($clienteUF !== '' && $clienteUF === EMPRESA_UF);
 $icmsTipoLabel = $clienteUF === '' ? '—' : ($ehLocal ? 'Local (' . $clienteUF . ')' : 'Interestadual (' . EMPRESA_UF . '→' . $clienteUF . ')');
 
 $fiscalSql = "SELECT p.descricao_produto, p.quantidade_total, pr.codigo_produto, pr.ncm_id,
-                     COALESCE(t.preco_network, t.preco_padrao, pr.vendas_varejo, 0) AS preco_unit,
+                     COALESCE(t.preco_network, 0) AS preco_unit,
                      n.ipi, n.pis, n.cofins, n.ncm AS ncm_codigo
               FROM pedidos p
               LEFT JOIN produtos pr     ON pr.id = p.produto_id
@@ -491,6 +491,17 @@ if ($pedido['lote_id']) {
     $creditoUsadoAdmin = (float)($pedido['credito_utilizado'] ?? 0);
 }
 
+// Desconto de pagamento (Pix 5%)
+$descontoPixAdmin = 0.0;
+if ($pedido['lote_id']) {
+    $dpAdm = db()->prepare('SELECT desconto_pagamento FROM pedidos WHERE lote_id = ? AND desconto_pagamento > 0 LIMIT 1');
+    $dpAdm->execute([$pedido['lote_id']]);
+    $descontoPixAdmin = (float)($dpAdm->fetchColumn() ?: 0);
+} else {
+    $descontoPixAdmin = (float)($pedido['desconto_pagamento'] ?? 0);
+}
+$totalAPagarAdmin = max(0, $valorTotalGeral - $descontoPixAdmin - $creditoUsadoAdmin);
+
 $produtos = db()->query('SELECT p.id, p.descricao_pt, p.codigo_produto, p.codigo_barra, p.multiplo, p.linha, p.grupo, p.subgrupo, COALESCE(t.preco_padrao, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.status = "ativo" ORDER BY p.descricao_pt')->fetchAll();
 $campanhas_edit = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto, codigo_campanha FROM campanhas ORDER BY desconto DESC')->fetchAll();
 
@@ -555,7 +566,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <span><strong>Cliente:</strong> <?= e($pedido['razao_social'] ?? '—') ?></span>
                     <span><strong>UF destino:</strong> <?= e($clienteUF ?: '—') ?><?= $ufNome ? '' : ' <span class="text-danger">(sem ICMS cadastrado)</span>' ?></span>
                     <span><strong>ICMS:</strong> <?= e($icmsTipoLabel) ?></span>
-                    <span class="text-muted"><i class="bi bi-info-circle me-1"></i>Valor unitário pela tabela <strong>Network</strong>; impostos do cadastro de NCM.</span>
+                    <span class="text-muted"><i class="bi bi-info-circle me-1"></i>Valor unitário sempre pela tabela <strong>Network</strong> original (independente dos descontos do pedido); impostos do cadastro de NCM.</span>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-sm table-bordered align-middle mb-0" style="font-size:.8rem">
@@ -759,9 +770,9 @@ require_once LAYOUT_PATH . '/header.php';
                     </div>
                     <?php endif; ?>
                     <div class="col-sm-<?= !empty($_sup) ? '6' : '12' ?>">
-                        <div class="text-muted small"><?= $creditoUsadoAdmin > 0 ? 'Total a Pagar' : 'Valor Total' ?></div>
-                        <div class="fw-bold fs-5 text-primary"><?= moedaBR(max(0, $valorTotalGeral - $creditoUsadoAdmin)) ?></div>
-                        <?php if ($creditoUsadoAdmin > 0): ?>
+                        <div class="text-muted small"><?= ($descontoPixAdmin > 0 || $creditoUsadoAdmin > 0) ? 'Total a Pagar' : 'Valor Total' ?></div>
+                        <div class="fw-bold fs-5 text-primary"><?= moedaBR($totalAPagarAdmin) ?></div>
+                        <?php if ($descontoPixAdmin > 0 || $creditoUsadoAdmin > 0): ?>
                         <div class="text-muted small text-decoration-line-through"><?= moedaBR($valorTotalGeral) ?></div>
                         <?php endif; ?>
                     </div>
@@ -775,6 +786,12 @@ require_once LAYOUT_PATH . '/header.php';
                     <div class="col-sm-<?= !empty($pedido['forma_pagamento']) ? '6' : '12' ?>">
                         <div class="text-muted small">Crédito Aplicado</div>
                         <div class="fw-semibold text-success"><i class="bi bi-coin me-1"></i><?= moedaBR($creditoUsadoAdmin) ?></div>
+                    </div>
+                    <?php endif; ?>
+                    <?php if ($descontoPixAdmin > 0): ?>
+                    <div class="col-sm-6">
+                        <div class="text-muted small">Desconto Pix (5%)</div>
+                        <div class="fw-semibold text-success"><i class="bi bi-qr-code-scan me-1"></i>− <?= moedaBR($descontoPixAdmin) ?></div>
                     </div>
                     <?php endif; ?>
                     <?php if (!empty($pedido['observacoes'])): ?>
@@ -928,9 +945,18 @@ require_once LAYOUT_PATH . '/header.php';
                             <td class="fw-semibold text-end pe-3">− <?= moedaBR($creditoUsadoAdmin) ?></td>
                             <?php if ($canEdit): ?><td></td><?php endif; ?>
                         </tr>
+                        <?php endif; ?>
+                        <?php if ($descontoPixAdmin > 0): ?>
+                        <tr class="text-success">
+                            <td colspan="<?= $cols ?>" class="text-end fw-semibold pe-3"><i class="bi bi-qr-code-scan me-1"></i>Desconto Pix (5%):</td>
+                            <td class="fw-semibold text-end pe-3">− <?= moedaBR($descontoPixAdmin) ?></td>
+                            <?php if ($canEdit): ?><td></td><?php endif; ?>
+                        </tr>
+                        <?php endif; ?>
+                        <?php if ($descontoPixAdmin > 0 || $creditoUsadoAdmin > 0): ?>
                         <tr>
                             <td colspan="<?= $cols ?>" class="text-end fw-bold pe-3">Total a Pagar:</td>
-                            <td class="fw-bold text-primary fs-5 text-end pe-3"><?= moedaBR(max(0, $valorTotalGeral - $creditoUsadoAdmin)) ?></td>
+                            <td class="fw-bold text-primary fs-5 text-end pe-3"><?= moedaBR($totalAPagarAdmin) ?></td>
                             <?php if ($canEdit): ?><td></td><?php endif; ?>
                         </tr>
                         <?php else: ?>

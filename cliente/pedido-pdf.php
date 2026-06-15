@@ -68,6 +68,16 @@ foreach ($pedidos as $p) {
     }
 }
 
+// Desconto de pagamento (Pix 5%)
+$desconto_pagamento = 0.0;
+foreach ($pedidos as $p) {
+    if ((float)($p['desconto_pagamento'] ?? 0) > 0) {
+        $desconto_pagamento = (float)$p['desconto_pagamento'];
+        break;
+    }
+}
+$total_a_pagar = max(0, $total_geral - $desconto_pagamento - $credito_utilizado);
+
 
 // agrupa por linha
 $porLinha = [];
@@ -335,21 +345,29 @@ ksort($porLinha);
         <?php endforeach; ?>
 
         <!-- Total Geral -->
-        <?php if ($credito_utilizado > 0): ?>
+        <?php if ($credito_utilizado > 0 || $desconto_pagamento > 0): ?>
         <table style="width:100%;border-collapse:collapse;margin-bottom:0">
             <tr>
                 <td style="text-align:right;padding:6px 8px;color:#555">Subtotal:</td>
                 <td style="text-align:right;padding:6px 8px;min-width:110px;color:#555"><?= moedaBR($total_geral) ?></td>
             </tr>
+            <?php if ($credito_utilizado > 0): ?>
             <tr>
                 <td style="text-align:right;padding:4px 8px;color:#198754">Crédito aplicado:</td>
                 <td style="text-align:right;padding:4px 8px;color:#198754;font-weight:600">− <?= moedaBR($credito_utilizado) ?></td>
             </tr>
+            <?php endif; ?>
+            <?php if ($desconto_pagamento > 0): ?>
+            <tr>
+                <td style="text-align:right;padding:4px 8px;color:#198754">Desconto Pix (5%):</td>
+                <td style="text-align:right;padding:4px 8px;color:#198754;font-weight:600">− <?= moedaBR($desconto_pagamento) ?></td>
+            </tr>
+            <?php endif; ?>
         </table>
         <?php endif; ?>
         <div class="total-geral">
-            <span><?= $credito_utilizado > 0 ? 'Total a Pagar' : 'Total Geral do Pedido' ?></span>
-            <span><?= moedaBR(max(0, $total_geral - $credito_utilizado)) ?></span>
+            <span><?= ($credito_utilizado > 0 || $desconto_pagamento > 0) ? 'Total a Pagar' : 'Total Geral do Pedido' ?></span>
+            <span><?= moedaBR($total_a_pagar) ?></span>
         </div>
 
         <?php if (trim($forma_pagamento ?? '')): ?>

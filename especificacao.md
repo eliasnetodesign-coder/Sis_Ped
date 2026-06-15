@@ -236,7 +236,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Filtro combinado: status (botões) + período (data inicial/data final); padrão = mês atual.
 - Pedidos agrupados por `lote_id` (exibe valor total do lote; badge "N itens" quando > 1).
 - Colunas: Nº Pedido, Código, Cliente, Supervisor, Data (+ hora), Tipo (Venda/Bonificação), Valor, Status, Observações (truncado 2 linhas + tooltip), Ações.
-- **Colunas extras do perfil `financeiro`** (após Valor): **Crédito Aplicado** (`credito_utilizado` do lote), **Detalhamento Fiscal** (Total da NF = produtos pelo preço Network + IPI do NCM) e **Accademia** (= Valor do pedido − Detalhamento Fiscal; negativo em vermelho; pedidos de bonificação exibem "—").
+- **Colunas extras do perfil `financeiro`** (após Valor): **Crédito Aplicado** (`credito_utilizado` do lote), **Detalhamento Fiscal** (Total da NF = produtos pelo preço Network + IPI do NCM), **Accademia** (= Valor do pedido − Detalhamento Fiscal; negativo em vermelho; pedidos de bonificação exibem "—"), **% Desconto** (5% quando pagamento Pix, senão "—") e **Valor Desconto** (valor do desconto Pix do lote).
 - **Filtro por Cliente** (nome, código ou CNPJ), aplicado à lista e aos cards de totais. No perfil **`financeiro`**, se o cliente filtrado pertencer a um **grupo de empresas**, o resultado inclui automaticamente os pedidos de **todos os clientes do mesmo grupo**.
 - **Ações inline por perfil/status:**
   - `comercial` ou `supervisor` + status `comercial`: Aprovar → Financeiro (o `supervisor` aprova; cancelar permanece com o `comercial`).
@@ -255,7 +255,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Forma de Pagamento registrável.
 - Crédito utilizado registrado no campo `credito_utilizado` do pedido.
 - Botão para gerar PDF do pedido.
-- **Detalhamento Fiscal (modal):** tabela por item com Código, Descrição, UN, Quantidade, **Valor Unitário (preço Network)**, Valor Total Item (qtd × unit), Alíq./Valor de **ICMS**, Alíq./Valor de **IPI**, **PIS** (rateado + %) e **COFINS** (rateado + %), com linha de totais.
+- **Detalhamento Fiscal (modal):** tabela por item com Código, Descrição, UN, Quantidade, **Valor Unitário (sempre o preço Network original — `tabela_precos.preco_network`, independente dos descontos do pedido; produtos sem Network ficam zerados)**, Valor Total Item (qtd × unit), Alíq./Valor de **ICMS**, Alíq./Valor de **IPI**, **PIS** (rateado + %) e **COFINS** (rateado + %), com linha de totais.
   - IPI/PIS/COFINS vêm do cadastro de **NCM** do produto (`ncm.ipi/pis/cofins`).
   - ICMS vem de `ncm_estados` pela UF do cliente: usa `icms_local` quando a UF do cliente = `EMPRESA_UF` (constante em `config.php`, padrão `SP`), senão `icms_interestadual`. Sem NCM/estado cadastrado, alíquota 0.
   - **Total da Nota Fiscal** = Total dos Produtos **+ IPI** (ICMS, PIS e COFINS estão embutidos no preço e não somam à NF).
@@ -418,6 +418,12 @@ Acesso a todas as telas: `comercial` **ou** `financeiro`.
 **Fórmula:** `valor = qtd × preco × (1 − dCliente/100 − dCanal/100) × (1 − campDesc/100)`
 
 Pedidos de **bonificação** sempre têm `valor_total = 0`.
+
+### 5.1.1 Desconto de Pagamento (Pix)
+- Se a forma de pagamento escolhida for **Pix**, aplica-se **5% de desconto sobre o total do pedido** (somente vendas).
+- O valor é gravado em `pedidos.desconto_pagamento` (no primeiro item do lote) e **não** altera o `valor_total` dos itens (é uma dedução no resumo, como o crédito).
+- **Ordem de cálculo:** primeiro o **crédito** (limitado ao total); depois o **Pix de 5%** sobre o líquido após o crédito.
+- **Total a Pagar** = `Total − Crédito − Pix`, com `Pix = 5% × (Total − Crédito)`. No resumo do pedido (cliente/admin e PDF) é exibida uma linha "Desconto Pix (5%)" abaixo do crédito aplicado.
 
 ### 5.2 Múltiplo de Venda
 - Quantidade visual (informada pelo usuário) × múltiplo do produto = quantidade real registrada.

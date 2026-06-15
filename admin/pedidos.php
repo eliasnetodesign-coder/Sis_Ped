@@ -103,7 +103,8 @@ if ($isFinanceiro && $pedidos) {
     $fm = db()->prepare("
         SELECT COALESCE(p.lote_id, CAST(p.id AS CHAR)) AS lote_key,
                SUM(COALESCE(p.credito_utilizado, 0)) AS credito,
-               SUM(p.quantidade_total * COALESCE(t.preco_network, t.preco_padrao, pr.vendas_varejo, 0)
+               SUM(COALESCE(p.desconto_pagamento, 0)) AS desc_pgto,
+               SUM(p.quantidade_total * COALESCE(t.preco_network, 0)
                    * (1 + COALESCE(n.ipi, 0) / 100)) AS nf_total
         FROM pedidos p
         LEFT JOIN produtos pr     ON pr.id = p.produto_id
@@ -333,6 +334,8 @@ $cardDefs = [
                         <th class="text-end">Crédito Aplicado</th>
                         <th class="text-end">Detalhamento Fiscal</th>
                         <th class="text-end">Accademia</th>
+                        <th class="text-end">% Desconto</th>
+                        <th class="text-end">Valor Desconto</th>
                         <?php endif; ?>
                         <th>Status</th>
                         <th>Observações</th>
@@ -384,9 +387,10 @@ $cardDefs = [
                     </td>
                     <td class="fw-semibold"><?= moedaBR($p['valor_total']) ?></td>
                     <?php if ($isFinanceiro):
-                        $fisc      = $fiscalMap[$p['lote_key']] ?? ['credito' => 0, 'nf_total' => 0];
+                        $fisc      = $fiscalMap[$p['lote_key']] ?? ['credito' => 0, 'nf_total' => 0, 'desc_pgto' => 0];
                         $credito   = (float)$fisc['credito'];
                         $nfTotal   = (float)$fisc['nf_total'];
+                        $descPgto  = (float)($fisc['desc_pgto'] ?? 0);
                         $accademia = (float)$p['valor_total'] - $nfTotal;
                     ?>
                     <td class="text-end"><?= $credito > 0 ? moedaBR($credito) : '<span class="text-muted">—</span>' ?></td>
@@ -396,6 +400,8 @@ $cardDefs = [
                     <?php else: ?>
                     <td class="text-end fw-semibold <?= $accademia < 0 ? 'text-danger' : 'text-success' ?>"><?= moedaBR($accademia) ?></td>
                     <?php endif; ?>
+                    <td class="text-end"><?= $descPgto > 0 ? '5%' : '<span class="text-muted">—</span>' ?></td>
+                    <td class="text-end"><?= $descPgto > 0 ? '− ' . moedaBR($descPgto) : '<span class="text-muted">—</span>' ?></td>
                     <?php endif; ?>
                     <td><?= statusBadge($p['status']) ?></td>
                     <td style="max-width:220px">
@@ -478,7 +484,7 @@ $cardDefs = [
                     </td>
                 </tr>
                 <?php endforeach; else: ?>
-                <tr><td colspan="<?= $isFinanceiro ? 13 : 10 ?>" class="text-center text-muted py-5">
+                <tr><td colspan="<?= $isFinanceiro ? 15 : 10 ?>" class="text-center text-muted py-5">
                     <i class="bi bi-inbox display-5 d-block mb-2"></i>Nenhum pedido encontrado.
                 </td></tr>
                 <?php endif; ?>

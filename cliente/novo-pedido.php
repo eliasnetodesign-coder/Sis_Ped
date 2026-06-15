@@ -191,15 +191,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
-            // Aplica crédito disponível (somente em pedidos novos)
-            if ($creditoAplicado > 0.001) {
-                // Limita crédito ao total real do pedido (os itens NÃO são alterados)
-                $phC = implode(',', array_fill(0, count($ids_criados), '?'));
-                $totStmt = db()->prepare("SELECT COALESCE(SUM(valor_total),0) FROM pedidos WHERE id IN ($phC)");
-                $totStmt->execute($ids_criados);
-                $totalPedido     = (float)$totStmt->fetchColumn();
-                $creditoAplicado = min($creditoAplicado, $totalPedido);
 
+            // Total bruto do pedido (soma dos itens)
+            $phT = implode(',', array_fill(0, count($ids_criados), '?'));
+            $totBrStmt = db()->prepare("SELECT COALESCE(SUM(valor_total),0) FROM pedidos WHERE id IN ($phT)");
+            $totBrStmt->execute($ids_criados);
+            $totalPedido = (float)$totBrStmt->fetchColumn();
+
+            // Crédito é aplicado primeiro (limitado ao total). O Pix incide sobre o líquido após o crédito.
+            $creditoAplicado = $creditoAplicado > 0.001 ? min($creditoAplicado, $totalPedido) : 0.0;
+
+            // Desconto Pix: 5% sobre o total já líquido de crédito (Total − Crédito − Pix). Somente venda.
+            $descontoPix = ($tipoVenda === 'venda' && strcasecmp($formaPagamento, 'Pix') === 0)
+                ? round(max(0, $totalPedido - $creditoAplicado) * 0.05, 2) : 0.0;
+            db()->prepare('UPDATE pedidos SET desconto_pagamento = NULL WHERE lote_id = ?')->execute([$lote_id]);
+            if ($descontoPix > 0) {
+                db()->prepare('UPDATE pedidos SET desconto_pagamento = ? WHERE id = ?')
+                    ->execute([$descontoPix, $ids_criados[0]]);
+            }
+
+            // Grava o crédito utilizado e deduz dos créditos aprovados (FIFO)
+            if ($creditoAplicado > 0.001) {
                 // Grava o crédito utilizado no primeiro item do lote (abate só o total)
                 db()->prepare('UPDATE pedidos SET credito_utilizado = ? WHERE id = ?')
                     ->execute([$creditoAplicado, $ids_criados[0]]);
@@ -653,9 +665,12 @@ require_once LAYOUT_PATH . '/header.php';
                         <input type="radio" class="form-check-input flex-shrink-0 mt-0"
                                name="pagamento_sel" value="Pix">
                         <span class="fs-4 text-success"><i class="bi bi-qr-code-scan"></i></span>
-                        <div>
-                            <div class="fw-semibold">Pix</div>
-                            <div class="text-muted small">Pagamento à vista instantâneo</div>
+                        <div class="flex-grow-1">
+                            <div class="fw-semibold d-flex align-items-center gap-2">
+                                Pix
+                                <span class="badge bg-success">5% de desconto</span>
+                            </div>
+                            <div class="text-muted small">Pagamento à vista instantâneo — ganhe <strong>5% de desconto</strong></div>
                         </div>
                     </label>
 
@@ -695,6 +710,10 @@ require_once LAYOUT_PATH . '/header.php';
                 </div>
                 <div class="alert alert-danger py-2 mt-2 mb-0" id="pagtoErro" style="display:none">
                     <i class="bi bi-exclamation-triangle me-1"></i>Selecione uma forma de pagamento para continuar.
+                </div>
+                <div class="alert alert-success py-2 mt-2 mb-0" id="pixDescInfo" style="display:none">
+                    <i class="bi bi-qr-code-scan me-1"></i>Pagamento via <strong>Pix</strong>: desconto de <strong>5%</strong>
+                    (<strong id="pixDescValor"></strong>) sobre o valor a pagar.
                 </div>
 
                 <?php if ($creditoDisponivel > 0): ?>
@@ -1196,26 +1215,57 @@ if (_modoMA) {
         _submeterPedido(this);
     });
 } else {
+    // Resumo: crédito é aplicado primeiro; o Pix (5%) incide sobre o líquido após o crédito.
+    function _totalPedido() { return getItens().reduce(function(a,i){ return a+i.sub; }, 0); }
+    function _calcResumo() {
+        var total = _totalPedido();
+        var chk   = document.getElementById('chkUsarCredito');
+        var credito = (chk && chk.checked && _creditoDisponivel > 0) ? Math.min(_creditoDisponivel, total) : 0;
+        var sel = document.querySelector('input[name="pagamento_sel"]:checked');
+        var pix = (sel && sel.value === 'Pix') ? Math.round(Math.max(0, total - credito) * 0.05 * 100) / 100 : 0;
+        return { total: total, credito: credito, pix: pix, liquido: Math.max(0, total - credito - pix) };
+    }
+    function atualizarAvisoCredito() {
+        var chk = document.getElementById('chkUsarCredito');
+        var box = document.getElementById('creditoAvisoBox');
+        if (!chk || !box) return;
+        if (!chk.checked) { box.style.display = 'none'; return; }
+        var r = _calcResumo();
+        var txt = '<strong>' + fmtBRL(r.credito) + '</strong> de crédito. ';
+        if (r.pix > 0) txt += 'Desconto Pix: <strong>' + fmtBRL(r.pix) + '</strong>. ';
+        txt += 'Total a pagar: <strong>' + fmtBRL(r.liquido) + '</strong>';
+        document.getElementById('creditoValorTexto').innerHTML = txt;
+        box.style.display = '';
+    }
+    function atualizarAvisoPix() {
+        var r   = _calcResumo();
+        var box = document.getElementById('pixDescInfo');
+        if (box) {
+            if (r.pix > 0) { document.getElementById('pixDescValor').textContent = fmtBRL(r.pix); box.style.display = ''; }
+            else box.style.display = 'none';
+        }
+    }
+
     // Destaca opção selecionada no modal
     document.getElementById('opcoesPagamento').addEventListener('change', function() {
         document.querySelectorAll('.pagto-card').forEach(function(card) {
             var radio = card.querySelector('input[type="radio"]');
-            if (radio.checked) {
-                card.classList.add('border-primary', 'bg-primary', 'bg-opacity-10');
-            } else {
-                card.classList.remove('border-primary', 'bg-primary', 'bg-opacity-10');
-            }
+            card.classList.toggle('pagto-selected', radio.checked);
         });
         document.getElementById('pagtoErro').style.display = 'none';
+        atualizarAvisoPix();
+        atualizarAvisoCredito();
     });
 
     // Limpa seleção ao fechar o modal pelo X ou Voltar
     document.getElementById('modalPagamento').addEventListener('hidden.bs.modal', function() {
         document.querySelectorAll('input[name="pagamento_sel"]').forEach(function(r) { r.checked = false; });
         document.querySelectorAll('.pagto-card').forEach(function(c) {
-            c.classList.remove('border-primary', 'bg-primary', 'bg-opacity-10');
+            c.classList.remove('pagto-selected');
         });
         document.getElementById('pagtoErro').style.display = 'none';
+        var _pixBox = document.getElementById('pixDescInfo'); if (_pixBox) _pixBox.style.display = 'none';
+        var _credBox = document.getElementById('creditoAvisoBox'); if (_credBox) _credBox.style.display = 'none';
     });
 
     document.getElementById('btnFinalizarPedido').addEventListener('click', function() {
@@ -1225,12 +1275,10 @@ if (_modoMA) {
             return;
         }
         document.getElementById('formaPagamento').value = sel.value;
-        // Captura crédito a aplicar
+        // Captura crédito a aplicar (crédito primeiro, limitado ao total; o Pix incide depois)
         var chk = document.getElementById('chkUsarCredito');
         if (chk && chk.checked && _creditoDisponivel > 0) {
-            var total = getItens().reduce(function(a,i){ return a+i.sub; }, 0);
-            var aplicar = Math.min(_creditoDisponivel, total);
-            document.getElementById('creditoAplicadoInput').value = aplicar.toFixed(2);
+            document.getElementById('creditoAplicadoInput').value = _calcResumo().credito.toFixed(2);
         }
         document.getElementById('btnFecharModalPagto').disabled = true;
         _submeterPedido(this);
@@ -1239,20 +1287,7 @@ if (_modoMA) {
     // Toggle crédito: atualiza aviso com valor calculado
     var _chkCred = document.getElementById('chkUsarCredito');
     if (_chkCred) {
-        _chkCred.addEventListener('change', function() {
-            var box = document.getElementById('creditoAvisoBox');
-            if (this.checked) {
-                var total   = getItens().reduce(function(a,i){ return a+i.sub; }, 0);
-                var aplicar = Math.min(_creditoDisponivel, total);
-                var liquido = total - aplicar;
-                document.getElementById('creditoValorTexto').innerHTML =
-                    '<strong>' + fmtBRL(aplicar) + '</strong>. '
-                    + 'Total a pagar: <strong>' + fmtBRL(liquido) + '</strong>';
-                box.style.display = '';
-            } else {
-                box.style.display = 'none';
-            }
-        });
+        _chkCred.addEventListener('change', atualizarAvisoCredito);
     }
 }
 

@@ -53,6 +53,14 @@ body {
 .bg-primary     { background-color: var(--brand-darkest) !important; }
 .border-primary { border-color: var(--brand-dark) !important; }
 
+/* Card de forma de pagamento selecionado (verde claro legível) */
+.pagto-card { transition: all .15s; }
+.pagto-card.pagto-selected {
+    background-color: #eaf5ef;
+    border-color: var(--brand-dark) !important;
+    box-shadow: inset 0 0 0 1px var(--brand-dark);
+}
+
 /* Backgrounds globais */
 .bg-info    { background-color: var(--brand-mid)     !important; }
 .bg-success { background-color: var(--brand-darkest) !important; }

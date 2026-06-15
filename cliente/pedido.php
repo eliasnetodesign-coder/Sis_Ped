@@ -83,6 +83,17 @@ if ($pedido['lote_id']) {
     $creditoUsado = (float)($pedido['credito_utilizado'] ?? 0);
 }
 
+// Desconto de pagamento (Pix 5%)
+$descontoPix = 0.0;
+if ($pedido['lote_id']) {
+    $dpStmt = db()->prepare('SELECT desconto_pagamento FROM pedidos WHERE lote_id = ? AND desconto_pagamento > 0 LIMIT 1');
+    $dpStmt->execute([$pedido['lote_id']]);
+    $descontoPix = (float)($dpStmt->fetchColumn() ?: 0);
+} else {
+    $descontoPix = (float)($pedido['desconto_pagamento'] ?? 0);
+}
+$totalAPagar = max(0, $valorTotalGeral - $descontoPix - $creditoUsado);
+
 $canEdit = $pedido['status'] === 'comercial';
 
 $statusInfo = [
@@ -140,9 +151,9 @@ require_once LAYOUT_PATH . '/header.php';
                         <div class="text-muted small"><?= $pedido['created_at'] ? date('H:i', strtotime($pedido['created_at'])) : '' ?></div>
                     </div>
                     <div class="col-sm-4">
-                        <div class="text-muted small"><?= $creditoUsado > 0 ? 'Total a Pagar' : 'Valor Total' ?></div>
-                        <div class="fw-bold fs-5 text-primary"><?= moedaBR(max(0, $valorTotalGeral - $creditoUsado)) ?></div>
-                        <?php if ($creditoUsado > 0): ?>
+                        <div class="text-muted small"><?= ($descontoPix > 0 || $creditoUsado > 0) ? 'Total a Pagar' : 'Valor Total' ?></div>
+                        <div class="fw-bold fs-5 text-primary"><?= moedaBR($totalAPagar) ?></div>
+                        <?php if ($descontoPix > 0 || $creditoUsado > 0): ?>
                         <div class="text-muted small text-decoration-line-through"><?= moedaBR($valorTotalGeral) ?></div>
                         <?php endif; ?>
                     </div>
@@ -156,6 +167,12 @@ require_once LAYOUT_PATH . '/header.php';
                     <div class="col-sm-<?= !empty($pedido['forma_pagamento']) ? '6' : '12' ?>">
                         <div class="text-muted small">Crédito Aplicado</div>
                         <div class="fw-semibold text-success"><i class="bi bi-coin me-1"></i><?= moedaBR($creditoUsado) ?></div>
+                    </div>
+                    <?php endif; ?>
+                    <?php if ($descontoPix > 0): ?>
+                    <div class="col-sm-6">
+                        <div class="text-muted small">Desconto Pix (5%)</div>
+                        <div class="fw-semibold text-success"><i class="bi bi-qr-code-scan me-1"></i>− <?= moedaBR($descontoPix) ?></div>
                     </div>
                     <?php endif; ?>
                     <?php if (!empty($pedido['observacoes'])): ?>
@@ -220,9 +237,17 @@ require_once LAYOUT_PATH . '/header.php';
                             <td colspan="5" class="text-end fw-semibold pe-3"><i class="bi bi-coin me-1"></i>Crédito aplicado:</td>
                             <td class="fw-semibold text-end pe-3">− <?= moedaBR($creditoUsado) ?></td>
                         </tr>
+                        <?php endif; ?>
+                        <?php if ($descontoPix > 0): ?>
+                        <tr class="text-success">
+                            <td colspan="5" class="text-end fw-semibold pe-3"><i class="bi bi-qr-code-scan me-1"></i>Desconto Pix (5%):</td>
+                            <td class="fw-semibold text-end pe-3">− <?= moedaBR($descontoPix) ?></td>
+                        </tr>
+                        <?php endif; ?>
+                        <?php if ($descontoPix > 0 || $creditoUsado > 0): ?>
                         <tr>
                             <td colspan="5" class="text-end fw-bold pe-3">Total a Pagar:</td>
-                            <td class="fw-bold text-primary fs-5 text-end pe-3"><?= moedaBR(max(0, $valorTotalGeral - $creditoUsado)) ?></td>
+                            <td class="fw-bold text-primary fs-5 text-end pe-3"><?= moedaBR($totalAPagar) ?></td>
                         </tr>
                         <?php else: ?>
                         <tr>
