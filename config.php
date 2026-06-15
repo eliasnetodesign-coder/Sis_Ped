@@ -6,6 +6,7 @@ define('DB_NAME', 'sis_ped');
 define('DB_USER', 'root');
 define('DB_PASS', '');
 define('BASE_URL', '/Sis_Ped');
+define('EMPRESA_UF', 'SP'); // UF da empresa — define ICMS local x interestadual no detalhamento fiscal
 define('ASSETS_URL', BASE_URL . '/assets');
 define('LAYOUT_PATH', __DIR__ . '/layout');
 

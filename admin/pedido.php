@@ -324,7 +324,7 @@ if ($pedidoId < 1) {
 
 $pedido = db()->prepare("
     SELECT p.*, c.razao_social, c.email AS cliente_email,
-           c.desconto_cliente, c.desconto_canal,
+           c.desconto_cliente, c.desconto_canal, c.estado AS cliente_uf, c.cidade AS cliente_cidade,
            cv.canal AS canal_venda,
            pr.codigo_produto, pr.multiplo, pr.linha, pr.grupo, pr.subgrupo,
            COALESCE(t.preco_padrao, pr.vendas_varejo) AS preco_unit
@@ -356,6 +356,68 @@ if ($loteId) {
     $itensPedido = [$pedido];
 }
 $valorTotalGeral = array_sum(array_column($itensPedido, 'valor_total'));
+
+// ===== Detalhamento fiscal (preço Network + impostos do NCM) =====
+$UF_NOME = [
+    'AC'=>'Acre','AL'=>'Alagoas','AM'=>'Amazonas','AP'=>'Amapa','BA'=>'Bahia','CE'=>'Ceará',
+    'DF'=>'Distrito Federal','ES'=>'Espirito Santo','GO'=>'Goias','MA'=>'Maranhão','MG'=>'Minas Gerais',
+    'MS'=>'Mato Grosso Sul','MT'=>'Mato Grosso','PA'=>'Para','PB'=>'Paraíba','PE'=>'Pernanbuco',
+    'PI'=>'Piauí','PR'=>'Paraná','RJ'=>'Rio de Janeiro','RN'=>'Rio Grande Norte','RO'=>'Rondônia',
+    'RR'=>'Roraima','RS'=>'Rio Grande Sul','SC'=>'Santa Catarina','SE'=>'Sergipe','SP'=>'São Paulo','TO'=>'Tocantins',
+];
+$clienteUF  = strtoupper(trim($pedido['cliente_uf'] ?? ''));
+$ufNome     = $UF_NOME[$clienteUF] ?? null;
+$ehLocal    = ($clienteUF !== '' && $clienteUF === EMPRESA_UF);
+$icmsTipoLabel = $clienteUF === '' ? '—' : ($ehLocal ? 'Local (' . $clienteUF . ')' : 'Interestadual (' . EMPRESA_UF . '→' . $clienteUF . ')');
+
+$fiscalSql = "SELECT p.descricao_produto, p.quantidade_total, pr.codigo_produto, pr.ncm_id,
+                     COALESCE(t.preco_network, t.preco_padrao, pr.vendas_varejo, 0) AS preco_unit,
+                     n.ipi, n.pis, n.cofins, n.ncm AS ncm_codigo
+              FROM pedidos p
+              LEFT JOIN produtos pr     ON pr.id = p.produto_id
+              LEFT JOIN tabela_precos t ON t.produto_id = pr.id
+              LEFT JOIN ncm n           ON n.id = pr.ncm_id
+              WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?') . " ORDER BY p.id";
+$fq = db()->prepare($fiscalSql);
+$fq->execute([$loteId ?: $pedidoId]);
+$fiscalRaw = $fq->fetchAll();
+
+// ICMS (por ncm) para o estado do cliente
+$icmsByNcm = [];
+if ($ufNome) {
+    $ncmIds = array_values(array_filter(array_unique(array_column($fiscalRaw, 'ncm_id'))));
+    if ($ncmIds) {
+        $ph = implode(',', array_fill(0, count($ncmIds), '?'));
+        $iq = db()->prepare("SELECT ncm_id, icms_local, icms_interestadual FROM ncm_estados WHERE estado = ? AND ncm_id IN ($ph)");
+        $iq->execute(array_merge([$ufNome], $ncmIds));
+        foreach ($iq->fetchAll() as $ir) $icmsByNcm[$ir['ncm_id']] = $ir;
+    }
+}
+
+$fiscalItens = [];
+$fiscalTot   = ['item'=>0,'icms'=>0,'ipi'=>0,'pis'=>0,'cofins'=>0];
+foreach ($fiscalRaw as $r) {
+    $qtd   = (int)$r['quantidade_total'];
+    $unit  = (float)$r['preco_unit'];
+    $total = $qtd * $unit;
+    $ipiA  = (float)($r['ipi'] ?? 0);
+    $pisA  = (float)($r['pis'] ?? 0);
+    $cofA  = (float)($r['cofins'] ?? 0);
+    $icmsRow = $icmsByNcm[$r['ncm_id']] ?? null;
+    $icmsA = $icmsRow ? (float)($ehLocal ? $icmsRow['icms_local'] : $icmsRow['icms_interestadual']) : 0;
+    $vIcms = $total * $icmsA / 100;
+    $vIpi  = $total * $ipiA  / 100;
+    $vPis  = $total * $pisA  / 100;
+    $vCof  = $total * $cofA  / 100;
+    $fiscalItens[] = [
+        'codigo' => $r['codigo_produto'], 'descricao' => $r['descricao_produto'],
+        'ncm' => $r['ncm_codigo'], 'qtd' => $qtd, 'unit' => $unit, 'total' => $total,
+        'icms_v' => $vIcms, 'icms_a' => $icmsA, 'ipi_v' => $vIpi, 'ipi_a' => $ipiA,
+        'pis_v' => $vPis, 'pis_a' => $pisA, 'cofins_v' => $vCof, 'cofins_a' => $cofA,
+    ];
+    $fiscalTot['item']  += $total; $fiscalTot['icms'] += $vIcms; $fiscalTot['ipi'] += $vIpi;
+    $fiscalTot['pis']   += $vPis;  $fiscalTot['cofins'] += $vCof;
+}
 
 $creditoUsadoAdmin = 0.0;
 if ($pedido['lote_id']) {
@@ -402,6 +464,9 @@ require_once LAYOUT_PATH . '/header.php';
             <span class="badge bg-primary ms-1"><?= count($pedidoLogs) ?></span>
             <?php endif; ?>
         </button>
+        <button type="button" class="btn btn-outline-success" data-bs-toggle="modal" data-bs-target="#modalFiscal">
+            <i class="bi bi-receipt me-1"></i>Detalhamento Fiscal
+        </button>
         <a href="<?= BASE_URL ?>/admin/pedido-pdf.php?id=<?= $pedidoId ?>" target="_blank"
            class="btn btn-outline-secondary">
             <i class="bi bi-file-earmark-pdf me-1"></i>PDF
@@ -409,6 +474,106 @@ require_once LAYOUT_PATH . '/header.php';
         <a href="<?= BASE_URL ?>/admin/pedidos.php" class="btn btn-outline-secondary">
             <i class="bi bi-arrow-left me-1"></i>Voltar
         </a>
+    </div>
+</div>
+
+<!-- Modal Detalhamento Fiscal -->
+<div class="modal fade" id="modalFiscal" tabindex="-1">
+    <div class="modal-dialog modal-fullscreen-lg-down modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header border-bottom">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-receipt me-2 text-success"></i>Detalhamento Fiscal — <?= e($pedido['numero_pedido']) ?>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex flex-wrap gap-3 mb-3 small">
+                    <span><strong>Cliente:</strong> <?= e($pedido['razao_social'] ?? '—') ?></span>
+                    <span><strong>UF destino:</strong> <?= e($clienteUF ?: '—') ?><?= $ufNome ? '' : ' <span class="text-danger">(sem ICMS cadastrado)</span>' ?></span>
+                    <span><strong>ICMS:</strong> <?= e($icmsTipoLabel) ?></span>
+                    <span class="text-muted"><i class="bi bi-info-circle me-1"></i>Valor unitário pela tabela <strong>Network</strong>; impostos do cadastro de NCM.</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered align-middle mb-0" style="font-size:.8rem">
+                        <thead class="table-light text-center">
+                            <tr>
+                                <th>Código</th>
+                                <th>Descrição do Produto</th>
+                                <th>UN</th>
+                                <th>Quantidade</th>
+                                <th>Valor Unitário (R$)</th>
+                                <th>Valor Total Item (R$)<br><small class="fw-normal">= Qtd x Vlr Unit</small></th>
+                                <th>Alíq. ICMS (%)</th>
+                                <th>Valor ICMS (R$)</th>
+                                <th>Alíq. IPI (%)</th>
+                                <th>Valor IPI (R$)</th>
+                                <th>PIS Rateado (R$)</th>
+                                <th>% PIS s/ Vlr Item</th>
+                                <th>COFINS Rateado (R$)</th>
+                                <th>% COFINS s/ Vlr Item</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php if ($fiscalItens): foreach ($fiscalItens as $f):
+                            $pf = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%';
+                        ?>
+                            <tr>
+                                <td><?= e($f['codigo']) ?></td>
+                                <td><?= e($f['descricao']) ?><?php if ($f['ncm']): ?><br><small class="text-muted">NCM <?= e($f['ncm']) ?></small><?php endif; ?></td>
+                                <td class="text-center">UN</td>
+                                <td class="text-center"><?= (int)$f['qtd'] ?></td>
+                                <td class="text-end"><?= moedaBR($f['unit']) ?></td>
+                                <td class="text-end fw-semibold"><?= moedaBR($f['total']) ?></td>
+                                <td class="text-center"><?= $pf($f['icms_a']) ?></td>
+                                <td class="text-end"><?= moedaBR($f['icms_v']) ?></td>
+                                <td class="text-center"><?= $pf($f['ipi_a']) ?></td>
+                                <td class="text-end"><?= moedaBR($f['ipi_v']) ?></td>
+                                <td class="text-end"><?= moedaBR($f['pis_v']) ?></td>
+                                <td class="text-center"><?= $pf($f['pis_a']) ?></td>
+                                <td class="text-end"><?= moedaBR($f['cofins_v']) ?></td>
+                                <td class="text-center"><?= $pf($f['cofins_a']) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                            <tr class="table-light fw-bold">
+                                <td colspan="5" class="text-end">Totais</td>
+                                <td class="text-end"><?= moedaBR($fiscalTot['item']) ?></td>
+                                <td></td>
+                                <td class="text-end"><?= moedaBR($fiscalTot['icms']) ?></td>
+                                <td></td>
+                                <td class="text-end"><?= moedaBR($fiscalTot['ipi']) ?></td>
+                                <td class="text-end"><?= moedaBR($fiscalTot['pis']) ?></td>
+                                <td></td>
+                                <td class="text-end"><?= moedaBR($fiscalTot['cofins']) ?></td>
+                                <td></td>
+                            </tr>
+                        <?php else: ?>
+                            <tr><td colspan="14" class="text-center text-muted py-4">Nenhum item para detalhar.</td></tr>
+                        <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+                <?php $nfTotal = $fiscalTot['item'] + $fiscalTot['ipi']; ?>
+                <div class="d-flex justify-content-end mt-3">
+                    <div class="border rounded p-3 bg-light" style="min-width:300px">
+                        <div class="d-flex justify-content-between"><span>Total dos Produtos</span><span><?= moedaBR($fiscalTot['item']) ?></span></div>
+                        <div class="d-flex justify-content-between"><span>(+) IPI</span><span><?= moedaBR($fiscalTot['ipi']) ?></span></div>
+                        <hr class="my-2">
+                        <div class="d-flex justify-content-between fs-5 fw-bold">
+                            <span>Total da Nota Fiscal</span>
+                            <span class="text-success"><?= moedaBR($nfTotal) ?></span>
+                        </div>
+                        <div class="text-muted mt-1" style="font-size:.72rem">
+                            ICMS, PIS e COFINS já estão embutidos no valor dos produtos (não somam à NF).
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
     </div>
 </div>
 

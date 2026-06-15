@@ -252,6 +252,10 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Forma de Pagamento registrável.
 - Crédito utilizado registrado no campo `credito_utilizado` do pedido.
 - Botão para gerar PDF do pedido.
+- **Detalhamento Fiscal (modal):** tabela por item com Código, Descrição, UN, Quantidade, **Valor Unitário (preço Network)**, Valor Total Item (qtd × unit), Alíq./Valor de **ICMS**, Alíq./Valor de **IPI**, **PIS** (rateado + %) e **COFINS** (rateado + %), com linha de totais.
+  - IPI/PIS/COFINS vêm do cadastro de **NCM** do produto (`ncm.ipi/pis/cofins`).
+  - ICMS vem de `ncm_estados` pela UF do cliente: usa `icms_local` quando a UF do cliente = `EMPRESA_UF` (constante em `config.php`, padrão `SP`), senão `icms_interestadual`. Sem NCM/estado cadastrado, alíquota 0.
+  - **Total da Nota Fiscal** = Total dos Produtos **+ IPI** (ICMS, PIS e COFINS estão embutidos no preço e não somam à NF).
 - Log de cada mudança de status registrado em `pedido_logs` com: pedido_id, numero_pedido, usuario_nome, usuario_tipo, acao, status_antes, status_depois, detalhes, created_at.
 
 #### 3.3.4 Fluxo de Status dos Pedidos
