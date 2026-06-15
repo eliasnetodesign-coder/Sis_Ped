@@ -305,6 +305,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($from === 'list') {
         $qs = http_build_query(array_filter([
             'status' => $_POST['_filtro'] ?? '',
+            'cli'    => $_POST['_cli'] ?? '',
             'dt_ini' => $_POST['_dt_ini'] ?? '',
             'dt_fim' => $_POST['_dt_fim'] ?? '',
         ], fn($v) => $v !== ''));

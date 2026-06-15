@@ -236,7 +236,8 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Filtro combinado: status (botões) + período (data inicial/data final); padrão = mês atual.
 - Pedidos agrupados por `lote_id` (exibe valor total do lote; badge "N itens" quando > 1).
 - Colunas: Nº Pedido, Código, Cliente, Supervisor, Data (+ hora), Tipo (Venda/Bonificação), Valor, Status, Observações (truncado 2 linhas + tooltip), Ações.
-- **Colunas extras do perfil `financeiro`** (após Valor): **Crédito Aplicado** (`credito_utilizado` do lote), **Detalhamento Fiscal** (Total da NF = produtos pelo preço Network + IPI do NCM) e **Accademia** (= Valor do pedido − Detalhamento Fiscal; negativo em vermelho).
+- **Colunas extras do perfil `financeiro`** (após Valor): **Crédito Aplicado** (`credito_utilizado` do lote), **Detalhamento Fiscal** (Total da NF = produtos pelo preço Network + IPI do NCM) e **Accademia** (= Valor do pedido − Detalhamento Fiscal; negativo em vermelho; pedidos de bonificação exibem "—").
+- **Filtro por Cliente** (nome, código ou CNPJ), aplicado à lista e aos cards de totais. No perfil **`financeiro`**, se o cliente filtrado pertencer a um **grupo de empresas**, o resultado inclui automaticamente os pedidos de **todos os clientes do mesmo grupo**.
 - **Ações inline por perfil/status:**
   - `comercial` ou `supervisor` + status `comercial`: Aprovar → Financeiro (o `supervisor` aprova; cancelar permanece com o `comercial`).
   - `financeiro` + status `financeiro`: Aprovar → Faturado, Retornar ao Comercial, Cancelar.

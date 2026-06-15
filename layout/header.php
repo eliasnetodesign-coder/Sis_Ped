@@ -27,10 +27,9 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
     <div class="container-fluid px-3 px-md-4">
         <a class="navbar-brand p-0 fw-bold text-white" href="<?= BASE_URL ?>/index.php">
             <img src="/sistema/assets/img/Logo.png"
-                 alt="Sis_Ped"
+                 alt="Itallian Hairtech"
                  style="height:38px; filter:invert(1); mix-blend-mode:screen;"
                  onerror="this.style.display='none'">
-            <span class="ms-2 d-none d-sm-inline" style="font-size:.95rem">Sis_Ped</span>
         </a>
         <?php if ($_usuario): ?>
         <button class="btn btn-link text-white d-md-none p-1 ms-2 border-0"

@@ -15,8 +15,31 @@ if (isset($_GET['ajax_cliente'])) {
 }
 
 $filtro    = $_GET['status']  ?? '';
+$busca_cli = trim($_GET['cli'] ?? '');
 $dt_inicio = isset($_GET['dt_ini']) ? $_GET['dt_ini'] : date('Y-m-01');
 $dt_fim    = isset($_GET['dt_fim']) ? $_GET['dt_fim'] : date('Y-m-t');
+$isFinanceiro = $u['tipo'] === 'financeiro';
+
+// Financeiro: ao filtrar por cliente, expande para todos os membros do mesmo grupo de empresas.
+// $cliFilterIds = null -> usa LIKE (perfis não-financeiro); array -> usa IN (pode ser vazio).
+$cliFilterIds = null;
+if ($busca_cli !== '' && $isFinanceiro) {
+    $mq = db()->prepare("SELECT id FROM clientes WHERE razao_social LIKE ? OR codigo_cliente LIKE ? OR cnpj LIKE ?");
+    $mq->execute(["%$busca_cli%", "%$busca_cli%", "%$busca_cli%"]);
+    $matched = array_map('intval', $mq->fetchAll(PDO::FETCH_COLUMN));
+    if ($matched) {
+        $phm = implode(',', array_fill(0, count($matched), '?'));
+        $gq = db()->prepare("SELECT DISTINCT gec2.cliente_id
+            FROM grupo_empresas_clientes gec1
+            JOIN grupo_empresas_clientes gec2 ON gec2.grupo_id = gec1.grupo_id
+            WHERE gec1.cliente_id IN ($phm)");
+        $gq->execute($matched);
+        $grp = array_map('intval', $gq->fetchAll(PDO::FETCH_COLUMN));
+        $cliFilterIds = array_values(array_unique(array_merge($matched, $grp)));
+    } else {
+        $cliFilterIds = [];
+    }
+}
 
 // Monta WHERE e HAVING dinâmicos
 $where  = '';
@@ -27,6 +50,20 @@ $where_parts = [];
 if ($dt_inicio) { $where_parts[] = 'DATE(p.data_pedido) >= ?'; $params[] = $dt_inicio; }
 if ($dt_fim)    { $where_parts[] = 'DATE(p.data_pedido) <= ?'; $params[] = $dt_fim;    }
 if ($u['tipo'] === 'supervisor') { $where_parts[] = 'COALESCE(c.supervisor, c.vendedor) = ?'; $params[] = $u['nome']; }
+if ($busca_cli !== '') {
+    if ($cliFilterIds !== null) {
+        if ($cliFilterIds) {
+            $ph = implode(',', array_fill(0, count($cliFilterIds), '?'));
+            $where_parts[] = "p.cliente_id IN ($ph)";
+            foreach ($cliFilterIds as $cid) $params[] = $cid;
+        } else {
+            $where_parts[] = '1=0';
+        }
+    } else {
+        $where_parts[] = '(c.razao_social LIKE ? OR c.codigo_cliente LIKE ? OR c.cnpj LIKE ?)';
+        $params[] = "%$busca_cli%"; $params[] = "%$busca_cli%"; $params[] = "%$busca_cli%";
+    }
+}
 if ($where_parts) $where = 'WHERE ' . implode(' AND ', $where_parts);
 if ($filtro)      { $having = 'HAVING MIN(p.status) = ?'; $params[] = $filtro; }
 
@@ -59,7 +96,6 @@ $pedidos->execute($params);
 $pedidos = $pedidos->fetchAll();
 
 // Colunas extras do perfil Financeiro: crédito aplicado, detalhamento fiscal (NF) e "Accademia"
-$isFinanceiro = $u['tipo'] === 'financeiro';
 $fiscalMap = [];
 if ($isFinanceiro && $pedidos) {
     $loteKeys = array_column($pedidos, 'lote_key');
@@ -90,6 +126,21 @@ if ($u['tipo'] === 'supervisor') {
     $t_join = 'LEFT JOIN clientes c ON c.id = p.cliente_id';
     $t_where_parts[] = 'COALESCE(c.supervisor, c.vendedor) = ?';
     $t_params[] = $u['nome'];
+}
+if ($busca_cli !== '') {
+    if ($cliFilterIds !== null) {
+        if ($cliFilterIds) {
+            $ph = implode(',', array_fill(0, count($cliFilterIds), '?'));
+            $t_where_parts[] = "p.cliente_id IN ($ph)";
+            foreach ($cliFilterIds as $cid) $t_params[] = $cid;
+        } else {
+            $t_where_parts[] = '1=0';
+        }
+    } else {
+        if ($t_join === '') $t_join = 'LEFT JOIN clientes c ON c.id = p.cliente_id';
+        $t_where_parts[] = '(c.razao_social LIKE ? OR c.codigo_cliente LIKE ? OR c.cnpj LIKE ?)';
+        $t_params[] = "%$busca_cli%"; $t_params[] = "%$busca_cli%"; $t_params[] = "%$busca_cli%";
+    }
 }
 $t_where = $t_where_parts ? 'WHERE ' . implode(' AND ', $t_where_parts) : '';
 
@@ -200,7 +251,7 @@ $cardDefs = [
     $borda = $ativo ? "border-{$cd['cor']} border-2" : 'border-0';
 ?>
     <div class="col-6 col-md">
-        <a href="?status=<?= $val ?>" class="text-decoration-none">
+        <a href="?status=<?= $val ?>&cli=<?= urlencode($busca_cli) ?>&dt_ini=<?= urlencode($dt_inicio) ?>&dt_fim=<?= urlencode($dt_fim) ?>" class="text-decoration-none">
             <div class="card shadow-sm h-100 <?= $borda ?>">
                 <div class="card-body py-3 px-3">
                     <div class="d-flex align-items-center gap-2 mb-1">
@@ -234,9 +285,14 @@ $cardDefs = [
             <!-- Separador vertical -->
             <div class="vr d-none d-md-block"></div>
 
-            <!-- Filtro de período -->
+            <!-- Filtro de cliente + período -->
             <form method="GET" class="d-flex flex-wrap align-items-center gap-2">
                 <?php if ($filtro): ?><input type="hidden" name="status" value="<?= e($filtro) ?>"><?php endif; ?>
+                <label class="small fw-semibold text-muted mb-0">Cliente:</label>
+                <input type="text" name="cli" class="form-control form-control-sm"
+                       style="width:230px" value="<?= e($busca_cli) ?>"
+                       placeholder="Nome, código ou CNPJ">
+                <div class="vr d-none d-md-block"></div>
                 <label class="small fw-semibold text-muted mb-0">Período:</label>
                 <input type="date" name="dt_ini" class="form-control form-control-sm"
                        style="width:150px" value="<?= e($dt_inicio) ?>"
@@ -248,9 +304,9 @@ $cardDefs = [
                 <button type="submit" class="btn btn-sm btn-primary">
                     <i class="bi bi-funnel me-1"></i>Filtrar
                 </button>
-                <?php if ($dt_inicio || $dt_fim): ?>
-                <a href="?status=<?= e($filtro) ?>&dt_ini=&dt_fim=" class="btn btn-sm btn-outline-secondary"
-                   title="Limpar período">
+                <?php if ($busca_cli !== '' || $dt_inicio || $dt_fim): ?>
+                <a href="?status=<?= e($filtro) ?>" class="btn btn-sm btn-outline-secondary"
+                   title="Limpar filtros">
                     <i class="bi bi-x-lg"></i>
                 </a>
                 <?php endif; ?>
@@ -372,6 +428,7 @@ $cardDefs = [
                                         <input type="hidden" name="id" value="<?= $p['id'] ?>">
                                         <input type="hidden" name="_from" value="list">
                                         <input type="hidden" name="_filtro" value="<?= e($filtro) ?>">
+                                        <input type="hidden" name="_cli" value="<?= e($busca_cli) ?>">
                                         <input type="hidden" name="_dt_ini" value="<?= e($dt_inicio) ?>">
                                         <input type="hidden" name="_dt_fim" value="<?= e($dt_fim) ?>">
                                         <button class="dropdown-item text-success">
@@ -389,6 +446,7 @@ $cardDefs = [
                                         <input type="hidden" name="id" value="<?= $p['id'] ?>">
                                         <input type="hidden" name="_from" value="list">
                                         <input type="hidden" name="_filtro" value="<?= e($filtro) ?>">
+                                        <input type="hidden" name="_cli" value="<?= e($busca_cli) ?>">
                                         <input type="hidden" name="_dt_ini" value="<?= e($dt_inicio) ?>">
                                         <input type="hidden" name="_dt_fim" value="<?= e($dt_fim) ?>">
                                         <button class="dropdown-item text-warning">
@@ -405,6 +463,7 @@ $cardDefs = [
                                         <input type="hidden" name="id" value="<?= $p['id'] ?>">
                                         <input type="hidden" name="_from" value="list">
                                         <input type="hidden" name="_filtro" value="<?= e($filtro) ?>">
+                                        <input type="hidden" name="_cli" value="<?= e($busca_cli) ?>">
                                         <input type="hidden" name="_dt_ini" value="<?= e($dt_inicio) ?>">
                                         <input type="hidden" name="_dt_fim" value="<?= e($dt_fim) ?>">
                                         <button class="dropdown-item text-danger">
