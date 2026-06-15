@@ -166,7 +166,8 @@ if ($existente) {
 
 logWebhook('pipefy', $action, 'ok', "Card {$pipefyCardId} → cliente #{$clienteId} ({$operacao})", $clienteId);
 
-jsonResponse(200, "Cliente {$operacao === 'insert' ? 'criado' : 'atualizado'} com sucesso.", [
+$palavraOp = $operacao === 'insert' ? 'criado' : 'atualizado';
+jsonResponse(200, "Cliente {$palavraOp} com sucesso.", [
     'operacao'   => $operacao,
     'cliente_id' => $clienteId,
     'card_id'    => $pipefyCardId,

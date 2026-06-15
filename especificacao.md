@@ -248,7 +248,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Log de ações (`pedido_logs`): usuário, tipo, ação, status antes/depois, data/hora.
 - Ações (conforme perfil e status atual):
   - `comercial`: Aprovar (→ financeiro) ou Cancelar.
-  - `supervisor`: Aprovar (→ financeiro) pedidos na etapa Comercial.
+  - `supervisor`: Aprovar (→ financeiro) ou Cancelar pedidos na etapa Comercial.
   - `financeiro`: Aprovar (→ faturamento), Retornar ao Comercial ou Cancelar.
 - **Descontos e Campanhas (card):** mostra os percentuais usados — Desconto Cliente, Desconto Canal e Comercial (Cliente+Canal) — e a lista de **campanhas atingidas** pelo pedido (código, alvo, quantidade atingida × mínimo, e o desconto% ou os produtos bonificados ×multiplicador). Pedidos de bonificação indicam "sem desconto comercial".
 - Recalcula descontos de campanha ao aprovar/alterar (`recalcularDescontosCampanha`).
@@ -371,8 +371,9 @@ Acesso a todas as telas: `comercial` **ou** `financeiro`.
 - Mesmo fluxo do admin, porém o "cliente" é o próprio usuário logado.
 - Sem seleção de cliente (fixado no `cliente_id` da sessão).
 - Desconto do cliente + canal aplicado automaticamente.
-- Campanhas ativas exibidas e aplicadas.
+- Campanhas ativas exibidas em chips (desconto% ou 🎁 com os produtos bonificados) e aplicadas; campanhas de bonificação geram pedido bonificado separado ao finalizar.
 - Abas por linha, carrinho offcanvas, etapa de resumo e observação.
+- **Modal de Forma de Pagamento:** Pix (com **5% de desconto**, destacado), Boleto 30 / 30-60 / 30-60-90 dias; opção de **usar crédito** (limitado à diferença `valor do pedido − detalhamento fiscal`, com confirmação quando o crédito disponível excede a diferença). Cartão selecionado em verde claro.
 
 ### 4.3 Meus Pedidos (`cliente/meus-pedidos.php`)
 - Lista **todos** os pedidos do cliente logado, agrupados por `lote_id`.
@@ -417,13 +418,13 @@ Acesso a todas as telas: `comercial` **ou** `financeiro`.
 
 **Fórmula:** `valor = qtd × preco × (1 − dCliente/100 − dCanal/100) × (1 − campDesc/100)`
 
-Pedidos de **bonificação** sempre têm `valor_total = 0`.
+Pedidos de **bonificação** usam a tabela de preços **Network** (`valor_total = qtd × preço Network`, sem desconto de cliente/canal/campanha).
 
-### 5.1.1 Desconto de Pagamento (Pix)
-- Se a forma de pagamento escolhida for **Pix**, aplica-se **5% de desconto sobre o total do pedido** (somente vendas).
-- O valor é gravado em `pedidos.desconto_pagamento` (no primeiro item do lote) e **não** altera o `valor_total` dos itens (é uma dedução no resumo, como o crédito).
-- **Ordem de cálculo:** primeiro o **crédito** (limitado ao total); depois o **Pix de 5%** sobre o líquido após o crédito.
-- **Total a Pagar** = `Total − Crédito − Pix`, com `Pix = 5% × (Total − Crédito)`. No resumo do pedido (cliente/admin e PDF) é exibida uma linha "Desconto Pix (5%)" abaixo do crédito aplicado.
+### 5.1.1 Pagamento, Crédito e Desconto Pix
+- **Forma de pagamento:** escolhida em modal (Pix, Boleto 30, 30/60, 30/60/90 dias) ao finalizar pedidos de venda.
+- **Crédito do cliente:** aplicado primeiro, porém **limitado à diferença `valor do pedido − detalhamento fiscal (NF)`** (ver 5.7). O excedente fica para outro pedido.
+- **Desconto Pix (5%):** se a forma for **Pix**, incide sobre o valor já líquido de crédito (`Pix = 5% × (Total − Crédito)`); somente vendas. Gravado em `pedidos.desconto_pagamento` (1º item do lote), sem alterar o `valor_total` dos itens (é dedução no resumo, como o crédito).
+- **Ordem de cálculo / Total a Pagar** = `Total − Crédito − Pix`. No resumo do pedido (cliente/admin e PDF) são exibidas as linhas "Crédito aplicado" e, abaixo, "Desconto Pix (5%)".
 
 ### 5.2 Múltiplo de Venda
 - Quantidade visual (informada pelo usuário) × múltiplo do produto = quantidade real registrada.
@@ -468,7 +469,7 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 
 ### 5.9 Migrações de Schema
 - Executadas automaticamente via `try/ALTER TABLE` e `CREATE TABLE IF NOT EXISTS` na função `db()` do `config.php` a cada conexão.
-- **Colunas:** `lote_id`, `desconto_campanha`, `forma_pagamento`, `credito_utilizado`, `supervisor` em `pedidos`; `email`, `senha`, `desconto_canal`, `supervisor` em `clientes`; `preco_network`, `preco_auxiliar` em `tabela_precos`; `canal_venda_id` em `campanhas`; `valor_utilizado` em `bonus_ma_logs` e `creditos`; ajustes de enum em `pedidos.status` e `usuarios.tipo_acesso`.
+- **Colunas:** `lote_id`, `desconto_campanha`, `forma_pagamento`, `credito_utilizado`, `desconto_pagamento`, `supervisor` em `pedidos`; `email`, `senha`, `desconto_canal`, `supervisor` em `clientes`; `preco_network`, `preco_auxiliar` em `tabela_precos`; `canal_venda_id` e `tipo` em `campanhas`; `valor_utilizado` em `bonus_ma_logs` e `creditos`; ajustes de enum em `pedidos.status` e `usuarios.tipo_acesso`.
 - **Tabelas criadas:** `pedido_logs`, `grupo_empresas`, `grupo_empresas_clientes`, `webhook_logs`, `campanha_bonificacao`; coluna `tipo` em `campanhas`.
 - A tabela `kit_composicao` **não** é criada no `config.php`: é criada e semeada sob demanda em `admin/cadastros/produtos.php` na primeira abertura da tela.
 
@@ -508,7 +509,7 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 | `grupo_empresas_clientes` | Vínculo grupo ↔ cliente | id, grupo_id, cliente_id (UNIQUE grupo+cliente) |
 | `webhook_logs` | Log de webhooks recebidos (Pipefy) | id, origem, evento, status, detalhe, cliente_id, created_at |
 | `metas` | Metas trimestrais por cliente | id, cliente_id (FK), trimestre, ano, meta_cliente |
-| `pedidos` | Pedidos (1 reg. por item) | id, numero_pedido (UNIQUE), tipo_venda, data_pedido, cliente_id (FK), produto_id (FK), supervisor, lote_id, quantidade_total, valor_total, desconto_campanha, forma_pagamento, credito_utilizado, status, observacoes |
+| `pedidos` | Pedidos (1 reg. por item) | id, numero_pedido (UNIQUE), tipo_venda, data_pedido, cliente_id (FK), produto_id (FK), supervisor, lote_id, quantidade_total, valor_total, desconto_campanha, forma_pagamento, credito_utilizado, desconto_pagamento, status, observacoes |
 | `pedido_logs` | Histórico de ações | id, pedido_id, numero_pedido, usuario_nome, usuario_tipo, acao, status_antes, status_depois, detalhes, created_at |
 | `contas_receber` | Títulos a receber | id, numero_documento, cliente_id (FK), valor_receber, descontos, data_emissao, data_vencimento, data_pagamento, situacao |
 | `contas_pagar` | Títulos a pagar | id, numero_documento, fornecedor_id (FK), valor_pagar, descontos, juros, data_emissao, data_vencimento, data_pagamento, situacao |

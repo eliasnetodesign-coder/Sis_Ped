@@ -19,7 +19,7 @@ Sis_Ped/
 │   │                       # Campanhas, Canal de Venda, NCM, Metas, Bônus, Créditos, Usuários
 │   │   └── kit_composicao.php  # Semente da composição de KITs (gerada da planilha)
 │   ├── financeiro/         # Contas a receber/pagar, fornecedores, ordens de pagamento/investimento
-│   ├── relatorios/         # Faturamento diário/mensal/anual/cliente/canal/vendedor/estado/região + status
+│   ├── relatorios/         # Faturamento diário/mensal/anual/cliente/canal/supervisor/estado/região + status
 │   ├── dashboard.php
 │   ├── pedidos.php         # Lista de pedidos com filtros
 │   ├── novo-pedido.php     # Criação de pedido (carrinho)
@@ -52,7 +52,7 @@ Sis_Ped/
 |--------|--------|--------|
 | `comercial` | Admin | Acesso completo: cadastros, pedidos, relatórios, aprovação na etapa Comercial |
 | `financeiro` | Admin | Módulo financeiro; aprova/retorna/cancela na etapa Financeiro |
-| `supervisor` | Admin | Visão filtrada aos próprios clientes/pedidos; cria pedidos e **aprova pedidos aguardando Comercial** |
+| `supervisor` | Admin | Visão filtrada aos próprios clientes/pedidos; cria pedidos e **aprova/cancela pedidos na etapa Comercial** |
 | `tecnologia da informacao` | Admin | Acesso amplo (inclui campos sensíveis em cadastros) |
 | `cliente` | Cliente | Pedidos próprios, títulos financeiros, perfil, troca de CNPJ |
 
@@ -68,7 +68,9 @@ Sis_Ped/
 - **Cadastros completos:** produtos, clientes, grupo de empresas, tabela de preços (3 faixas), campanhas, canais de venda, NCM, metas, usuários, fornecedores
 - **Produtos com aba KIT:** para produtos do grupo "Kit", composição editável (busca de produtos por código/nome, quantidade, adicionar/remover)
 - **Grupo de Empresas:** agrupa CNPJs (clientes) em accordion expansível; usado para troca de empresa no login
-- **Campanhas avançadas:** por **vários produtos** ou por **combinação** de Linha/Grupo/Subgrupo, com canal opcional e quantidade mínima
+- **Campanhas avançadas:** tipo **Desconto** (%) ou **Produtos Bonificados**; alvo por **vários produtos** ou por **combinação** de Linha/Grupo/Subgrupo, com canal opcional e quantidade mínima
+- **Detalhe do pedido:** card de "Descontos e Campanhas" (percentuais e campanhas atingidas) e modal de **Detalhamento Fiscal** (preço Network + ICMS/IPI/PIS/COFINS do NCM, com Total da Nota Fiscal)
+- **Lista de pedidos:** filtro por **cliente** (no perfil financeiro, expande para o grupo de empresas) + colunas extras do financeiro (Crédito, Detalhamento Fiscal, Accademia, % e Valor de Desconto)
 - **Import/Export Excel** em clientes, produtos e tabela de preços (preview + upsert)
 - **Bônus de Desempenho** trimestral e **Bônus de Material de Apoio** mensal por cliente
 - **Concessão de Créditos** para clientes
@@ -76,7 +78,7 @@ Sis_Ped/
 
 ### Portal Cliente
 - Dashboard com resumo de pedidos e boletos; popup de Bônus MA no primeiro acesso do mês
-- Fazer pedido com desconto automático (cliente + canal + campanha)
+- Fazer pedido com desconto automático (cliente + canal + campanha); escolha de forma de pagamento (Pix com 5%) e uso de crédito
 - Histórico de pedidos e acesso ao PDF
 - Visualização de títulos financeiros (somente leitura)
 - Edição de perfil e senha
@@ -94,7 +96,12 @@ Os preços aplicados em cada pedido combinam até 3 camadas:
 
 Cada campanha é de um **tipo**: **Desconto** (percentual, acima) ou **Produtos Bonificados**. Campanhas de bonificação não dão desconto: ao acionar numa venda, geram um **pedido bonificado separado** com produtos brinde cuja quantidade multiplica conforme o total comprado (ex.: mínimo 50, comprou 100 → bônus ×2) e notificam o cliente.
 
-Pedidos de bonificação usam a tabela de preços **Network** e têm `valor_total = 0`.
+Pedidos de bonificação usam a tabela de preços **Network** (valor = `qtd × preço Network`).
+
+### Pagamento e crédito
+- **Desconto Pix (5%):** se a forma de pagamento for **Pix**, aplica 5% sobre o valor já líquido de crédito.
+- **Crédito do cliente:** limitado à **diferença entre o valor do pedido e o detalhamento fiscal** (`Total − NF`, onde `NF = Σ qtd × preço Network × (1 + IPI/100)`). Se o crédito disponível exceder, o sistema pergunta se quer usar só a diferença e manter o restante para outro pedido.
+- **Ordem de cálculo:** `Total a Pagar = Total − Crédito − Pix`.
 
 ## Instalação
 
