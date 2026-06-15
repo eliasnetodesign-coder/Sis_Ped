@@ -325,6 +325,7 @@ if ($pedidoId < 1) {
 $pedido = db()->prepare("
     SELECT p.*, c.razao_social, c.email AS cliente_email,
            c.desconto_cliente, c.desconto_canal, c.estado AS cliente_uf, c.cidade AS cliente_cidade,
+           c.canal_venda_id AS cliente_canal_id,
            cv.canal AS canal_venda,
            pr.codigo_produto, pr.multiplo, pr.linha, pr.grupo, pr.subgrupo,
            COALESCE(t.preco_padrao, pr.vendas_varejo) AS preco_unit
@@ -417,6 +418,67 @@ foreach ($fiscalRaw as $r) {
     ];
     $fiscalTot['item']  += $total; $fiscalTot['icms'] += $vIcms; $fiscalTot['ipi'] += $vIpi;
     $fiscalTot['pis']   += $vPis;  $fiscalTot['cofins'] += $vCof;
+}
+
+// ===== Descontos aplicados e campanhas atingidas (informativo) =====
+$descCliente   = (float)($pedido['desconto_cliente'] ?? 0);
+$descCanal     = (float)($pedido['desconto_canal'] ?? 0);
+$pedidoCanalId = (int)($pedido['cliente_canal_id'] ?? 0);
+$ehBonifPedido = ($pedido['tipo_venda'] ?? 'venda') === 'bonificacao';
+
+// Itens do pedido com categoria (para checar gatilho das campanhas)
+$ci = db()->prepare("SELECT p.produto_id, p.quantidade_total, pr.linha, pr.grupo, pr.subgrupo
+                     FROM pedidos p LEFT JOIN produtos pr ON pr.id = p.produto_id
+                     WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?'));
+$ci->execute([$loteId ?: $pedidoId]);
+$cTotProd = $cTotL = $cTotG = $cTotS = [];
+foreach ($ci->fetchAll() as $it) {
+    $q = (int)$it['quantidade_total']; if ($q <= 0) continue;
+    $pid = (int)$it['produto_id'];
+    if ($pid) $cTotProd[$pid] = ($cTotProd[$pid] ?? 0) + $q;
+    $l = trim($it['linha'] ?? '');    if ($l) $cTotL[$l] = ($cTotL[$l] ?? 0) + $q;
+    $g = trim($it['grupo'] ?? '');    if ($g) $cTotG[$g] = ($cTotG[$g] ?? 0) + $q;
+    $s = trim($it['subgrupo'] ?? ''); if ($s) $cTotS[$s] = ($cTotS[$s] ?? 0) + $q;
+}
+
+$campsAll = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto, tipo FROM campanhas")->fetchAll();
+$bonifMap = [];
+foreach (db()->query("SELECT cb.codigo_campanha, cb.quantidade, p.descricao_pt, p.codigo_produto
+    FROM campanha_bonificacao cb JOIN produtos p ON p.id = cb.produto_id ORDER BY cb.id")->fetchAll() as $b) {
+    $bonifMap[$b['codigo_campanha']][] = (int)$b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']);
+}
+$campsByCode = [];
+foreach ($campsAll as $c) $campsByCode[$c['codigo_campanha']][] = $c;
+
+$campanhasAtingidas = [];
+foreach ($campsByCode as $code => $rows) {
+    $min = (int)$rows[0]['quantidade']; if ($min <= 0) continue;
+    $canal = $rows[0]['canal_venda_id'];
+    if ($canal && (int)$canal !== $pedidoCanalId) continue;
+    $prodIds = array_values(array_unique(array_filter(array_map(fn($r) => (int)$r['produto_id'], $rows))));
+    $trigger = 0; $alvos = [];
+    if ($prodIds) {
+        foreach ($prodIds as $pid) $trigger += $cTotProd[$pid] ?? 0;
+        $alvos[] = count($prodIds) . ' produto(s)';
+    } else {
+        foreach ($rows as $r) {
+            $cL = trim(preg_replace('/\d+/', '', $r['linha']    ?? ''));
+            $cG = trim(preg_replace('/\d+/', '', $r['grupo']    ?? ''));
+            $cS = trim(preg_replace('/\d+/', '', $r['subgrupo'] ?? ''));
+            if ($cL)     { $trigger = max($trigger, $cTotL[$cL] ?? 0); $alvos[] = 'Linha ' . $cL; }
+            elseif ($cG) { $trigger = max($trigger, $cTotG[$cG] ?? 0); $alvos[] = 'Grupo ' . $cG; }
+            elseif ($cS) { $trigger = max($trigger, $cTotS[$cS] ?? 0); $alvos[] = 'Subgrupo ' . $cS; }
+        }
+    }
+    if ($trigger < $min) continue; // campanha não atingida
+    $campanhasAtingidas[] = [
+        'codigo'   => $code,
+        'tipo'     => $rows[0]['tipo'] ?? 'desconto',
+        'desconto' => (float)$rows[0]['desconto'],
+        'bonus'    => $bonifMap[$code] ?? [],
+        'alvo'     => implode(', ', array_unique($alvos)),
+        'qtd'      => $trigger, 'min' => $min, 'mult' => intdiv($trigger, max(1, $min)),
+    ];
 }
 
 $creditoUsadoAdmin = 0.0;
@@ -721,6 +783,62 @@ require_once LAYOUT_PATH . '/header.php';
                     </div>
                     <?php endif; ?>
                 </div>
+            </div>
+        </div>
+
+        <!-- Descontos e campanhas -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white py-3">
+                <h5 class="mb-0"><i class="bi bi-percent me-2 text-primary"></i>Descontos e Campanhas</h5>
+            </div>
+            <div class="card-body">
+                <?php if ($ehBonifPedido): ?>
+                <div class="text-muted mb-3"><i class="bi bi-gift me-1"></i>Pedido de <strong>bonificação</strong> — sem desconto comercial (preço pela tabela Network).</div>
+                <?php else: ?>
+                <div class="row g-3 mb-3">
+                    <div class="col-6 col-md-3">
+                        <div class="text-muted small">Desconto Cliente</div>
+                        <div class="fw-semibold"><?= rtrim(rtrim(number_format($descCliente, 2, ',', '.'), '0'), ',') ?>%</div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="text-muted small">Desconto Canal</div>
+                        <div class="fw-semibold"><?= rtrim(rtrim(number_format($descCanal, 2, ',', '.'), '0'), ',') ?>%</div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="text-muted small">Comercial (Cliente + Canal)</div>
+                        <div class="fw-semibold text-primary"><?= rtrim(rtrim(number_format($descCliente + $descCanal, 2, ',', '.'), '0'), ',') ?>%</div>
+                    </div>
+                </div>
+                <?php endif; ?>
+
+                <div class="text-muted small fw-semibold text-uppercase mb-2">Campanhas Atingidas</div>
+                <?php if ($campanhasAtingidas): ?>
+                <div class="d-flex flex-wrap gap-2">
+                    <?php foreach ($campanhasAtingidas as $ca):
+                        $ehB = $ca['tipo'] === 'bonificacao';
+                        $pct = rtrim(rtrim(number_format($ca['desconto'], 2, ',', '.'), '0'), ',');
+                    ?>
+                    <div class="border rounded-3 px-3 py-2" style="background:#f8fffe">
+                        <div class="d-flex align-items-center gap-2">
+                            <?php if ($ehB): ?>
+                            <span class="badge bg-warning text-dark"><i class="bi bi-gift"></i> Bonificação</span>
+                            <?php else: ?>
+                            <span class="badge bg-success">−<?= $pct ?>%</span>
+                            <?php endif; ?>
+                            <span class="fw-semibold small"><?= e($ca['codigo']) ?></span>
+                        </div>
+                        <div class="text-muted" style="font-size:.76rem">
+                            <?= e($ca['alvo']) ?> &middot; atingido <?= (int)$ca['qtd'] ?> un. (mín. <?= (int)$ca['min'] ?>)
+                            <?php if ($ehB && $ca['bonus']): ?>
+                            <br><span class="text-warning fw-semibold"><i class="bi bi-gift-fill me-1"></i>Brinde ×<?= (int)$ca['mult'] ?>: <?= e(implode(', ', $ca['bonus'])) ?></span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php else: ?>
+                <span class="text-muted">Nenhuma campanha atingida neste pedido.</span>
+                <?php endif; ?>
             </div>
         </div>
 

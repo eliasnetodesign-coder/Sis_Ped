@@ -249,6 +249,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
   - `comercial`: Aprovar (→ financeiro) ou Cancelar.
   - `supervisor`: Aprovar (→ financeiro) pedidos na etapa Comercial.
   - `financeiro`: Aprovar (→ faturamento), Retornar ao Comercial ou Cancelar.
+- **Descontos e Campanhas (card):** mostra os percentuais usados — Desconto Cliente, Desconto Canal e Comercial (Cliente+Canal) — e a lista de **campanhas atingidas** pelo pedido (código, alvo, quantidade atingida × mínimo, e o desconto% ou os produtos bonificados ×multiplicador). Pedidos de bonificação indicam "sem desconto comercial".
 - Recalcula descontos de campanha ao aprovar/alterar (`recalcularDescontosCampanha`).
 - Forma de Pagamento registrável.
 - Crédito utilizado registrado no campo `credito_utilizado` do pedido.
