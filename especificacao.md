@@ -459,6 +459,7 @@ Pedidos de **bonificação** sempre têm `valor_total = 0`.
 - Campo `valor_utilizado` no registro do crédito rastreia quanto foi consumido em pedidos.
 - Campo `credito_utilizado` no pedido registra o valor aplicado.
 - Crédito com `valor_utilizado > 0` não pode ser excluído.
+- **Limite de uso por pedido (diferença fiscal):** o crédito só pode ser usado sobre a **diferença = valor do pedido − detalhamento fiscal (NF)** (a mesma "Accademia": `NF = Σ qtd × preço Network × (1 + IPI/100)`). Se o crédito disponível do cliente exceder essa diferença, o sistema **pergunta** se ele quer usar apenas a diferença e **manter o restante para outro pedido**. Validado no cliente (modal de pagamento) e no servidor (`cliente/novo-pedido.php`). Se a diferença for ≤ 0 (NF ≥ valor do pedido), o crédito não pode ser aplicado.
 
 ### 5.8 E-mail de Cliente (Chave Única de Login)
 - E-mail é chave de login do portal cliente; deve ser único em `clientes`.

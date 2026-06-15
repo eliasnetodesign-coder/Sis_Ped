@@ -198,8 +198,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $totBrStmt->execute($ids_criados);
             $totalPedido = (float)$totBrStmt->fetchColumn();
 
-            // Crédito é aplicado primeiro (limitado ao total). O Pix incide sobre o líquido após o crédito.
-            $creditoAplicado = $creditoAplicado > 0.001 ? min($creditoAplicado, $totalPedido) : 0.0;
+            // Detalhamento fiscal (NF) = Σ qtd × preço Network × (1 + IPI/100). O crédito só pode ser usado
+            // sobre a diferença (valor do pedido − NF); o excedente fica para outro pedido.
+            $nfStmt = db()->prepare("SELECT COALESCE(SUM(p.quantidade_total * COALESCE(t.preco_network,0) * (1 + COALESCE(n.ipi,0)/100)),0)
+                FROM pedidos p
+                LEFT JOIN produtos pr     ON pr.id = p.produto_id
+                LEFT JOIN tabela_precos t ON t.produto_id = pr.id
+                LEFT JOIN ncm n           ON n.id = pr.ncm_id
+                WHERE p.id IN ($phT)");
+            $nfStmt->execute($ids_criados);
+            $nfPedido   = (float)$nfStmt->fetchColumn();
+            $difCredito = max(0, $totalPedido - $nfPedido);
+
+            // Crédito limitado à diferença (aplicado primeiro). O Pix incide sobre o líquido após o crédito.
+            $creditoAplicado = $creditoAplicado > 0.001 ? min($creditoAplicado, $difCredito) : 0.0;
 
             // Desconto Pix: 5% sobre o total já líquido de crédito (Total − Crédito − Pix). Somente venda.
             $descontoPix = ($tipoVenda === 'venda' && strcasecmp($formaPagamento, 'Pix') === 0)
@@ -321,8 +333,11 @@ $creditoDisponivel   = array_sum(array_column($creditosDisponiveis, 'saldo'));
 
 $colPrecoExib = $bonifFlag ? 't.preco_network' : 't.preco_padrao';
 $produtos = db()->query("SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
-    COALESCE($colPrecoExib, p.vendas_varejo, 0) as preco
-    FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
+    COALESCE($colPrecoExib, p.vendas_varejo, 0) as preco,
+    COALESCE(t.preco_network, 0) as preco_net, COALESCE(n.ipi, 0) as ipi_ncm
+    FROM produtos p
+    LEFT JOIN tabela_precos t ON t.produto_id = p.id
+    LEFT JOIN ncm n ON n.id = p.ncm_id
     WHERE p.status = \"ativo\" ORDER BY p.linha, p.descricao_pt")->fetchAll();
 $idiomaCliente = $cli_data['idioma'] ?? 'pt';
 
@@ -564,6 +579,8 @@ require_once LAYOUT_PATH . '/header.php';
                 <tr class="produto-row"
                     data-pid="<?= $pid ?>"
                     data-preco="<?= e($precoExib) ?>"
+                    data-net="<?= e((float)($p['preco_net'] ?? 0)) ?>"
+                    data-ipi="<?= e((float)($p['ipi_ncm'] ?? 0)) ?>"
                     data-nome="<?= e($p['descricao_pt']) ?>"
                     data-codigo="<?= e($p['codigo_produto']) ?>"
                     data-barra="<?= e($p['codigo_barra'] ?? '') ?>"
@@ -972,6 +989,8 @@ function getItens() {
                 multiplo:  multiplo,
                 qtd:       actual,
                 sub:       preco * actual,
+                net:       parseFloat(row.dataset.net) || 0,
+                ipi:       parseFloat(row.dataset.ipi) || 0,
                 tab:       row.dataset.tab
             });
         }
@@ -1217,10 +1236,14 @@ if (_modoMA) {
 } else {
     // Resumo: crédito é aplicado primeiro; o Pix (5%) incide sobre o líquido após o crédito.
     function _totalPedido() { return getItens().reduce(function(a,i){ return a+i.sub; }, 0); }
+    // Detalhamento fiscal (NF) = Σ qtd × preço Network × (1 + IPI/100)
+    function _nfPedido() { return getItens().reduce(function(a,i){ return a + (i.qtd * i.net * (1 + i.ipi/100)); }, 0); }
+    // Diferença sobre a qual o crédito pode ser usado: valor do pedido − detalhamento fiscal
+    function _difCredito() { return Math.max(0, Math.round((_totalPedido() - _nfPedido()) * 100) / 100); }
     function _calcResumo() {
         var total = _totalPedido();
         var chk   = document.getElementById('chkUsarCredito');
-        var credito = (chk && chk.checked && _creditoDisponivel > 0) ? Math.min(_creditoDisponivel, total) : 0;
+        var credito = (chk && chk.checked && _creditoDisponivel > 0) ? Math.min(_creditoDisponivel, _difCredito()) : 0;
         var sel = document.querySelector('input[name="pagamento_sel"]:checked');
         var pix = (sel && sel.value === 'Pix') ? Math.round(Math.max(0, total - credito) * 0.05 * 100) / 100 : 0;
         return { total: total, credito: credito, pix: pix, liquido: Math.max(0, total - credito - pix) };
@@ -1284,10 +1307,31 @@ if (_modoMA) {
         _submeterPedido(this);
     });
 
-    // Toggle crédito: atualiza aviso com valor calculado
+    // Toggle crédito: valida o limite (diferença valor do pedido − detalhamento fiscal)
     var _chkCred = document.getElementById('chkUsarCredito');
     if (_chkCred) {
-        _chkCred.addEventListener('change', atualizarAvisoCredito);
+        _chkCred.addEventListener('change', function() {
+            if (this.checked) {
+                var dif = _difCredito();
+                if (dif <= 0) {
+                    alert('Neste pedido não há diferença disponível entre o valor do pedido e o detalhamento fiscal, '
+                        + 'portanto não é possível aplicar crédito.');
+                    this.checked = false;
+                    atualizarAvisoCredito();
+                    return;
+                }
+                if (_creditoDisponivel > dif + 0.001) {
+                    var resto = Math.round((_creditoDisponivel - dif) * 100) / 100;
+                    var ok = confirm(
+                        'Você tem ' + fmtBRL(_creditoDisponivel) + ' de crédito, mas neste pedido só pode usar '
+                        + fmtBRL(dif) + ' (diferença entre o valor do pedido e o detalhamento fiscal).\n\n'
+                        + 'Deseja usar ' + fmtBRL(dif) + ' e manter ' + fmtBRL(resto) + ' para outro pedido?'
+                    );
+                    if (!ok) { this.checked = false; atualizarAvisoCredito(); return; }
+                }
+            }
+            atualizarAvisoCredito();
+        });
     }
 }
 
