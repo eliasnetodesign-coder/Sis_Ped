@@ -151,6 +151,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <td class="text-muted small"><?= e($cr['usuario_nome'] ?: '—') ?></td>
                     <td>
                         <div class="d-flex gap-1 flex-nowrap">
+                            <?php if ($cr['log_acao'] !== 'aprovado'): ?>
                             <form method="POST" class="d-inline">
                                 <input type="hidden" name="action" value="aprovado">
                                 <input type="hidden" name="id" value="<?= $cr['id'] ?>">
@@ -161,6 +162,8 @@ require_once LAYOUT_PATH . '/header.php';
                                     <i class="bi bi-check-lg"></i>
                                 </button>
                             </form>
+                            <?php endif; ?>
+                            <?php if ($cr['log_acao'] !== 'reprovado'): ?>
                             <form method="POST" class="d-inline">
                                 <input type="hidden" name="action" value="reprovado">
                                 <input type="hidden" name="id" value="<?= $cr['id'] ?>">
@@ -171,6 +174,7 @@ require_once LAYOUT_PATH . '/header.php';
                                     <i class="bi bi-x-lg"></i>
                                 </button>
                             </form>
+                            <?php endif; ?>
                             <?php $jaUsado = (float)($cr['valor_utilizado'] ?? 0) > 0; ?>
                             <?php if ($jaUsado): ?>
                                 <button class="btn btn-xs btn-outline-secondary disabled" disabled

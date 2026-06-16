@@ -205,8 +205,10 @@ require_once LAYOUT_PATH . '/header.php';
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
+                    <?php $maAcao = $logs[$r['id']]['acao'] ?? null; ?>
                     <td>
                         <div class="d-flex gap-1 flex-nowrap">
+                            <?php if ($maAcao !== 'aprovado'): ?>
                             <form method="POST" class="d-inline">
                                 <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
                                 <input type="hidden" name="mes" value="<?= $mes ?>">
@@ -216,6 +218,8 @@ require_once LAYOUT_PATH . '/header.php';
                                     <i class="bi bi-check-lg"></i>
                                 </button>
                             </form>
+                            <?php endif; ?>
+                            <?php if ($maAcao !== 'reprovado'): ?>
                             <form method="POST" class="d-inline">
                                 <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
                                 <input type="hidden" name="mes" value="<?= $mes ?>">
@@ -225,6 +229,7 @@ require_once LAYOUT_PATH . '/header.php';
                                     <i class="bi bi-x-lg"></i>
                                 </button>
                             </form>
+                            <?php endif; ?>
                         </div>
                     </td>
                     <td style="min-width:160px">

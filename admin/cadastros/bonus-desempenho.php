@@ -321,6 +321,7 @@ require_once LAYOUT_PATH . '/header.php';
                         <?php endif; ?>
                         <?php if ($isComercial): ?>
                             <div class="d-flex gap-1 flex-nowrap justify-content-center mt-1">
+                                <?php if ($cAcao !== 'aprovado'): ?>
                                 <form method="POST" class="d-inline">
                                     <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
                                     <input type="hidden" name="tri" value="<?= $tri ?>">
@@ -331,6 +332,8 @@ require_once LAYOUT_PATH . '/header.php';
                                         <i class="bi bi-check-lg"></i>
                                     </button>
                                 </form>
+                                <?php endif; ?>
+                                <?php if ($cAcao !== 'reprovado'): ?>
                                 <form method="POST" class="d-inline">
                                     <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
                                     <input type="hidden" name="tri" value="<?= $tri ?>">
@@ -341,6 +344,7 @@ require_once LAYOUT_PATH . '/header.php';
                                         <i class="bi bi-x-lg"></i>
                                     </button>
                                 </form>
+                                <?php endif; ?>
                             </div>
                         <?php elseif (!$cLog): ?>
                             <span class="text-muted small">Pendente</span>
@@ -364,6 +368,7 @@ require_once LAYOUT_PATH . '/header.php';
                             <?php endif; ?>
                             <?php if ($isFinanceiro): ?>
                                 <div class="d-flex gap-1 flex-nowrap justify-content-center mt-1">
+                                    <?php if ($fAcao !== 'aprovado'): ?>
                                     <form method="POST" class="d-inline">
                                         <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
                                         <input type="hidden" name="tri" value="<?= $tri ?>">
@@ -374,6 +379,8 @@ require_once LAYOUT_PATH . '/header.php';
                                             <i class="bi bi-check-lg"></i>
                                         </button>
                                     </form>
+                                    <?php endif; ?>
+                                    <?php if ($fAcao !== 'reprovado'): ?>
                                     <form method="POST" class="d-inline">
                                         <input type="hidden" name="cliente_id" value="<?= $r['id'] ?>">
                                         <input type="hidden" name="tri" value="<?= $tri ?>">
@@ -384,6 +391,7 @@ require_once LAYOUT_PATH . '/header.php';
                                             <i class="bi bi-x-lg"></i>
                                         </button>
                                     </form>
+                                    <?php endif; ?>
                                 </div>
                             <?php elseif (!$fLog): ?>
                                 <span class="text-muted small">Pendente</span>
