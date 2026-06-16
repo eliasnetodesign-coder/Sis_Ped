@@ -56,13 +56,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $usuario = $stmt->fetch();
 
         if ($usuario && $usuario['senha'] === $senha) {
-            $_SESSION['usuario'] = [
+            $sessionUser = [
                 'id'    => $usuario['id'],
                 'nome'  => $usuario['nome'],
                 'email' => $usuario['email'],
                 'tipo'  => $usuario['tipo_acesso'],
                 'must_change' => ((int)($usuario['senha_temporaria'] ?? 0) === 1),
             ];
+
+            // Usuário "Externo" fora do IP autorizado: exige verificação por WhatsApp (2FA)
+            $ehExterno = strcasecmp(trim($usuario['tipo_usuario'] ?? ''), 'Externo') === 0;
+            if ($ehExterno && ipCliente() !== IP_LIBERADO) {
+                if (empty($usuario['celular'])) {
+                    flash('danger', 'Acesso externo exige verificação por WhatsApp, mas não há celular cadastrado. Procure o administrador.');
+                    header('Location: ' . BASE_URL . '/login.php');
+                    exit;
+                }
+                $codigo  = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+                $enviado = enviarWhatsappCodigo($usuario['celular'], $codigo, (int)$usuario['id']);
+                if (!$enviado) {
+                    flash('danger', 'Não foi possível enviar o código de verificação. Tente novamente em instantes.');
+                    header('Location: ' . BASE_URL . '/login.php');
+                    exit;
+                }
+                $_SESSION['login_2fa'] = [
+                    'usuario'    => $sessionUser,
+                    'codigo_hash'=> password_hash($codigo, PASSWORD_DEFAULT),
+                    'expira'     => time() + WHATSAPP_CODIGO_VALIDADE,
+                    'telefone'   => mascararTelefone($usuario['celular']),
+                    'tentativas' => 0,
+                ];
+                header('Location: ' . BASE_URL . '/verificar-acesso.php');
+                exit;
+            }
+
+            $_SESSION['usuario'] = $sessionUser;
             header('Location: ' . BASE_URL . '/admin/dashboard.php');
             exit;
         }

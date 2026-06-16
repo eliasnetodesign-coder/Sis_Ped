@@ -7,15 +7,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $d = [$_POST['codigo'], $_POST['nome'], $_POST['email'], $_POST['departamento'],
               $_POST['divisao_vendas'], $_POST['tipo_acesso'], $_POST['tipo_usuario'],
-              $_POST['telefone'], $_POST['ramal'], $_POST['status']];
+              $_POST['celular'], $_POST['ramal'], $_POST['status']];
         if ($a === 'criar') {
             if (!$_POST['senha']) throw new Exception('Senha obrigatória.');
             $d[] = $_POST['senha'];
-            db()->prepare('INSERT INTO usuarios (codigo,nome,email,departamento,divisao_vendas,tipo_acesso,tipo_usuario,telefone,ramal,status,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
+            db()->prepare('INSERT INTO usuarios (codigo,nome,email,departamento,divisao_vendas,tipo_acesso,tipo_usuario,celular,ramal,status,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
             flash('success', 'Usuário criado!');
         } elseif ($a === 'editar') {
             $d[] = (int)$_POST['id'];
-            db()->prepare('UPDATE usuarios SET codigo=?,nome=?,email=?,departamento=?,divisao_vendas=?,tipo_acesso=?,tipo_usuario=?,telefone=?,ramal=?,status=? WHERE id=?')->execute($d);
+            db()->prepare('UPDATE usuarios SET codigo=?,nome=?,email=?,departamento=?,divisao_vendas=?,tipo_acesso=?,tipo_usuario=?,celular=?,ramal=?,status=? WHERE id=?')->execute($d);
             if ($_POST['senha']) {
                 db()->prepare('UPDATE usuarios SET senha=? WHERE id=?')->execute([$_POST['senha'], (int)$_POST['id']]);
             }
@@ -40,7 +40,7 @@ require_once LAYOUT_PATH . '/header.php';
 </div>
 <div class="card shadow-sm border-0"><div class="card-body p-0"><div class="table-responsive">
 <table class="table table-hover mb-0">
-    <thead class="table-light"><tr><th>Código</th><th>Nome</th><th>E-mail</th><th>Departamento</th><th>Tipo de Acesso</th><th>Telefone</th><th>Status</th><th>Ações</th></tr></thead>
+    <thead class="table-light"><tr><th>Código</th><th>Nome</th><th>E-mail</th><th>Departamento</th><th>Tipo de Acesso</th><th>Celular</th><th>Status</th><th>Ações</th></tr></thead>
     <tbody>
     <?php if ($usuarios): foreach ($usuarios as $u): ?>
         <tr>
@@ -50,7 +50,7 @@ require_once LAYOUT_PATH . '/header.php';
             <td><?= e($u['departamento']) ?></td>
             <?php $badgeColor = $u['tipo_acesso']==='comercial'?'primary':($u['tipo_acesso']==='supervisor'?'success':'warning'); ?>
             <td><span class="badge bg-<?= $badgeColor ?>"><?= ucfirst($u['tipo_acesso']) ?></span></td>
-            <td><?= e($u['telefone']) ?></td>
+            <td><?= e($u['celular']) ?></td>
             <td><?= statusBadge($u['status']) ?></td>
             <td>
                 <button class="btn btn-sm btn-outline-primary" onclick="editarReg(<?= htmlspecialchars(json_encode($u),ENT_QUOTES) ?>)"><i class="bi bi-pencil"></i></button>
@@ -82,8 +82,14 @@ require_once LAYOUT_PATH . '/header.php';
                         <option value="supervisor">Supervisor</option>
                     </select>
                 </div>
-                <div class="col-md-4"><label class="form-label fw-semibold">Tipo de Usuário</label><input type="text" name="tipo_usuario" id="f_tusr" class="form-control" placeholder="Ex: Gerente, Analista"></div>
-                <div class="col-md-4"><label class="form-label fw-semibold">Telefone</label><input type="text" name="telefone" id="f_tel" class="form-control"></div>
+                <div class="col-md-4"><label class="form-label fw-semibold">Tipo de Usuário</label>
+                    <select name="tipo_usuario" id="f_tusr" class="form-select">
+                        <option value="Interno">Interno</option>
+                        <option value="Externo">Externo</option>
+                    </select>
+                    <small class="text-muted">Externo exige verificação por WhatsApp fora do IP autorizado.</small>
+                </div>
+                <div class="col-md-4"><label class="form-label fw-semibold">Celular</label><input type="text" name="celular" id="f_tel" class="form-control" placeholder="(11) 99999-9999"></div>
                 <div class="col-md-2"><label class="form-label fw-semibold">Ramal</label><input type="text" name="ramal" id="f_ramal" class="form-control"></div>
                 <div class="col-md-2"><label class="form-label fw-semibold">Status</label><select name="status" id="f_status" class="form-select"><option value="ativo">Ativo</option><option value="inativo">Inativo</option></select></div>
             </div>
@@ -92,7 +98,7 @@ require_once LAYOUT_PATH . '/header.php';
     </form>
 </div></div></div>
 <script>
-function novoReg(){document.getElementById('mt').textContent='Novo Usuário';document.getElementById('fa').value='criar';document.getElementById('fi').value='';['cod','nome','email','senha','dep','div','tusr','tel','ramal'].forEach(function(f){document.getElementById('f_'+f).value='';});document.getElementById('f_tipo').value='comercial';document.getElementById('f_status').value='ativo';}
-function editarReg(d){document.getElementById('mt').textContent='Editar Usuário';document.getElementById('fa').value='editar';document.getElementById('fi').value=d.id;document.getElementById('f_cod').value=d.codigo||'';document.getElementById('f_nome').value=d.nome||'';document.getElementById('f_email').value=d.email||'';document.getElementById('f_senha').value='';document.getElementById('f_dep').value=d.departamento||'';document.getElementById('f_div').value=d.divisao_vendas||'';document.getElementById('f_tipo').value=d.tipo_acesso||'comercial';document.getElementById('f_tusr').value=d.tipo_usuario||'';document.getElementById('f_tel').value=d.telefone||'';document.getElementById('f_ramal').value=d.ramal||'';document.getElementById('f_status').value=d.status||'ativo';new bootstrap.Modal(document.getElementById('modal')).show();}
+function novoReg(){document.getElementById('mt').textContent='Novo Usuário';document.getElementById('fa').value='criar';document.getElementById('fi').value='';['cod','nome','email','senha','dep','div','tel','ramal'].forEach(function(f){document.getElementById('f_'+f).value='';});document.getElementById('f_tipo').value='comercial';document.getElementById('f_tusr').value='Interno';document.getElementById('f_status').value='ativo';}
+function editarReg(d){document.getElementById('mt').textContent='Editar Usuário';document.getElementById('fa').value='editar';document.getElementById('fi').value=d.id;document.getElementById('f_cod').value=d.codigo||'';document.getElementById('f_nome').value=d.nome||'';document.getElementById('f_email').value=d.email||'';document.getElementById('f_senha').value='';document.getElementById('f_dep').value=d.departamento||'';document.getElementById('f_div').value=d.divisao_vendas||'';document.getElementById('f_tipo').value=d.tipo_acesso||'comercial';document.getElementById('f_tusr').value=d.tipo_usuario||'Interno';document.getElementById('f_tel').value=d.celular||'';document.getElementById('f_ramal').value=d.ramal||'';document.getElementById('f_status').value=d.status||'ativo';new bootstrap.Modal(document.getElementById('modal')).show();}
 </script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>

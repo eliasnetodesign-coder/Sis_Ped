@@ -10,6 +10,12 @@ define('EMPRESA_UF', 'SP'); // UF da empresa — define ICMS local x interestadu
 define('ASSETS_URL', BASE_URL . '/assets');
 define('LAYOUT_PATH', __DIR__ . '/layout');
 
+// Segurança de acesso — usuários do tipo "Externo" só dispensam verificação
+// quando logam a partir deste IP. Fora dele, exige código por WhatsApp (2FA).
+define('IP_LIBERADO', '201.6.128.102');
+define('WHATSAPP_REMETENTE', '11 99982-5523'); // número que envia a verificação
+define('WHATSAPP_CODIGO_VALIDADE', 600);        // validade do código, em segundos (10 min)
+
 function db() {
     static $pdo = null;
     if ($pdo === null) {
@@ -84,6 +90,24 @@ function db() {
                 quantidade      INT NOT NULL DEFAULT 1,
                 KEY idx_camp_bonif (codigo_campanha)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Normaliza tipo_usuario para os valores Interno/Externo do controle de acesso
+            try { $pdo->exec("UPDATE usuarios SET tipo_usuario = 'Interno' WHERE tipo_usuario IS NULL OR tipo_usuario NOT IN ('Interno','Externo')"); } catch (PDOException $e) {}
+            // Renomeia a coluna de contato da tabela de usuários: telefone -> celular
+            try { $pdo->exec("ALTER TABLE usuarios CHANGE COLUMN telefone celular VARCHAR(20)"); } catch (PDOException $e) {}
+            // Migra a tabela de log de verificação: sms_logs -> whatsapp_logs (antes do CREATE abaixo)
+            try { $pdo->exec("RENAME TABLE sms_logs TO whatsapp_logs"); } catch (PDOException $e) {}
+            // Log das mensagens de verificação de acesso (2FA) enviadas via WhatsApp
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS whatsapp_logs (
+                id          INT AUTO_INCREMENT PRIMARY KEY,
+                usuario_id  INT NULL,
+                destino     VARCHAR(30) NOT NULL,
+                remetente   VARCHAR(30) NOT NULL,
+                mensagem    TEXT NOT NULL,
+                ip_origem   VARCHAR(45) NULL,
+                status      VARCHAR(20) NOT NULL DEFAULT 'enviado',
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_wa_usuario (usuario_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
         } catch (PDOException $e) {
             die('Erro de conexão com o banco de dados. <a href="' . BASE_URL . '/install.php">Clique aqui para configurar.</a>');
         }
@@ -139,6 +163,94 @@ function getFlash() {
     $f = $_SESSION['flash'] ?? null;
     unset($_SESSION['flash']);
     return $f;
+}
+
+/**
+ * Retorna o IP real do cliente, considerando proxies/balanceadores.
+ */
+function ipCliente() {
+    foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP'] as $h) {
+        if (!empty($_SERVER[$h])) {
+            $ip = trim(explode(',', $_SERVER[$h])[0]); // primeiro IP da cadeia
+            if (filter_var($ip, FILTER_VALIDATE_IP)) return $ip;
+        }
+    }
+    return $_SERVER['REMOTE_ADDR'] ?? '';
+}
+
+/**
+ * Mascara um telefone para exibição, deixando visíveis apenas os 2 últimos dígitos.
+ * Ex.: (11) 99982-5523 -> (••) •••••-••23
+ */
+function mascararTelefone($tel) {
+    $d = preg_replace('/\D+/', '', (string)$tel);
+    if (strlen($d) < 2) return '•••••';
+    $fim = substr($d, -2);
+    return str_repeat('•', max(0, strlen($d) - 2)) . $fim;
+}
+
+/**
+ * Envia um código de verificação por WhatsApp para o número informado.
+ *
+ * Ponto único de integração com a API de WhatsApp. Hoje registra o envio em
+ * `whatsapp_logs` (e em logs/whatsapp.log) para funcionar em ambiente sem
+ * provedor. Para ativar de verdade (WhatsApp Cloud API da Meta, Twilio,
+ * Z-API, etc.), implemente a chamada HTTP no bloco indicado e retorne
+ * true/false conforme o resultado.
+ *
+ * @return bool true se o envio foi aceito.
+ */
+function enviarWhatsappCodigo($telefone, string $codigo, ?int $usuarioId = null): bool {
+    $destino = preg_replace('/\D+/', '', (string)$telefone);
+    if (strlen($destino) < 10) return false; // número inválido
+    // Normaliza para padrão internacional do Brasil (55 + DDD + número)
+    $destinoIntl = (strpos($destino, '55') === 0 && strlen($destino) >= 12) ? $destino : '55' . $destino;
+
+    $mensagem = "Sis_Ped: seu codigo de verificacao de acesso e {$codigo}. "
+              . "Valido por " . (WHATSAPP_CODIGO_VALIDADE / 60) . " minutos. Nao compartilhe.";
+
+    $ok = false;
+    try {
+        // ───────────────────────────────────────────────────────────────
+        // INTEGRAÇÃO COM A API DE WHATSAPP (substituir pelo provedor real)
+        // Remetente configurado: WHATSAPP_REMETENTE (= '11 99982-5523').
+        // Ex. (WhatsApp Cloud API):
+        //   $ch = curl_init("https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages");
+        //   curl_setopt_array($ch, [
+        //     CURLOPT_RETURNTRANSFER => true,
+        //     CURLOPT_POST => true,
+        //     CURLOPT_HTTPHEADER => ["Authorization: Bearer {TOKEN}", "Content-Type: application/json"],
+        //     CURLOPT_POSTFIELDS => json_encode([
+        //       "messaging_product" => "whatsapp",
+        //       "to" => $destinoIntl,
+        //       "type" => "text",
+        //       "text" => ["body" => $mensagem],
+        //     ]),
+        //   ]);
+        //   $resp = curl_exec($ch); $http = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
+        //   $ok = ($http >= 200 && $http < 300);
+        // Enquanto não há provedor, consideramos o envio aceito e registramos
+        // o código no log para permitir o teste do fluxo em desenvolvimento.
+        // ───────────────────────────────────────────────────────────────
+        $ok = true;
+
+        $logDir = __DIR__ . '/logs';
+        if (!is_dir($logDir)) @mkdir($logDir, 0775, true);
+        @file_put_contents(
+            $logDir . '/whatsapp.log',
+            date('Y-m-d H:i:s') . " | de " . WHATSAPP_REMETENTE . " | para {$destinoIntl} | {$mensagem}" . PHP_EOL,
+            FILE_APPEND
+        );
+    } catch (\Throwable $e) {
+        $ok = false;
+    }
+
+    try {
+        db()->prepare('INSERT INTO whatsapp_logs (usuario_id,destino,remetente,mensagem,ip_origem,status) VALUES (?,?,?,?,?,?)')
+            ->execute([$usuarioId, $destinoIntl, WHATSAPP_REMETENTE, $mensagem, ipCliente(), $ok ? 'enviado' : 'falha']);
+    } catch (PDOException $e) {}
+
+    return $ok;
 }
 
 function moedaBR($v) {

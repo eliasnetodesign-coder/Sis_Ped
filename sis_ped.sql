@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
     divisao_vendas VARCHAR(50),
     tipo_acesso ENUM('comercial','financeiro','supervisor','tecnologia da informacao','recursos humanos','marketing','diretoria','centro tecnico','contabilidade','recepcao','expedicao') NOT NULL DEFAULT 'comercial',
     tipo_usuario VARCHAR(50),
-    telefone VARCHAR(20),
+    celular VARCHAR(20),
     ramal VARCHAR(10),
     status ENUM('ativo','inativo') DEFAULT 'ativo',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -229,9 +229,9 @@ INSERT IGNORE INTO clientes (codigo_cliente, cnpj, razao_social, cep, endereco, 
 ('CLI001', '12.345.678/0001-90', 'Distribuidora Beleza Ltda', '01310-100', 'Av. Paulista', '1000', 'São Paulo', 'SP', '(11) 3000-0001', 'cliente@teste.com', 'João Supervisor', 1, 5.00, 50000.00, 'pt', 'BRL', '123', 'ativo'),
 ('CLI002', '98.765.432/0001-10', 'Salão Top Style', '20040-020', 'Rua da Quitanda', '50', 'Rio de Janeiro', 'RJ', '(21) 3000-0002', 'salao@teste.com', 'Maria Supervisora', 2, 3.00, 20000.00, 'pt', 'BRL', '123', 'ativo');
 
-INSERT IGNORE INTO usuarios (codigo, nome, email, senha, departamento, divisao_vendas, tipo_acesso, tipo_usuario, telefone, status) VALUES
-('USR001', 'Comercial Teste', 'comercial@teste.com', '123', 'Comercial', 'Nacional', 'comercial', 'Gerente', '(11) 9000-0001', 'ativo'),
-('USR002', 'Financeiro Teste', 'financeiro@teste.com', '123', 'Financeiro', NULL, 'financeiro', 'Analista', '(11) 9000-0002', 'ativo');
+INSERT IGNORE INTO usuarios (codigo, nome, email, senha, departamento, divisao_vendas, tipo_acesso, tipo_usuario, celular, status) VALUES
+('USR001', 'Comercial Teste', 'comercial@teste.com', '123', 'Comercial', 'Nacional', 'comercial', 'Interno', '(11) 9000-0001', 'ativo'),
+('USR002', 'Financeiro Teste', 'financeiro@teste.com', '123', 'Financeiro', NULL, 'financeiro', 'Interno', '(11) 9000-0002', 'ativo');
 
 INSERT IGNORE INTO pedidos (numero_pedido, tipo_venda, data_pedido, cliente_id, produto_id, supervisor, codigo_barra, descricao_produto, quantidade_total, valor_total, status) VALUES
 ('PED-2024-001', 'venda', '2024-01-15', 1, 1, 'João Supervisor', '7891234560001', 'Tinta Profissional 7.0', 10, 450.00, 'comercial'),
