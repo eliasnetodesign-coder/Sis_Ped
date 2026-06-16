@@ -210,12 +210,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $nfPedido   = (float)$nfStmt->fetchColumn();
             $difCredito = max(0, $totalPedido - $nfPedido);
 
-            // Crédito limitado à diferença (aplicado primeiro). O Pix incide sobre o líquido após o crédito.
-            $creditoAplicado = $creditoAplicado > 0.001 ? min($creditoAplicado, $difCredito) : 0.0;
+            // Desconto Pix: 5% sobre o valor total do pedido (somente venda via Pix).
+            $isPix       = ($tipoVenda === 'venda' && strcasecmp($formaPagamento, 'Pix') === 0);
+            $descontoPix = $isPix ? round($totalPedido * 0.05, 2) : 0.0;
 
-            // Desconto Pix: 5% sobre o total já líquido de crédito (Total − Crédito − Pix). Somente venda.
-            $descontoPix = ($tipoVenda === 'venda' && strcasecmp($formaPagamento, 'Pix') === 0)
-                ? round(max(0, $totalPedido - $creditoAplicado) * 0.05, 2) : 0.0;
+            // Crédito limitado à diferença (pedido − NF) MENOS o desconto Pix. O excedente fica para outro pedido.
+            $limiteCredito   = max(0, $difCredito - $descontoPix);
+            $creditoAplicado = $creditoAplicado > 0.001 ? min($creditoAplicado, $limiteCredito) : 0.0;
             db()->prepare('UPDATE pedidos SET desconto_pagamento = NULL WHERE lote_id = ?')->execute([$lote_id]);
             if ($descontoPix > 0) {
                 db()->prepare('UPDATE pedidos SET desconto_pagamento = ? WHERE id = ?')
@@ -730,7 +731,7 @@ require_once LAYOUT_PATH . '/header.php';
                 </div>
                 <div class="alert alert-success py-2 mt-2 mb-0" id="pixDescInfo" style="display:none">
                     <i class="bi bi-qr-code-scan me-1"></i>Pagamento via <strong>Pix</strong>: desconto de <strong>5%</strong>
-                    (<strong id="pixDescValor"></strong>) sobre o valor a pagar.
+                    (<strong id="pixDescValor"></strong>) sobre o valor total do pedido.
                 </div>
 
                 <?php if ($creditoDisponivel > 0): ?>
@@ -1234,19 +1235,26 @@ if (_modoMA) {
         _submeterPedido(this);
     });
 } else {
-    // Resumo: crédito é aplicado primeiro; o Pix (5%) incide sobre o líquido após o crédito.
+    // Resumo: o Pix (5%) incide sobre o valor total do pedido; o crédito é limitado à diferença (pedido − NF) menos o Pix.
     function _totalPedido() { return getItens().reduce(function(a,i){ return a+i.sub; }, 0); }
     // Detalhamento fiscal (NF) = Σ qtd × preço Network × (1 + IPI/100)
     function _nfPedido() { return getItens().reduce(function(a,i){ return a + (i.qtd * i.net * (1 + i.ipi/100)); }, 0); }
-    // Diferença sobre a qual o crédito pode ser usado: valor do pedido − detalhamento fiscal
-    function _difCredito() { return Math.max(0, Math.round((_totalPedido() - _nfPedido()) * 100) / 100); }
+    // Diferença bruta (pedido − detalhamento fiscal), antes de descontar o Pix
+    function _baseDif() { return Math.max(0, Math.round((_totalPedido() - _nfPedido()) * 100) / 100); }
     function _calcResumo() {
-        var total = _totalPedido();
-        var chk   = document.getElementById('chkUsarCredito');
-        var credito = (chk && chk.checked && _creditoDisponivel > 0) ? Math.min(_creditoDisponivel, _difCredito()) : 0;
-        var sel = document.querySelector('input[name="pagamento_sel"]:checked');
-        var pix = (sel && sel.value === 'Pix') ? Math.round(Math.max(0, total - credito) * 0.05 * 100) / 100 : 0;
-        return { total: total, credito: credito, pix: pix, liquido: Math.max(0, total - credito - pix) };
+        var total   = _totalPedido();
+        var baseDif = _baseDif();
+        var chk     = document.getElementById('chkUsarCredito');
+        var usar    = !!(chk && chk.checked && _creditoDisponivel > 0);
+        var sel     = document.querySelector('input[name="pagamento_sel"]:checked');
+        var isPix   = !!(sel && sel.value === 'Pix');
+
+        // Desconto Pix: 5% sobre o valor total do pedido.
+        var pix    = isPix ? Math.round(total * 0.05 * 100) / 100 : 0;
+        // Limite de crédito = diferença (pedido − NF) MENOS o desconto Pix.
+        var limite = Math.max(0, Math.round((baseDif - pix) * 100) / 100);
+        var credito = usar ? Math.min(_creditoDisponivel, limite) : 0;
+        return { total: total, baseDif: baseDif, limite: limite, credito: credito, pix: pix, liquido: Math.max(0, total - credito - pix) };
     }
     function atualizarAvisoCredito() {
         var chk = document.getElementById('chkUsarCredito');
@@ -1298,40 +1306,41 @@ if (_modoMA) {
             return;
         }
         document.getElementById('formaPagamento').value = sel.value;
-        // Captura crédito a aplicar (crédito primeiro, limitado ao total; o Pix incide depois)
+
+        // Validação do crédito no momento de finalizar — só agora a forma de pagamento (e portanto
+        // o desconto Pix) é conhecida, e o limite de crédito desconta o Pix.
         var chk = document.getElementById('chkUsarCredito');
         if (chk && chk.checked && _creditoDisponivel > 0) {
-            document.getElementById('creditoAplicadoInput').value = _calcResumo().credito.toFixed(2);
+            var r = _calcResumo();
+            if (r.limite <= 0) {
+                alert('Neste pedido não há diferença disponível entre o valor do pedido e o detalhamento fiscal'
+                    + (r.pix > 0 ? ' (já considerando o desconto Pix)' : '') + ', '
+                    + 'portanto não é possível aplicar crédito. O pedido seguirá sem uso de crédito.');
+                chk.checked = false;
+                atualizarAvisoCredito();
+                return;
+            }
+            if (_creditoDisponivel > r.limite + 0.001) {
+                var resto = Math.round((_creditoDisponivel - r.limite) * 100) / 100;
+                var ok = confirm(
+                    'Você tem ' + fmtBRL(_creditoDisponivel) + ' de crédito, mas neste pedido só pode usar '
+                    + fmtBRL(r.limite) + ' (diferença entre o valor do pedido e o detalhamento fiscal'
+                    + (r.pix > 0 ? ', já descontado o Pix' : '') + ').\n\n'
+                    + 'Deseja usar ' + fmtBRL(r.limite) + ' e manter ' + fmtBRL(resto) + ' para outro pedido?'
+                );
+                if (!ok) { return; }
+            }
+            document.getElementById('creditoAplicadoInput').value = r.credito.toFixed(2);
         }
         document.getElementById('btnFecharModalPagto').disabled = true;
         _submeterPedido(this);
     });
 
-    // Toggle crédito: valida o limite (diferença valor do pedido − detalhamento fiscal)
+    // Toggle crédito: apenas atualiza o aviso; a validação do limite ocorre ao finalizar o pedido,
+    // quando a forma de pagamento (e o desconto Pix) já está definida.
     var _chkCred = document.getElementById('chkUsarCredito');
     if (_chkCred) {
-        _chkCred.addEventListener('change', function() {
-            if (this.checked) {
-                var dif = _difCredito();
-                if (dif <= 0) {
-                    alert('Neste pedido não há diferença disponível entre o valor do pedido e o detalhamento fiscal, '
-                        + 'portanto não é possível aplicar crédito.');
-                    this.checked = false;
-                    atualizarAvisoCredito();
-                    return;
-                }
-                if (_creditoDisponivel > dif + 0.001) {
-                    var resto = Math.round((_creditoDisponivel - dif) * 100) / 100;
-                    var ok = confirm(
-                        'Você tem ' + fmtBRL(_creditoDisponivel) + ' de crédito, mas neste pedido só pode usar '
-                        + fmtBRL(dif) + ' (diferença entre o valor do pedido e o detalhamento fiscal).\n\n'
-                        + 'Deseja usar ' + fmtBRL(dif) + ' e manter ' + fmtBRL(resto) + ' para outro pedido?'
-                    );
-                    if (!ok) { this.checked = false; atualizarAvisoCredito(); return; }
-                }
-            }
-            atualizarAvisoCredito();
-        });
+        _chkCred.addEventListener('change', atualizarAvisoCredito);
     }
 }
 
