@@ -582,11 +582,11 @@ require_once LAYOUT_PATH . '/header.php';
                 ? moedaBR((float)$c['bonif_limite_valor'])
                 : ((int)$c['bonif_limite_valor'] . ' un.');
         ?>
-        <div class="d-flex align-items-start gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
+        <div class="camp-chip d-flex align-items-start gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
             <?php if ($ehBonif): ?>
             <span class="badge bg-warning text-dark fs-6 fw-bold px-2"><i class="bi bi-gift"></i></span>
             <div style="line-height:1.3">
-                <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
+                <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?> <span class="camp-mult badge bg-success ms-1" style="display:none"></span></div>
                 <div class="text-muted" style="font-size:.76rem"><?= e($c['gatilho']) ?></div>
                 <div class="text-warning fw-semibold" style="font-size:.74rem">
                     <?php if ($ehSelec): ?>
@@ -600,7 +600,7 @@ require_once LAYOUT_PATH . '/header.php';
             <?php else: ?>
             <span class="badge bg-success fs-6 fw-bold px-2">−<?= $pct ?>%</span>
             <div style="line-height:1.3">
-                <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
+                <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?> <span class="camp-mult badge bg-success ms-1" style="display:none"></span></div>
                 <div class="text-muted" style="font-size:.76rem"><?= e($c['gatilho']) ?></div>
                 <?= $renderBarras($c) ?>
             </div>
@@ -1054,32 +1054,55 @@ function recalcularTodas() {
     });
 }
 
-// Atualiza as barras de progresso das campanhas (condições E / valor-alvo OU)
+// Atualiza as barras de progresso e o multiplicador das campanhas (condições E / valor-alvo OU)
 function atualizarBarrasCampanha(totLinha, totGrupo, totSub, valorTotal) {
-    document.querySelectorAll('.camp-progress .camp-bar').forEach(function(bar) {
-        var modo = bar.dataset.modo;
-        var meta = parseFloat(bar.dataset.meta) || 0;
-        var atual = 0;
-        if (modo === 'valor') {
-            atual = valorTotal;
-        } else {
-            var tipo = bar.dataset.tipo, val = bar.dataset.valor || '';
-            if (tipo === 'linha')        atual = totLinha[val] || 0;
-            else if (tipo === 'grupo')   atual = totGrupo[val] || 0;
-            else if (tipo === 'subgrupo') atual = totSub[val]  || 0;
-        }
-        var done = meta > 0 && atual >= meta;
-        var pct  = meta > 0 ? Math.min(100, atual / meta * 100) : 0;
-        var pb   = bar.querySelector('.progress-bar');
-        pb.style.width = pct.toFixed(0) + '%';
-        pb.classList.toggle('bg-success', done);
-        var txt = bar.querySelector('.bar-txt');
-        if (modo === 'valor') {
-            pb.classList.toggle('bg-info', !done);
-            txt.textContent = fmtBRL(Math.round(atual * 100) / 100) + ' / ' + fmtBRL(meta);
-        } else {
-            pb.classList.toggle('bg-warning', !done);
-            txt.textContent = Math.round(atual) + ' / ' + Math.round(meta);
+    document.querySelectorAll('.camp-progress').forEach(function(box) {
+        var hasQty = false, allQtyMet = true, multQty = Infinity, multVal = 0;
+        box.querySelectorAll('.camp-bar').forEach(function(bar) {
+            var modo = bar.dataset.modo;
+            var meta = parseFloat(bar.dataset.meta) || 0;
+            var atual = 0;
+            if (modo === 'valor') {
+                atual = valorTotal;
+            } else {
+                var tipo = bar.dataset.tipo, val = bar.dataset.valor || '';
+                if (tipo === 'linha')        atual = totLinha[val] || 0;
+                else if (tipo === 'grupo')   atual = totGrupo[val] || 0;
+                else if (tipo === 'subgrupo') atual = totSub[val]  || 0;
+            }
+            var done = meta > 0 && atual >= meta;
+            var pct  = meta > 0 ? Math.min(100, atual / meta * 100) : 0;
+            var pb   = bar.querySelector('.progress-bar');
+            pb.style.width = pct.toFixed(0) + '%';
+            pb.classList.toggle('bg-success', done);
+            var txt = bar.querySelector('.bar-txt');
+            if (modo === 'valor') {
+                pb.classList.toggle('bg-info', !done);
+                txt.textContent = fmtBRL(Math.round(atual * 100) / 100) + ' / ' + fmtBRL(meta);
+                if (meta > 0) multVal = Math.floor(atual / meta);
+            } else {
+                pb.classList.toggle('bg-warning', !done);
+                txt.textContent = Math.round(atual) + ' / ' + Math.round(meta);
+                hasQty = true;
+                if (!done) allQtyMet = false;
+                if (meta > 0) multQty = Math.min(multQty, Math.floor(atual / meta));
+            }
+        });
+
+        // Multiplicador (espelha avaliarCampanhaTrigger): condições E têm prioridade; senão valor-alvo OU
+        var mult = 0;
+        if (hasQty && allQtyMet && multQty !== Infinity && multQty >= 1) mult = multQty;
+        else if (multVal >= 1) mult = multVal;
+
+        var chip = box.closest('.camp-chip');
+        var badge = chip ? chip.querySelector('.camp-mult') : null;
+        if (badge) {
+            if (mult >= 1) {
+                badge.textContent = 'atingida ' + mult + '×';
+                badge.style.display = '';
+            } else {
+                badge.style.display = 'none';
+            }
         }
     });
 }
