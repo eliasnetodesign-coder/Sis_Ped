@@ -99,6 +99,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $totaisCampanha[$cod] = ($totaisCampanha[$cod] ?? 0) + ($qtdPorProduto[(int)$camp['produto_id']] ?? 0);
         }
 
+        // Campanhas de desconto do novo modelo (condições E / valor-alvo OU)
+        $ctxCamp = [
+            'totaisLinha'    => $totaisLinha,
+            'totaisGrupo'    => $totaisGrupo,
+            'totaisSubgrupo' => $totaisSubgrupo,
+            'qtdPorProduto'  => $qtdPorProduto,
+            'valorTotal'     => array_sum(array_map(fn($it) => $it['qtd'] * (float)$it['prod']['preco'], $items_data)),
+            'canalVendaId'   => $canalVendaId,
+        ];
+        $descAvancados = avaliarCampanhasDescontoAvancadas($ctxCamp);
+
         // Passagem 2: gravar cada item aplicando desconto de campanha com base nos totais
         foreach ($items_data as $it) {
             $produto_id  = $it['produto_id'];
@@ -147,6 +158,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $validDesc = array_column($campanhas_all, 'desconto');
                     if (in_array(number_format($campDescJS, 4), array_map(fn($d) => number_format((float)$d, 4), $validDesc))) {
                         $campDesc = $campDescJS;
+                    }
+                }
+                // Campanhas de desconto do novo modelo: desconto incide nos itens dos grupos da condição
+                foreach ($descAvancados as $ac) {
+                    if ($ac['desconto'] > $campDesc && itemBateGruposAlvo($prod, $ac['gruposAlvo'])) {
+                        $campDesc = $ac['desconto'];
                     }
                 }
             }
@@ -271,6 +288,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // Bonificação automática de campanha (apenas em vendas novas)
             unset($_SESSION['bonus_aviso']);
+            unset($_SESSION['bonus_selecionavel']);
             if ($tipoVenda === 'venda' && $editarId === 0) {
                 $itensVenda = array_map(function ($it) {
                     return [
@@ -279,12 +297,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'linha'      => $it['prod']['linha']    ?? '',
                         'grupo'      => $it['prod']['grupo']    ?? '',
                         'subgrupo'   => $it['prod']['subgrupo'] ?? '',
+                        'preco'      => (float)$it['prod']['preco'],
                     ];
                 }, $items_data);
                 try {
                     $bonus = gerarBonificacaoCampanha($u['id'], $canalVendaId, $cli['supervisor'] ?? $cli['vendedor'] ?? '', $data, $itensVenda, $logNumPed);
                     if ($bonus) {
                         $_SESSION['bonus_aviso'] = array_map(fn($b) => $b['quantidade'] . 'x ' . $b['descricao'], $bonus);
+                    }
+                    // Bonificação selecionável: cliente escolhe os bônus antes do PDF
+                    $selec = detectarBonificacaoSelecionavel($itensVenda, $canalVendaId);
+                    if ($selec) {
+                        $_SESSION['bonus_selecionavel'] = [
+                            'campanhas'  => $selec,
+                            'cliente_id' => (int)$u['id'],
+                            'supervisor' => $cli['supervisor'] ?? $cli['vendedor'] ?? '',
+                            'data'       => $data,
+                            'ref'        => $logNumPed,
+                            'pdf_ids'    => $ids_criados,
+                            'retorno'    => BASE_URL . '/cliente/pedido-pdf.php',
+                        ];
+                        header('Location: ' . BASE_URL . '/cliente/bonificacao-selecionavel.php'); exit;
                     }
                 } catch (Exception $e) { /* bônus não deve impedir a confirmação da venda */ }
             }
@@ -352,10 +385,19 @@ $cliCanalId = (int)($cli_data['canal_venda_id'] ?? 0);
 $campanhas  = array_filter($campanhas, fn($c) => !$c['canal_venda_id'] || (int)$c['canal_venda_id'] === $cliCanalId);
 
 // Produtos bonificados por campanha (para exibir nos chips de campanhas de bonificação)
-$bonifByCode = [];
+$bonifByCode = [];     // com "Nx" (modo fixo)
+$bonifNomesByCode = []; // só nomes (modo selecionável)
 foreach (db()->query('SELECT cb.codigo_campanha, cb.quantidade, p.descricao_pt, p.codigo_produto
     FROM campanha_bonificacao cb JOIN produtos p ON p.id = cb.produto_id ORDER BY cb.id')->fetchAll() as $b) {
-    $bonifByCode[$b['codigo_campanha']][] = (int)$b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']);
+    $nome = $b['descricao_pt'] ?: $b['codigo_produto'];
+    $bonifByCode[$b['codigo_campanha']][]      = (int)$b['quantidade'] . 'x ' . $nome;
+    $bonifNomesByCode[$b['codigo_campanha']][] = $nome;
+}
+
+// Condições combinadas (E) por código de campanha
+$condByCode = [];
+foreach (db()->query('SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade FROM campanha_condicoes ORDER BY id')->fetchAll() as $cc) {
+    $condByCode[$cc['codigo_campanha']][] = $cc;
 }
 
 // Agrupa campanhas por código (uma campanha pode ter vários alvos: produtos/linha/grupo/subgrupo)
@@ -364,11 +406,15 @@ foreach ($campanhas as $c) {
     $code = $c['codigo_campanha'];
     if (!isset($campGroup[$code])) {
         $campGroup[$code] = [
-            'codigo_campanha' => $code,
-            'tipo'            => $c['tipo'] ?? 'desconto',
-            'desconto'        => $c['desconto'],
-            'quantidade'      => $c['quantidade'],
-            'alvos'           => [],
+            'codigo_campanha'    => $code,
+            'tipo'               => $c['tipo'] ?? 'desconto',
+            'desconto'           => $c['desconto'],
+            'quantidade'         => $c['quantidade'],
+            'valor_alvo'         => $c['valor_alvo'] ?? null,
+            'bonif_modo'         => $c['bonif_modo'] ?? 'fixo',
+            'bonif_limite_tipo'  => $c['bonif_limite_tipo'] ?? 'quantidade',
+            'bonif_limite_valor' => $c['bonif_limite_valor'] ?? null,
+            'alvos'              => [],
         ];
     }
     $alvo = $c['descricao_pt']
@@ -377,6 +423,23 @@ foreach ($campanhas as $c) {
         ?? ($c['subgrupo'] ? 'Subgrupo ' . trim($c['subgrupo']) : 'Todos os produtos');
     if (!in_array($alvo, $campGroup[$code]['alvos'], true)) $campGroup[$code]['alvos'][] = $alvo;
 }
+
+// Texto do gatilho: condições (E) + valor-alvo (OU) no novo modelo; alvo + qtd no legado
+$labelCrit = ['linha' => 'Linha', 'grupo' => 'Grupo', 'subgrupo' => 'Subgrupo'];
+foreach ($campGroup as $code => &$g) {
+    $conds = $condByCode[$code] ?? [];
+    if ($conds) {
+        $parts = array_map(fn($cd) => ($labelCrit[$cd['criterio_tipo']] ?? $cd['criterio_tipo']) . ' ' . $cd['criterio_valor'] . ' ≥ ' . (int)$cd['quantidade'] . ' un.', $conds);
+        $txt = implode(' E ', $parts);
+        if ((float)$g['valor_alvo'] > 0) $txt .= ' OU valor ≥ ' . moedaBR((float)$g['valor_alvo']);
+        $g['gatilho'] = $txt;
+    } elseif ((float)$g['valor_alvo'] > 0 && $g['alvos'] === ['Todos os produtos']) {
+        $g['gatilho'] = 'Valor ≥ ' . moedaBR((float)$g['valor_alvo']);
+    } else {
+        $g['gatilho'] = implode(', ', $g['alvos']) . ' · a partir de ' . (int)$g['quantidade'] . ' un.';
+    }
+}
+unset($g);
 
 $MA_MERGE = ['MAT APOIO ITALLIAN - BRINDE', 'MAT APOIO ITALLIAN - VENDIDO'];
 $porLinha = [];
@@ -488,26 +551,57 @@ require_once LAYOUT_PATH . '/header.php';
         <span class="fw-semibold text-primary small text-uppercase">Campanhas Ativas</span>
     </div>
     <div class="d-flex flex-wrap gap-2">
-        <?php foreach ($campGroup as $c):
+        <?php
+        $renderBarras = function($c) use ($condByCode, $labelCrit) {
+            $conds = $condByCode[$c['codigo_campanha']] ?? [];
+            $valorAlvo = (float)($c['valor_alvo'] ?? 0);
+            if (!$conds && $valorAlvo <= 0) return '';
+            $h = '<div class="camp-progress mt-1" data-codigo="' . e($c['codigo_campanha']) . '" style="min-width:230px">';
+            foreach ($conds as $cd) {
+                $lbl  = ($labelCrit[$cd['criterio_tipo']] ?? $cd['criterio_tipo']) . ' ' . $cd['criterio_valor'];
+                $meta = (int)$cd['quantidade'];
+                $h .= '<div class="camp-bar mb-1" data-tipo="' . e($cd['criterio_tipo']) . '" data-valor="' . e($cd['criterio_valor']) . '" data-meta="' . $meta . '" data-modo="qtd">'
+                    . '<div class="d-flex justify-content-between" style="font-size:.68rem"><span>' . e($lbl) . '</span><span class="bar-txt">0/' . $meta . '</span></div>'
+                    . '<div class="progress" style="height:5px"><div class="progress-bar bg-warning" style="width:0%"></div></div>'
+                    . '</div>';
+            }
+            if ($valorAlvo > 0) {
+                $h .= '<div class="camp-bar mb-1" data-tipo="valor" data-meta="' . $valorAlvo . '" data-modo="valor">'
+                    . '<div class="d-flex justify-content-between" style="font-size:.68rem"><span>' . ($conds ? 'ou Valor' : 'Valor') . '</span><span class="bar-txt">' . moedaBR(0) . '/' . moedaBR($valorAlvo) . '</span></div>'
+                    . '<div class="progress" style="height:5px"><div class="progress-bar bg-info" style="width:0%"></div></div>'
+                    . '</div>';
+            }
+            return $h . '</div>';
+        };
+        foreach ($campGroup as $c):
             $ehBonif = $c['tipo'] === 'bonificacao';
-            $alvoTxt = implode(', ', $c['alvos']);
+            $ehSelec = $ehBonif && ($c['bonif_modo'] ?? 'fixo') === 'selecionavel';
             $pct = rtrim(rtrim(number_format((float)$c['desconto'], 2, ',', '.'), '0'), ',');
+            $limiteTxt = ($c['bonif_limite_tipo'] ?? '') === 'valor'
+                ? moedaBR((float)$c['bonif_limite_valor'])
+                : ((int)$c['bonif_limite_valor'] . ' un.');
         ?>
-        <div class="d-flex align-items-center gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
+        <div class="d-flex align-items-start gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
             <?php if ($ehBonif): ?>
             <span class="badge bg-warning text-dark fs-6 fw-bold px-2"><i class="bi bi-gift"></i></span>
             <div style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
-                <div class="text-muted" style="font-size:.76rem"><?= e($alvoTxt) ?> &middot; a partir de <?= (int)$c['quantidade'] ?> un.</div>
+                <div class="text-muted" style="font-size:.76rem"><?= e($c['gatilho']) ?></div>
                 <div class="text-warning fw-semibold" style="font-size:.74rem">
+                    <?php if ($ehSelec): ?>
+                    <i class="bi bi-hand-index me-1"></i>Você escolhe (até <?= e($limiteTxt) ?>): <?= e(implode(', ', $bonifNomesByCode[$c['codigo_campanha']] ?? ['—'])) ?>
+                    <?php else: ?>
                     <i class="bi bi-gift-fill me-1"></i>Brinde: <?= e(implode(', ', $bonifByCode[$c['codigo_campanha']] ?? ['—'])) ?>
+                    <?php endif; ?>
                 </div>
+                <?= $renderBarras($c) ?>
             </div>
             <?php else: ?>
             <span class="badge bg-success fs-6 fw-bold px-2">−<?= $pct ?>%</span>
             <div style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
-                <div class="text-muted" style="font-size:.76rem"><?= e($alvoTxt) ?> &middot; a partir de <?= (int)$c['quantidade'] ?> un.</div>
+                <div class="text-muted" style="font-size:.76rem"><?= e($c['gatilho']) ?></div>
+                <?= $renderBarras($c) ?>
             </div>
             <?php endif; ?>
         </div>
@@ -879,7 +973,7 @@ function fmtBRL(v) {
 
 function recalcularTodas() {
     // Soma quantidades por linha, grupo, subgrupo e por produto
-    var totLinha = {}, totGrupo = {}, totSub = {}, totProd = {};
+    var totLinha = {}, totGrupo = {}, totSub = {}, totProd = {}, valorTotal = 0;
     document.querySelectorAll('.produto-row').forEach(function(row) {
         var actual = parseInt(row.querySelector('.qtd-hidden').value) || 0;
         var l = row.dataset.linha    || '';
@@ -889,7 +983,9 @@ function recalcularTodas() {
         if (g) totGrupo[g] = (totGrupo[g] || 0) + actual;
         if (s) totSub[s]   = (totSub[s]   || 0) + actual;
         totProd[parseInt(row.dataset.pid)] = (totProd[parseInt(row.dataset.pid)] || 0) + actual;
+        valorTotal += actual * (parseFloat(row.dataset.preco) || 0);
     });
+    atualizarBarrasCampanha(totLinha, totGrupo, totSub, valorTotal);
 
     // Soma por campanha de produtos (mínimo considera todos os produtos da campanha)
     var totCamp = {};
@@ -952,6 +1048,36 @@ function recalcularTodas() {
                 + (campDesc > 0 ? ' <span class="badge bg-success ms-1">-' + campDesc + '%</span>' : '');
         } else {
             row.querySelector('.row-total').textContent = '—';
+        }
+    });
+}
+
+// Atualiza as barras de progresso das campanhas (condições E / valor-alvo OU)
+function atualizarBarrasCampanha(totLinha, totGrupo, totSub, valorTotal) {
+    document.querySelectorAll('.camp-progress .camp-bar').forEach(function(bar) {
+        var modo = bar.dataset.modo;
+        var meta = parseFloat(bar.dataset.meta) || 0;
+        var atual = 0;
+        if (modo === 'valor') {
+            atual = valorTotal;
+        } else {
+            var tipo = bar.dataset.tipo, val = bar.dataset.valor || '';
+            if (tipo === 'linha')        atual = totLinha[val] || 0;
+            else if (tipo === 'grupo')   atual = totGrupo[val] || 0;
+            else if (tipo === 'subgrupo') atual = totSub[val]  || 0;
+        }
+        var done = meta > 0 && atual >= meta;
+        var pct  = meta > 0 ? Math.min(100, atual / meta * 100) : 0;
+        var pb   = bar.querySelector('.progress-bar');
+        pb.style.width = pct.toFixed(0) + '%';
+        pb.classList.toggle('bg-success', done);
+        var txt = bar.querySelector('.bar-txt');
+        if (modo === 'valor') {
+            pb.classList.toggle('bg-info', !done);
+            txt.textContent = fmtBRL(Math.round(atual * 100) / 100) + ' / ' + fmtBRL(meta);
+        } else {
+            pb.classList.toggle('bg-warning', !done);
+            txt.textContent = Math.round(atual) + ' / ' + Math.round(meta);
         }
     });
 }

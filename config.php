@@ -117,6 +117,19 @@ function db() {
                 valor      VARCHAR(255) NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Campanhas avançadas: condições combinadas (E), valor-alvo (OU) e bonificação selecionável
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_condicoes (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_campanha VARCHAR(50)  NOT NULL,
+                criterio_tipo   VARCHAR(20)  NOT NULL,
+                criterio_valor  VARCHAR(100) NOT NULL,
+                quantidade      INT NOT NULL DEFAULT 0,
+                KEY idx_camp_cond (codigo_campanha)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN valor_alvo DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN bonif_modo VARCHAR(20) NOT NULL DEFAULT 'fixo'"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN bonif_limite_tipo VARCHAR(20) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN bonif_limite_valor DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
         } catch (PDOException $e) {
             die('Erro de conexão com o banco de dados. <a href="' . BASE_URL . '/install.php">Clique aqui para configurar.</a>');
         }
@@ -408,20 +421,33 @@ function statusBadge($s) {
 }
 
 /**
- * Gera um pedido bonificado a partir das campanhas do tipo "bonificacao"
- * acionadas pelos itens de uma venda. A quantidade bonificada multiplica
- * conforme o total comprado: mult = floor(qtd_alvo / quantidade_minima).
- *
- * @param array $itensVenda  itens da venda, cada um: ['produto_id','qtd','linha','grupo','subgrupo']
- * @return array  itens bonificados criados: ['produto_id','descricao','quantidade','pedido_id']
+ * Carrega todas as campanhas agrupadas por código, já com suas condições (E).
+ * @return array  codigo => ['rows'=>[...campanhas], 'conds'=>[...campanha_condicoes]]
  */
-function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $supervisor, string $dataPedido, array $itensVenda, ?string $refNumero = null): array {
-    $camps = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade
-                          FROM campanhas WHERE tipo = 'bonificacao'")->fetchAll();
-    if (!$camps) return [];
+function campanhasAgrupadas(): array {
+    $rows = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id,
+                                quantidade, desconto, tipo, valor_alvo, bonif_modo, bonif_limite_tipo, bonif_limite_valor
+                         FROM campanhas")->fetchAll();
+    $conds = [];
+    try {
+        $conds = db()->query("SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade
+                              FROM campanha_condicoes")->fetchAll();
+    } catch (PDOException $e) { $conds = []; }
 
-    // Totais da venda por produto e por categoria (mesma lógica do desconto)
-    $totProd = $totL = $totG = $totS = [];
+    $g = [];
+    foreach ($rows as $r) $g[$r['codigo_campanha']]['rows'][] = $r;
+    foreach ($g as $k => &$v) $v['conds'] = [];
+    unset($v);
+    foreach ($conds as $c) if (isset($g[$c['codigo_campanha']])) $g[$c['codigo_campanha']]['conds'][] = $c;
+    return $g;
+}
+
+/**
+ * Constrói o contexto de avaliação de campanhas a partir dos itens de uma venda.
+ * Cada item: ['produto_id','qtd','linha','grupo','subgrupo','preco'(unit, opcional)].
+ */
+function ctxCampanha(array $itensVenda, int $canalVendaId): array {
+    $totL = $totG = $totS = $totProd = []; $valorTotal = 0.0;
     foreach ($itensVenda as $it) {
         $q = (int)($it['qtd'] ?? 0); if ($q <= 0) continue;
         $pid = (int)($it['produto_id'] ?? 0);
@@ -429,34 +455,167 @@ function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $sup
         $l = trim($it['linha']    ?? ''); if ($l) $totL[$l] = ($totL[$l] ?? 0) + $q;
         $g = trim($it['grupo']    ?? ''); if ($g) $totG[$g] = ($totG[$g] ?? 0) + $q;
         $s = trim($it['subgrupo'] ?? ''); if ($s) $totS[$s] = ($totS[$s] ?? 0) + $q;
+        $valorTotal += $q * (float)($it['preco'] ?? 0);
+    }
+    return [
+        'totaisLinha'    => $totL,
+        'totaisGrupo'    => $totG,
+        'totaisSubgrupo' => $totS,
+        'qtdPorProduto'  => $totProd,
+        'valorTotal'     => $valorTotal,
+        'canalVendaId'   => $canalVendaId,
+    ];
+}
+
+/**
+ * Avalia o gatilho de UMA campanha contra o contexto da venda.
+ * Novo modelo (tem condições): TODAS as condições de quantidade precisam ser
+ * atingidas (E); OU o valor-alvo sozinho aciona a campanha. Modelo legado
+ * (sem condições): produtos somados / categoria, como historicamente.
+ *
+ * @return array ['acionada'=>bool, 'mult'=>int, 'gruposAlvo'=>[['tipo','valor'],...]]
+ */
+function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
+    $vazio = ['acionada' => false, 'mult' => 0, 'gruposAlvo' => []];
+    if (!$rows) return $vazio;
+    $canal = (int)($rows[0]['canal_venda_id'] ?? 0);
+    if ($canal && $canal !== (int)($ctx['canalVendaId'] ?? 0)) return $vazio;
+
+    // ---- Novo modelo: condições combinadas (E) + valor-alvo (OU) ----
+    if ($conds) {
+        $gruposAlvo = [];
+        $allMet = true;
+        $minMult = PHP_INT_MAX;
+        foreach ($conds as $c) {
+            $tipo = $c['criterio_tipo']; $val = trim($c['criterio_valor']);
+            $gruposAlvo[] = ['tipo' => $tipo, 'valor' => $val];
+            $tot = 0;
+            if ($tipo === 'linha')    $tot = $ctx['totaisLinha'][$val]    ?? 0;
+            if ($tipo === 'grupo')    $tot = $ctx['totaisGrupo'][$val]    ?? 0;
+            if ($tipo === 'subgrupo') $tot = $ctx['totaisSubgrupo'][$val] ?? 0;
+            $q = (int)$c['quantidade'];
+            if ($q > 0 && $tot >= $q) $minMult = min($minMult, intdiv($tot, $q));
+            else $allMet = false;
+        }
+        if ($allMet && $minMult >= 1) {
+            return ['acionada' => true, 'mult' => $minMult, 'gruposAlvo' => $gruposAlvo];
+        }
+        $valorAlvo = (float)($rows[0]['valor_alvo'] ?? 0);
+        if ($valorAlvo > 0 && (float)($ctx['valorTotal'] ?? 0) >= $valorAlvo) {
+            return ['acionada' => true, 'mult' => max(1, (int)floor($ctx['valorTotal'] / $valorAlvo)), 'gruposAlvo' => $gruposAlvo];
+        }
+        return ['acionada' => false, 'mult' => 0, 'gruposAlvo' => $gruposAlvo];
     }
 
-    $byCode = [];
-    foreach ($camps as $c) $byCode[$c['codigo_campanha']][] = $c;
+    // ---- Modelo legado ----
+    $min = (int)($rows[0]['quantidade'] ?? 0);
+    if ($min <= 0) return $vazio;
+    $prodIds = array_values(array_unique(array_filter(array_map(fn($r) => (int)$r['produto_id'], $rows))));
+    if ($prodIds) {
+        $qtdRef = 0;
+        foreach ($prodIds as $pid) $qtdRef += $ctx['qtdPorProduto'][$pid] ?? 0;
+        if ($qtdRef < $min) return $vazio;
+        $ga = array_map(fn($pid) => ['tipo' => 'produto', 'valor' => $pid], $prodIds);
+        return ['acionada' => true, 'mult' => intdiv($qtdRef, $min), 'gruposAlvo' => $ga];
+    }
+    $mult = 0; $ga = [];
+    foreach ($rows as $r) {
+        $cL = trim(preg_replace('/\d+/', '', $r['linha']    ?? ''));
+        $cG = trim(preg_replace('/\d+/', '', $r['grupo']    ?? ''));
+        $cS = trim(preg_replace('/\d+/', '', $r['subgrupo'] ?? ''));
+        if ($cL)      { $t = $ctx['totaisLinha'][$cL]    ?? 0; $crit = ['tipo' => 'linha',    'valor' => $cL]; }
+        elseif ($cG)  { $t = $ctx['totaisGrupo'][$cG]    ?? 0; $crit = ['tipo' => 'grupo',    'valor' => $cG]; }
+        elseif ($cS)  { $t = $ctx['totaisSubgrupo'][$cS] ?? 0; $crit = ['tipo' => 'subgrupo', 'valor' => $cS]; }
+        else continue;
+        if ($t >= $min) { $mult = max($mult, intdiv($t, $min)); $ga[] = $crit; }
+    }
+    if ($mult >= 1) return ['acionada' => true, 'mult' => $mult, 'gruposAlvo' => $ga];
+    return $vazio;
+}
 
-    $bonusAcc = [];          // produto_id => quantidade bonificada
-    $codigosAcionados = [];
-    foreach ($byCode as $code => $rows) {
-        $min = (int)$rows[0]['quantidade']; if ($min <= 0) continue;
-        $canal = $rows[0]['canal_venda_id'];
-        if ($canal && (int)$canal !== $canalVendaId) continue;
-
-        $prodIds = array_values(array_unique(array_filter(array_map(fn($r) => (int)$r['produto_id'], $rows))));
-        $trigger = 0;
-        if ($prodIds) {
-            foreach ($prodIds as $pid) $trigger += $totProd[$pid] ?? 0;
-        } else {
-            foreach ($rows as $r) {
-                $cL = trim(preg_replace('/\d+/', '', $r['linha']    ?? ''));
-                $cG = trim(preg_replace('/\d+/', '', $r['grupo']    ?? ''));
-                $cS = trim(preg_replace('/\d+/', '', $r['subgrupo'] ?? ''));
-                if ($cL)     $trigger = max($trigger, $totL[$cL] ?? 0);
-                elseif ($cG) $trigger = max($trigger, $totG[$cG] ?? 0);
-                elseif ($cS) $trigger = max($trigger, $totS[$cS] ?? 0);
-            }
+/** Indica se um produto (linha/grupo/subgrupo/id) bate em algum critério-alvo. */
+function itemBateGruposAlvo(array $prod, array $gruposAlvo): bool {
+    foreach ($gruposAlvo as $ga) {
+        switch ($ga['tipo']) {
+            case 'linha':    if (trim($prod['linha']    ?? '') === $ga['valor']) return true; break;
+            case 'grupo':    if (trim($prod['grupo']    ?? '') === $ga['valor']) return true; break;
+            case 'subgrupo': if (trim($prod['subgrupo'] ?? '') === $ga['valor']) return true; break;
+            case 'produto':  if ((int)($prod['id'] ?? 0) === (int)$ga['valor'])  return true; break;
         }
-        $mult = intdiv($trigger, $min);
-        if ($mult < 1) continue;
+    }
+    return false;
+}
+
+/**
+ * Campanhas de DESCONTO do NOVO modelo (com condições) que foram acionadas.
+ * O modelo legado continua sendo avaliado item a item nas telas de pedido.
+ * @return array  [['desconto'=>float,'gruposAlvo'=>[['tipo','valor'],...]], ...]
+ */
+function avaliarCampanhasDescontoAvancadas(array $ctx): array {
+    $out = [];
+    foreach (campanhasAgrupadas() as $g) {
+        if (empty($g['conds'])) continue;                                  // só novo modelo
+        if (($g['rows'][0]['tipo'] ?? 'desconto') !== 'desconto') continue;
+        $r = avaliarCampanhaTrigger($g['rows'], $g['conds'], $ctx);
+        if (!$r['acionada']) continue;
+        $out[] = ['desconto' => (float)$g['rows'][0]['desconto'], 'gruposAlvo' => $r['gruposAlvo']];
+    }
+    return $out;
+}
+
+/**
+ * Cria um pedido bonificado (lote separado, preço Network, sem cotação).
+ * @param array $bonusAcc  produto_id => quantidade
+ * @return array  itens criados: ['produto_id','descricao','quantidade','pedido_id']
+ */
+function criarPedidoBonificado(int $clienteId, string $supervisor, string $dataPedido, array $bonusAcc, string $obs): array {
+    if (!$bonusAcc) return [];
+    $lote = uniqid('LB', true);
+    $num  = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
+    $moedaCli = db()->prepare('SELECT moeda FROM clientes WHERE id = ?');
+    $moedaCli->execute([$clienteId]);
+    $moedaCli = $moedaCli->fetchColumn() ?: 'BRL';
+    $cotacaoCli = null; // bonificação usa preço network (BRL): não converte.
+    $ins  = db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,moeda,cotacao) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?)');
+    $criados = [];
+    foreach ($bonusAcc as $pid => $q) {
+        $q = (int)$q; if ($q <= 0) continue;
+        $pr = db()->prepare('SELECT p.descricao_pt, p.codigo_barra, COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
+                             FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
+                             WHERE p.id = ? AND p.status = "ativo"');
+        $pr->execute([(int)$pid]); $pr = $pr->fetch();
+        if (!$pr) continue;
+        $valor = $q * (float)$pr['preco'];
+        $ins->execute([$num, 'bonificacao', $dataPedido, $clienteId, (int)$pid, $supervisor, $pr['codigo_barra'], $pr['descricao_pt'], $q, $valor, $obs, $lote, $moedaCli, $cotacaoCli]);
+        $criados[] = ['produto_id' => (int)$pid, 'descricao' => $pr['descricao_pt'], 'quantidade' => $q, 'pedido_id' => (int)db()->lastInsertId()];
+    }
+    if (!$criados) return [];
+
+    try {
+        db()->prepare('INSERT INTO pedido_logs (pedido_id,numero_pedido,usuario_nome,usuario_tipo,acao,status_antes,status_depois,detalhes) VALUES (?,?,?,?,?,?,?,?)')
+            ->execute([$criados[0]['pedido_id'], $num, 'Sistema', 'sistema', 'Bonificação gerada por campanha', null, 'comercial', $obs]);
+    } catch (PDOException $e) {}
+
+    return $criados;
+}
+
+/**
+ * Gera o pedido bonificado das campanhas de bonificação FIXA acionadas pela venda.
+ * Bonificação selecionável é tratada à parte (ver detectarBonificacaoSelecionavel()).
+ *
+ * @param array $itensVenda  itens da venda: ['produto_id','qtd','linha','grupo','subgrupo','preco']
+ * @return array  itens bonificados criados
+ */
+function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $supervisor, string $dataPedido, array $itensVenda, ?string $refNumero = null): array {
+    $ctx = ctxCampanha($itensVenda, $canalVendaId);
+    $bonusAcc = [];
+    $codigosAcionados = [];
+    foreach (campanhasAgrupadas() as $code => $g) {
+        if (($g['rows'][0]['tipo'] ?? 'desconto') !== 'bonificacao') continue;
+        if (($g['rows'][0]['bonif_modo'] ?? 'fixo') !== 'fixo') continue;   // selecionável é à parte
+        $r = avaliarCampanhaTrigger($g['rows'], $g['conds'], $ctx);
+        if (!$r['acionada']) continue;
+        $mult = max(1, (int)$r['mult']);
 
         $bp = db()->prepare("SELECT produto_id, quantidade FROM campanha_bonificacao WHERE codigo_campanha = ?");
         $bp->execute([$code]);
@@ -469,35 +628,54 @@ function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $sup
     }
     if (!$bonusAcc) return [];
 
-    // Cria o pedido bonificado (lote separado; valor pelo preço Network)
-    $lote = uniqid('LB', true);
-    $num  = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
-    $obs  = 'Bonificação automática de campanha' . ($refNumero ? ' (ref. ' . $refNumero . ')' : '')
-          . ($codigosAcionados ? ' — ' . implode(', ', $codigosAcionados) : '');
-    $moedaCli = db()->prepare('SELECT moeda FROM clientes WHERE id = ?');
-    $moedaCli->execute([$clienteId]);
-    $moedaCli = $moedaCli->fetchColumn() ?: 'BRL';
-    // Pedido de bonificação usa preço network (BRL): não recebe cotação (não converte).
-    $cotacaoCli = null;
-    $ins  = db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,moeda,cotacao) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?)');
-    $criados = [];
-    foreach ($bonusAcc as $pid => $q) {
-        // Pedido bonificado usa o preço Network (fallback: venda varejo)
-        $pr = db()->prepare('SELECT p.descricao_pt, p.codigo_barra, COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
-                             FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
-                             WHERE p.id = ? AND p.status = "ativo"');
-        $pr->execute([$pid]); $pr = $pr->fetch();
-        if (!$pr) continue;
-        $valor = $q * (float)$pr['preco'];
-        $ins->execute([$num, 'bonificacao', $dataPedido, $clienteId, $pid, $supervisor, $pr['codigo_barra'], $pr['descricao_pt'], $q, $valor, $obs, $lote, $moedaCli, $cotacaoCli]);
-        $criados[] = ['produto_id' => $pid, 'descricao' => $pr['descricao_pt'], 'quantidade' => $q, 'pedido_id' => (int)db()->lastInsertId()];
+    $obs = 'Bonificação automática de campanha' . ($refNumero ? ' (ref. ' . $refNumero . ')' : '')
+         . ($codigosAcionados ? ' — ' . implode(', ', $codigosAcionados) : '');
+    return criarPedidoBonificado($clienteId, $supervisor, $dataPedido, $bonusAcc, $obs);
+}
+
+/**
+ * Detecta campanhas de bonificação SELECIONÁVEL acionadas pela venda. Não cria
+ * pedido: retorna a lista de campanhas para o cliente escolher os bônus no
+ * fechamento (até o limite de quantidade ou valor, multiplicado por mult).
+ *
+ * @return array  [['codigo'=>, 'mult'=>, 'limite_tipo'=>'quantidade'|'valor',
+ *                  'limite'=>float, 'produtos'=>[['id','codigo','descricao','preco']...]], ...]
+ */
+function detectarBonificacaoSelecionavel(array $itensVenda, int $canalVendaId): array {
+    $ctx = ctxCampanha($itensVenda, $canalVendaId);
+    $out = [];
+    foreach (campanhasAgrupadas() as $code => $g) {
+        if (($g['rows'][0]['tipo'] ?? 'desconto') !== 'bonificacao') continue;
+        if (($g['rows'][0]['bonif_modo'] ?? 'fixo') !== 'selecionavel') continue;
+        $r = avaliarCampanhaTrigger($g['rows'], $g['conds'], $ctx);
+        if (!$r['acionada']) continue;
+        $mult = max(1, (int)$r['mult']);
+
+        $lp = db()->prepare("SELECT cb.produto_id, p.codigo_produto, p.descricao_pt,
+                                    COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
+                             FROM campanha_bonificacao cb
+                             JOIN produtos p ON p.id = cb.produto_id
+                             LEFT JOIN tabela_precos t ON t.produto_id = p.id
+                             WHERE cb.codigo_campanha = ? AND p.status = 'ativo' ORDER BY p.descricao_pt");
+        $lp->execute([$code]);
+        $produtos = array_map(fn($p) => [
+            'id'        => (int)$p['produto_id'],
+            'codigo'    => $p['codigo_produto'],
+            'descricao' => $p['descricao_pt'],
+            'preco'     => (float)$p['preco'],
+        ], $lp->fetchAll());
+        if (!$produtos) continue;
+
+        $limiteTipo = ($g['rows'][0]['bonif_limite_tipo'] ?? 'quantidade') === 'valor' ? 'valor' : 'quantidade';
+        $limite     = (float)($g['rows'][0]['bonif_limite_valor'] ?? 0) * $mult;
+        if ($limite <= 0) continue;
+        $out[] = [
+            'codigo'      => $code,
+            'mult'        => $mult,
+            'limite_tipo' => $limiteTipo,
+            'limite'      => $limite,
+            'produtos'    => $produtos,
+        ];
     }
-    if (!$criados) return [];
-
-    try {
-        db()->prepare('INSERT INTO pedido_logs (pedido_id,numero_pedido,usuario_nome,usuario_tipo,acao,status_antes,status_depois,detalhes) VALUES (?,?,?,?,?,?,?,?)')
-            ->execute([$criados[0]['pedido_id'], $num, 'Sistema', 'sistema', 'Bonificação gerada por campanha', null, 'comercial', $obs]);
-    } catch (PDOException $e) {}
-
-    return $criados;
+    return $out;
 }

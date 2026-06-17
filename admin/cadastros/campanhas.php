@@ -16,8 +16,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $canal = $_POST['canal_venda_id'] ?: null;
             $qtd   = (int)$_POST['quantidade'];
             $desc  = $tipo === 'bonificacao' ? 0.0 : (float)$_POST['desconto'];
+            $valorAlvo = (float)($_POST['valor_alvo'] ?? 0);
+            $valorAlvo = $valorAlvo > 0 ? $valorAlvo : null;
 
-            // Produtos bonificados (apenas para tipo bonificacao)
+            // Bonificação: modo fixo (auto) ou selecionável (cliente escolhe até um limite)
+            $bonifModo = 'fixo'; $bonifLimTipo = null; $bonifLimValor = null;
+            if ($tipo === 'bonificacao') {
+                $bonifModo = ($_POST['bonif_modo'] ?? 'fixo') === 'selecionavel' ? 'selecionavel' : 'fixo';
+                if ($bonifModo === 'selecionavel') {
+                    $bonifLimTipo  = ($_POST['bonif_limite_tipo'] ?? 'quantidade') === 'valor' ? 'valor' : 'quantidade';
+                    $bonifLimValor = (float)($_POST['bonif_limite_valor'] ?? 0);
+                    if ($bonifLimValor <= 0) throw new Exception('Informe o limite (quantidade ou valor) da bonificação selecionável.');
+                }
+            }
+
+            // Condições combinadas (E): cada linha = [tipo, valor, qtd]
+            $condClean = [];
+            foreach (($_POST['cond'] ?? []) as $c) {
+                $t  = $c['tipo']  ?? '';
+                $v  = trim($c['valor'] ?? '');
+                $cq = (int)($c['qtd'] ?? 0);
+                if (in_array($t, ['linha', 'grupo', 'subgrupo'], true) && $v !== '' && $cq > 0) $condClean[] = [$t, $v, $cq];
+            }
+
+            // Produtos bonificados (fixo) / lista elegível (selecionável)
             $bonif = [];
             if ($tipo === 'bonificacao') {
                 foreach (($_POST['bonif'] ?? []) as $b) {
@@ -26,47 +48,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $bq  = max(1, (int)($b['qtd'] ?? 1));
                     $bonif[$pid] = ($bonif[$pid] ?? 0) + $bq;
                 }
-                if (!$bonif) throw new Exception('Adicione ao menos um produto bonificado.');
+                if (!$bonif) throw new Exception($bonifModo === 'selecionavel'
+                    ? 'Adicione ao menos um produto à lista de bônus selecionáveis.'
+                    : 'Adicione ao menos um produto bonificado.');
             }
+
+            $prodIds = array_values(array_unique(array_filter(array_map('intval', $_POST['produto_ids'] ?? []))));
 
             db()->beginTransaction();
 
             // Substitui por completo as linhas da campanha (código original e/ou novo)
             $codOrig = trim($_POST['codigo_original'] ?? '');
-            if ($codOrig !== '' && $codOrig !== $cod) {
-                db()->prepare('DELETE FROM campanhas WHERE codigo_campanha=?')->execute([$codOrig]);
-                db()->prepare('DELETE FROM campanha_bonificacao WHERE codigo_campanha=?')->execute([$codOrig]);
+            foreach (array_unique(array_filter([$codOrig, $cod])) as $delCod) {
+                db()->prepare('DELETE FROM campanhas WHERE codigo_campanha=?')->execute([$delCod]);
+                db()->prepare('DELETE FROM campanha_bonificacao WHERE codigo_campanha=?')->execute([$delCod]);
+                db()->prepare('DELETE FROM campanha_condicoes WHERE codigo_campanha=?')->execute([$delCod]);
             }
-            db()->prepare('DELETE FROM campanhas WHERE codigo_campanha=?')->execute([$cod]);
-            db()->prepare('DELETE FROM campanha_bonificacao WHERE codigo_campanha=?')->execute([$cod]);
 
-            $ins = db()->prepare('INSERT INTO campanhas (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo) VALUES (?,?,?,?,?,?,?,?,?)');
+            $ins = db()->prepare('INSERT INTO campanhas (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+            $insHeader = fn($pid) => $ins->execute([$cod, $pid, null, null, null, $canal, $qtd, $desc, $tipo, $valorAlvo, $bonifModo, $bonifLimTipo, $bonifLimValor]);
 
-            $prodIds = array_values(array_unique(array_filter(array_map('intval', $_POST['produto_ids'] ?? []))));
             if ($prodIds) {
-                // Modo Produtos: uma linha por produto (gatilho)
-                foreach ($prodIds as $pid) {
-                    $ins->execute([$cod, $pid, null, null, null, $canal, $qtd, $desc, $tipo]);
-                }
+                // Modo Produtos (legado): uma linha por produto (gatilho)
+                foreach ($prodIds as $pid) $insHeader($pid);
             } else {
-                // Modo Categoria: cada critério preenchido vira uma linha (Linha / Grupo / Subgrupo)
-                $criterios = [];
-                if (trim($_POST['linha']    ?? '') !== '') $criterios[] = ['linha',    trim($_POST['linha'])];
-                if (trim($_POST['grupo']    ?? '') !== '') $criterios[] = ['grupo',    trim($_POST['grupo'])];
-                if (trim($_POST['subgrupo'] ?? '') !== '') $criterios[] = ['subgrupo', trim($_POST['subgrupo'])];
-                if (!$criterios) $criterios[] = [null, null]; // campanha para todos os produtos
-                foreach ($criterios as $c) {
-                    $ins->execute([
-                        $cod, null,
-                        $c[0] === 'linha'    ? $c[1] : null,
-                        $c[0] === 'grupo'    ? $c[1] : null,
-                        $c[0] === 'subgrupo' ? $c[1] : null,
-                        $canal, $qtd, $desc, $tipo,
-                    ]);
-                }
+                // Linha cabeçalho — carrega os parâmetros da campanha (condições / valor / “todos”)
+                $insHeader(null);
             }
 
-            // Grava os produtos bonificados
+            // Condições combinadas (E) — só no modo categoria (sem produtos)
+            if (!$prodIds && $condClean) {
+                $insC = db()->prepare('INSERT INTO campanha_condicoes (codigo_campanha,criterio_tipo,criterio_valor,quantidade) VALUES (?,?,?,?)');
+                foreach ($condClean as $c) $insC->execute([$cod, $c[0], $c[1], $c[2]]);
+            }
+
+            // Grava os produtos bonificados / lista elegível
             if ($tipo === 'bonificacao') {
                 $insB = db()->prepare('INSERT INTO campanha_bonificacao (codigo_campanha, produto_id, quantidade) VALUES (?,?,?)');
                 foreach ($bonif as $pid => $bq) $insB->execute([$cod, $pid, $bq]);
@@ -94,17 +110,22 @@ foreach ($rows as $r) {
     $k = $r['codigo_campanha'];
     if (!isset($campanhas[$k])) {
         $campanhas[$k] = [
-            'codigo_campanha' => $r['codigo_campanha'],
-            'canal_venda_id'  => $r['canal_venda_id'],
-            'canal'           => $r['canal'],
-            'quantidade'      => $r['quantidade'],
-            'desconto'        => $r['desconto'],
-            'tipo'            => $r['tipo'] ?? 'desconto',
-            'produtos'        => [],
-            'bonificados'     => [],
-            'linha'           => '',
-            'grupo'           => '',
-            'subgrupo'        => '',
+            'codigo_campanha'    => $r['codigo_campanha'],
+            'canal_venda_id'     => $r['canal_venda_id'],
+            'canal'              => $r['canal'],
+            'quantidade'         => $r['quantidade'],
+            'desconto'           => $r['desconto'],
+            'tipo'               => $r['tipo'] ?? 'desconto',
+            'valor_alvo'         => $r['valor_alvo'] ?? null,
+            'bonif_modo'         => $r['bonif_modo'] ?? 'fixo',
+            'bonif_limite_tipo'  => $r['bonif_limite_tipo'] ?? 'quantidade',
+            'bonif_limite_valor' => $r['bonif_limite_valor'] ?? null,
+            'produtos'           => [],
+            'bonificados'        => [],
+            'condicoes'          => [],
+            'linha'              => '',
+            'grupo'              => '',
+            'subgrupo'           => '',
         ];
     }
     if ($r['produto_id']) {
@@ -132,6 +153,31 @@ foreach (db()->query('SELECT cb.codigo_campanha, cb.produto_id, cb.quantidade, p
     }
 }
 
+// Condições combinadas (E) por campanha
+foreach (db()->query('SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade
+    FROM campanha_condicoes ORDER BY id')->fetchAll() as $cc) {
+    if (isset($campanhas[$cc['codigo_campanha']])) {
+        $campanhas[$cc['codigo_campanha']]['condicoes'][] = [
+            'tipo'  => $cc['criterio_tipo'],
+            'valor' => $cc['criterio_valor'],
+            'qtd'   => (int)$cc['quantidade'],
+        ];
+    }
+}
+
+// Campanhas legadas (categoria única, sem condições): sintetiza condições a partir
+// de linha/grupo/subgrupo para que apareçam no novo bloco de condições ao editar.
+foreach ($campanhas as $k => &$cmp) {
+    if ($cmp['condicoes'] || $cmp['produtos']) continue;
+    $q = (int)$cmp['quantidade'];
+    foreach (['linha', 'grupo', 'subgrupo'] as $crit) {
+        if ($cmp[$crit] !== '' && $cmp[$crit] !== null && $q > 0) {
+            $cmp['condicoes'][] = ['tipo' => $crit, 'valor' => $cmp[$crit], 'qtd' => $q];
+        }
+    }
+}
+unset($cmp);
+
 $produtos  = db()->query('SELECT id, codigo_produto, descricao_pt FROM produtos WHERE status="ativo" ORDER BY descricao_pt')->fetchAll();
 $linhas    = db()->query("SELECT DISTINCT linha    FROM produtos WHERE linha    IS NOT NULL AND linha    <> '' ORDER BY linha"   )->fetchAll(PDO::FETCH_COLUMN);
 $grupos    = db()->query("SELECT DISTINCT grupo    FROM produtos WHERE grupo    IS NOT NULL AND grupo    <> '' ORDER BY grupo"   )->fetchAll(PDO::FETCH_COLUMN);
@@ -152,14 +198,12 @@ require_once LAYOUT_PATH . '/header.php';
         <div class="table-responsive">
         <table class="table table-hover mb-0 align-middle">
             <thead class="table-light">
-                <tr><th>Código</th><th>Produtos</th><th>Linha/Grupo/Subgrupo</th><th>Canal</th><th>Qtd. Mín.</th><th>Tipo / Recompensa</th><th>Ações</th></tr>
+                <tr><th>Código</th><th>Produtos</th><th>Condições (E) / Valor-alvo (OU)</th><th>Canal</th><th>Tipo / Recompensa</th><th>Ações</th></tr>
             </thead>
             <tbody>
             <?php if ($campanhas): foreach ($campanhas as $c):
-                $criterios = [];
-                if ($c['linha'])    $criterios[] = 'Linha: '    . $c['linha'];
-                if ($c['grupo'])    $criterios[] = 'Grupo: '    . $c['grupo'];
-                if ($c['subgrupo']) $criterios[] = 'Subgrupo: ' . $c['subgrupo'];
+                $labelCrit = ['linha' => 'Linha', 'grupo' => 'Grupo', 'subgrupo' => 'Subgrupo'];
+                $criterios = array_map(fn($cd) => ($labelCrit[$cd['tipo']] ?? $cd['tipo']) . ' ' . $cd['valor'] . ' ≥ ' . $cd['qtd'], $c['condicoes']);
             ?>
                 <tr>
                     <td><strong><?= e($c['codigo_campanha']) ?></strong></td>
@@ -169,19 +213,33 @@ require_once LAYOUT_PATH . '/header.php';
                             <div class="small text-muted" style="max-width:340px">
                                 <?= e(implode(', ', array_map(fn($p) => $p['descricao_pt'] ?: $p['codigo_produto'], $c['produtos']))) ?>
                             </div>
+                            <div class="small text-muted">Qtd. mín.: <?= e($c['quantidade']) ?> un.</div>
                         <?php else: ?>
                             <span class="text-muted small"><?= $criterios ? '—' : 'Todos os produtos' ?></span>
                         <?php endif; ?>
                     </td>
-                    <td class="small"><?= $criterios ? e(implode(' · ', $criterios)) : '<span class="text-muted">—</span>' ?></td>
+                    <td class="small">
+                        <?php if ($criterios): ?>
+                            <?= e(implode(' E ', $criterios)) ?>
+                            <?php if ($c['valor_alvo'] > 0): ?><div class="text-muted">OU valor ≥ <?= moedaBR($c['valor_alvo']) ?></div><?php endif; ?>
+                        <?php elseif (!$c['produtos'] && $c['valor_alvo'] > 0): ?>
+                            Valor ≥ <?= moedaBR($c['valor_alvo']) ?>
+                        <?php else: ?>
+                            <span class="text-muted">—</span>
+                        <?php endif; ?>
+                    </td>
                     <td><?= $c['canal'] ? '<span class="badge bg-secondary">'.e($c['canal']).'</span>' : '<span class="text-muted small">Todos</span>' ?></td>
-                    <td><?= e($c['quantidade']) ?> un.</td>
                     <td>
                         <?php if ($c['tipo'] === 'bonificacao'): ?>
-                            <span class="badge bg-warning text-dark mb-1"><i class="bi bi-gift me-1"></i>Bonificação</span>
+                            <?php if ($c['bonif_modo'] === 'selecionavel'): ?>
+                                <span class="badge bg-info text-dark mb-1"><i class="bi bi-hand-index me-1"></i>Bônus selecionável</span>
+                                <div class="small text-muted">Limite: <?= $c['bonif_limite_tipo'] === 'valor' ? moedaBR($c['bonif_limite_valor']) : ((int)$c['bonif_limite_valor'] . ' un.') ?></div>
+                            <?php else: ?>
+                                <span class="badge bg-warning text-dark mb-1"><i class="bi bi-gift me-1"></i>Bonificação fixa</span>
+                            <?php endif; ?>
                             <div class="small text-muted" style="max-width:300px">
                                 <?= $c['bonificados']
-                                    ? e(implode(', ', array_map(fn($b) => $b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']), $c['bonificados'])))
+                                    ? e(implode(', ', array_map(fn($b) => ($c['bonif_modo'] === 'selecionavel' ? '' : $b['quantidade'] . 'x ') . ($b['descricao_pt'] ?: $b['codigo_produto']), $c['bonificados'])))
                                     : '<span class="text-danger">sem produtos</span>' ?>
                             </div>
                         <?php else: ?>
@@ -198,7 +256,7 @@ require_once LAYOUT_PATH . '/header.php';
                     </td>
                 </tr>
             <?php endforeach; else: ?>
-                <tr><td colspan="7" class="text-center text-muted py-4">Nenhuma campanha cadastrada.</td></tr>
+                <tr><td colspan="6" class="text-center text-muted py-4">Nenhuma campanha cadastrada.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -206,6 +264,9 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 </div>
 
+<style>
+#campProdWrap, #bonifWrapTable, #condTableWrap { max-height: 220px; overflow-y: auto; }
+</style>
 <div class="modal fade" id="modal" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
@@ -239,7 +300,7 @@ require_once LAYOUT_PATH . '/header.php';
                             </select>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-semibold">Qtd. Mínima</label>
+                            <label class="form-label fw-semibold">Qtd. Mínima <small class="text-muted">(p/ Produtos)</small></label>
                             <input type="number" name="quantidade" id="f_qtd" class="form-control" value="1" min="1">
                         </div>
                         <div class="col-md-3" id="campDescWrap">
@@ -250,9 +311,9 @@ require_once LAYOUT_PATH . '/header.php';
                         <div class="col-12">
                             <hr class="my-1">
                             <small class="text-muted">
-                                <strong>Gatilho da campanha:</strong> defina por <strong>Produtos</strong> (um ou vários)
-                                <strong>ou</strong> por <strong>Categoria</strong> (Linha / Grupo / Subgrupo) — os dois modos não se combinam.
-                                A Qtd. Mínima é a quantidade comprada que aciona a campanha.
+                                <strong>Gatilho da campanha:</strong> por <strong>Produtos</strong> (Qtd. Mínima acima)
+                                <strong>ou</strong> por <strong>Condições (E)</strong> de categoria — os dois modos não se combinam.
+                                Em Condições, <strong>todas</strong> precisam ser atingidas; o <strong>Valor-alvo</strong> aciona a campanha em alternativa (OU).
                             </small>
                         </div>
 
@@ -284,37 +345,57 @@ require_once LAYOUT_PATH . '/header.php';
                             </div>
                         </div>
 
-                        <!-- Modo: Categoria -->
-                        <div class="col-12"><div class="text-center text-muted small fw-semibold">— OU por categoria —</div></div>
-                        <div class="col-md-4">
-                            <label class="form-label fw-semibold">Linha</label>
-                            <select name="linha" id="f_linha" class="form-select" onchange="campAtualizarExclusividade()">
-                                <option value="">— Todas —</option>
-                                <?php foreach ($linhas as $l): ?><option value="<?= e($l) ?>"><?= e($l) ?></option><?php endforeach; ?>
-                            </select>
+                        <!-- Modo: Condições (E) por categoria -->
+                        <div class="col-12"><div class="text-center text-muted small fw-semibold">— OU por condições de categoria (todas obrigatórias) —</div></div>
+                        <div class="col-12" id="campCondWrap">
+                            <div class="table-responsive d-none" id="condTableWrap">
+                                <table class="table table-sm table-bordered align-middle mb-2">
+                                    <thead class="table-light">
+                                        <tr><th style="width:140px">Tipo</th><th>Categoria</th><th style="width:110px" class="text-center">Qtd. Mín.</th><th style="width:60px" class="text-center">—</th></tr>
+                                    </thead>
+                                    <tbody id="condBody"></tbody>
+                                </table>
+                            </div>
+                            <button type="button" class="btn btn-outline-success btn-sm" id="condAddBtn" onclick="condAddRow()">
+                                <i class="bi bi-plus-lg me-1"></i>Adicionar condição
+                            </button>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label fw-semibold">Grupo</label>
-                            <select name="grupo" id="f_grupo" class="form-select" onchange="campAtualizarExclusividade()">
-                                <option value="">— Todos —</option>
-                                <?php foreach ($grupos as $g): ?><option value="<?= e($g) ?>"><?= e($g) ?></option><?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label fw-semibold">Subgrupo</label>
-                            <select name="subgrupo" id="f_sub" class="form-select" onchange="campAtualizarExclusividade()">
-                                <option value="">— Todos —</option>
-                                <?php foreach ($subgrupos as $s): ?><option value="<?= e($s) ?>"><?= e($s) ?></option><?php endforeach; ?>
-                            </select>
+                            <label class="form-label fw-semibold">Valor-alvo (OU)</label>
+                            <input type="number" step="0.01" min="0" name="valor_alvo" id="f_valor_alvo" class="form-control" value="0" placeholder="0,00" oninput="campAtualizarExclusividade()">
                         </div>
 
-                        <!-- Produtos Bonificados (apenas tipo Bonificação) -->
+                        <!-- Bonificação (apenas tipo Bonificação) -->
                         <div class="col-12 d-none" id="campBonifWrap">
                             <hr class="my-1">
-                            <label class="form-label fw-semibold"><i class="bi bi-gift me-1 text-warning"></i>Produtos Bonificados</label>
-                            <div class="text-muted small mb-2">
-                                A quantidade bonificada é <strong>multiplicada</strong> conforme o total comprado atinge a Qtd. Mínima
+                            <div class="row g-2 align-items-end mb-2">
+                                <div class="col-md-5">
+                                    <label class="form-label fw-semibold">Modo do bônus</label>
+                                    <select name="bonif_modo" id="f_bonif_modo" class="form-select" onchange="campSetBonifModo(this.value)">
+                                        <option value="fixo">Fixo (gerado automaticamente)</option>
+                                        <option value="selecionavel">Selecionável pelo cliente</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4 d-none" id="bonifLimTipoWrap">
+                                    <label class="form-label fw-semibold">Limite por</label>
+                                    <select name="bonif_limite_tipo" id="f_bonif_lim_tipo" class="form-select" onchange="campSetBonifModo(document.getElementById('f_bonif_modo').value)">
+                                        <option value="quantidade">Quantidade (un.)</option>
+                                        <option value="valor">Valor (R$)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3 d-none" id="bonifLimValorWrap">
+                                    <label class="form-label fw-semibold" id="bonifLimValorLabel">Limite (un.)</label>
+                                    <input type="number" step="0.01" min="0" name="bonif_limite_valor" id="f_bonif_lim_valor" class="form-control" value="0">
+                                </div>
+                            </div>
+                            <label class="form-label fw-semibold"><i class="bi bi-gift me-1 text-warning"></i><span id="bonifTituloLista">Produtos Bonificados</span></label>
+                            <div class="text-muted small mb-2" id="bonifAjudaFixo">
+                                A quantidade bonificada é <strong>multiplicada</strong> conforme o total comprado atinge o gatilho
                                 (ex.: mínimo 50, comprou 100 → bônus ×2).
+                            </div>
+                            <div class="text-muted small mb-2 d-none" id="bonifAjudaSelec">
+                                Lista de produtos que o <strong>cliente</strong> poderá escolher como bônus, até o limite definido acima.
+                                A coluna Qtd. funciona como teto opcional por produto.
                             </div>
                             <div class="row g-2">
                                 <div class="col-md-7">
@@ -356,7 +437,13 @@ require_once LAYOUT_PATH . '/header.php';
 
 <script>
 var _campProdutos = <?= json_encode($produtos, JSON_UNESCAPED_UNICODE) ?>;
+var _campCats     = {
+    linha:    <?= json_encode(array_values($linhas),    JSON_UNESCAPED_UNICODE) ?>,
+    grupo:    <?= json_encode(array_values($grupos),    JSON_UNESCAPED_UNICODE) ?>,
+    subgrupo: <?= json_encode(array_values($subgrupos), JSON_UNESCAPED_UNICODE) ?>
+};
 var _campSel      = null;
+var _condSeq      = 0;
 
 function campEsc(s)     { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function campEscAttr(s) { return campEsc(s).replace(/"/g,'&quot;'); }
@@ -370,6 +457,7 @@ function campProdAddRow(id, codigo, nome) {
         '<td>' + campEsc(nome) + '</td>' +
         '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" title="Remover" onclick="campProdRemove(this)"><i class="bi bi-x-lg"></i></button></td>';
     document.getElementById('campProdBody').appendChild(tr);
+    tr.scrollIntoView({ block: 'nearest' });
 }
 function campProdRemove(btn) { btn.closest('tr').remove(); campAtualizarExclusividade(); }
 
@@ -388,23 +476,74 @@ function campProdAdd() {
     _campSel = null;
     document.getElementById('campSearch').value = '';
     document.getElementById('campDropdown').style.display = 'none';
-    document.getElementById('campSearch').focus();
+    document.getElementById('campSearch').focus({ preventScroll: true });
     campAtualizarExclusividade();
 }
 
-// ---- Exclusividade Produtos x Categoria ----
+// ---- Condições (E) por categoria ----
+function condCatOptions(tipo, sel) {
+    var lista = _campCats[tipo] || [];
+    return '<option value="">— selecione —</option>' + lista.map(function(v) {
+        return '<option value="' + campEscAttr(v) + '"' + (String(v) === String(sel) ? ' selected' : '') + '>' + campEsc(v) + '</option>';
+    }).join('');
+}
+function condOnTipoChange(sel) {
+    var tr  = sel.closest('tr');
+    var val = tr.querySelector('select[data-role="valor"]');
+    val.innerHTML = condCatOptions(sel.value, '');
+}
+function condAddRow(tipo, valor, qtd) {
+    var i  = _condSeq++;
+    tipo = tipo || 'grupo';
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td><select class="form-select form-select-sm" name="cond[' + i + '][tipo]" data-role="tipo" onchange="condOnTipoChange(this)">' +
+            '<option value="linha"'    + (tipo === 'linha'    ? ' selected' : '') + '>Linha</option>' +
+            '<option value="grupo"'    + (tipo === 'grupo'    ? ' selected' : '') + '>Grupo</option>' +
+            '<option value="subgrupo"' + (tipo === 'subgrupo' ? ' selected' : '') + '>Subgrupo</option>' +
+        '</select></td>' +
+        '<td><select class="form-select form-select-sm" name="cond[' + i + '][valor]" data-role="valor">' + condCatOptions(tipo, valor) + '</select></td>' +
+        '<td><input type="number" min="1" value="' + (parseInt(qtd, 10) || 1) + '" name="cond[' + i + '][qtd]" class="form-control form-control-sm text-center mx-auto" style="max-width:90px"></td>' +
+        '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" title="Remover" onclick="condRemove(this)"><i class="bi bi-x-lg"></i></button></td>';
+    document.getElementById('condBody').appendChild(tr);
+    condAtualizar();
+}
+function condRemove(btn) { btn.closest('tr').remove(); condAtualizar(); }
+function condAtualizar() {
+    var n = document.querySelectorAll('#condBody tr').length;
+    document.getElementById('condTableWrap').classList.toggle('d-none', n === 0);
+    campAtualizarExclusividade();
+}
+
+// ---- Exclusividade Produtos x Condições ----
 function campAtualizarExclusividade() {
-    var nProd  = document.querySelectorAll('#campProdBody tr').length;
-    var cats   = ['f_linha', 'f_grupo', 'f_sub'];
-    var hasCat = cats.some(function(id) { return document.getElementById(id).value !== ''; });
+    var nProd = document.querySelectorAll('#campProdBody tr').length;
+    var nCond = document.querySelectorAll('#condBody tr').length;
+    var hasValor = parseFloat(document.getElementById('f_valor_alvo').value || 0) > 0;
+    var hasCond  = nCond > 0 || hasValor;
 
     document.getElementById('campProdWrap').classList.toggle('d-none', nProd === 0);
 
-    // Há produtos → bloqueia categorias
-    cats.forEach(function(id) { document.getElementById(id).disabled = (nProd > 0); });
-    // Há categoria → bloqueia busca de produtos
-    document.getElementById('campSearch').disabled = hasCat;
-    document.getElementById('campAddBtn').disabled = hasCat;
+    // Há produtos → bloqueia condições/valor; há condições/valor → bloqueia produtos
+    document.getElementById('condAddBtn').disabled       = nProd > 0;
+    document.getElementById('f_valor_alvo').disabled     = nProd > 0;
+    document.getElementById('campSearch').disabled       = hasCond;
+    document.getElementById('campAddBtn').disabled       = hasCond;
+    document.getElementById('f_qtd').disabled            = hasCond;
+}
+
+// ---- Modo do bônus (fixo x selecionável) ----
+function campSetBonifModo(modo) {
+    var selec = (modo === 'selecionavel');
+    document.getElementById('bonifLimTipoWrap').classList.toggle('d-none', !selec);
+    document.getElementById('bonifLimValorWrap').classList.toggle('d-none', !selec);
+    document.getElementById('bonifAjudaFixo').classList.toggle('d-none', selec);
+    document.getElementById('bonifAjudaSelec').classList.toggle('d-none', !selec);
+    document.getElementById('bonifTituloLista').textContent = selec ? 'Produtos elegíveis (cliente escolhe)' : 'Produtos Bonificados';
+    if (selec) {
+        var porValor = document.getElementById('f_bonif_lim_tipo').value === 'valor';
+        document.getElementById('bonifLimValorLabel').textContent = porValor ? 'Limite (R$)' : 'Limite (un.)';
+    }
 }
 
 // ---- Autocomplete de produtos ----
@@ -458,6 +597,7 @@ function bonifAddRow(id, codigo, nome, qtd) {
         '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" title="Remover" onclick="bonifRemove(this)"><i class="bi bi-x-lg"></i></button></td>';
     document.getElementById('bonifBody').appendChild(tr);
     bonifAtualizar();
+    tr.scrollIntoView({ block: 'nearest' });
 }
 function bonifRemove(btn) { btn.closest('tr').remove(); bonifAtualizar(); }
 function bonifAtualizar() {
@@ -481,7 +621,7 @@ function bonifAdd() {
     document.getElementById('bonifSearch').value = '';
     document.getElementById('bonifQtd').value = '1';
     document.getElementById('bonifDropdown').style.display = 'none';
-    document.getElementById('bonifSearch').focus();
+    document.getElementById('bonifSearch').focus({ preventScroll: true });
 }
 (function() {
     var inp = document.getElementById('bonifSearch');
@@ -528,12 +668,16 @@ function campLimpar() {
     document.getElementById('campSearch').value = '';
     document.getElementById('campDropdown').style.display = 'none';
     _campSel = null;
-    document.getElementById('f_linha').value = '';
-    document.getElementById('f_grupo').value = '';
-    document.getElementById('f_sub').value   = '';
+    document.getElementById('condBody').innerHTML = '';
+    document.getElementById('f_valor_alvo').value = 0;
+    condAtualizar();
     document.getElementById('bonifBody').innerHTML = '';
     document.getElementById('bonifSearch').value = '';
     document.getElementById('bonifQtd').value = '1';
+    document.getElementById('f_bonif_modo').value = 'fixo';
+    document.getElementById('f_bonif_lim_tipo').value = 'quantidade';
+    document.getElementById('f_bonif_lim_valor').value = 0;
+    campSetBonifModo('fixo');
     _bonifSel = null;
     bonifAtualizar();
     campAtualizarExclusividade();
@@ -565,12 +709,18 @@ function editarReg(d) {
     (d.produtos || []).forEach(function(p) {
         campProdAddRow(p.id, p.codigo_produto, p.descricao_pt);
     });
+    (d.condicoes || []).forEach(function(c) {
+        condAddRow(c.tipo, c.valor, c.qtd);
+    });
+    document.getElementById('f_valor_alvo').value = parseFloat(d.valor_alvo || 0) || 0;
+    document.getElementById('f_bonif_modo').value     = d.bonif_modo || 'fixo';
+    document.getElementById('f_bonif_lim_tipo').value = d.bonif_limite_tipo || 'quantidade';
+    document.getElementById('f_bonif_lim_valor').value = parseFloat(d.bonif_limite_valor || 0) || 0;
     (d.bonificados || []).forEach(function(b) {
         bonifAddRow(b.id, b.codigo_produto, b.descricao_pt, b.quantidade);
     });
-    document.getElementById('f_linha').value = d.linha    || '';
-    document.getElementById('f_grupo').value = d.grupo    || '';
-    document.getElementById('f_sub').value   = d.subgrupo || '';
+    campSetBonifModo(d.bonif_modo || 'fixo');
+    condAtualizar();
     campAtualizarExclusividade();
     campSetTipo(d.tipo || 'desconto');
     new bootstrap.Modal(document.getElementById('modal')).show();
