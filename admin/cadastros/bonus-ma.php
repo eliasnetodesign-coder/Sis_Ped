@@ -35,7 +35,7 @@ $rows = db()->prepare("
         cv.canal,
         c.desconto_canal,
         CAST(c.material_apoio AS UNSIGNED) AS ma_pct,
-        COALESCE(SUM(CASE WHEN p.status = 'faturado' THEN p.valor_total ELSE 0 END), 0) AS faturamento,
+        COALESCE(SUM(CASE WHEN p.status = 'faturado' THEN p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END) ELSE 0 END), 0) AS faturamento,
         COALESCE(cr_avg.media_atrasos, 0) AS media_atrasos
     FROM clientes c
     LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id

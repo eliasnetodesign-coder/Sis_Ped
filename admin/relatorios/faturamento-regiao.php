@@ -17,7 +17,7 @@ foreach ($regioes as $reg => $ufs) {
     foreach ($ufs as $uf) $uf_regiao[$uf] = $reg;
 }
 
-$stmt = db()->prepare("SELECT c.estado, COALESCE(SUM(p.valor_total),0) AS valor, COUNT(p.id) AS pedidos
+$stmt = db()->prepare("SELECT c.estado, COALESCE(SUM(p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END)),0) AS valor, COUNT(p.id) AS pedidos
 FROM pedidos p JOIN clientes c ON c.id=p.cliente_id
 WHERE p.status='faturado' AND YEAR(p.data_pedido)=?
 GROUP BY c.estado");

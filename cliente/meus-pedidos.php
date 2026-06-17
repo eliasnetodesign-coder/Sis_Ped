@@ -11,7 +11,7 @@ if ($filtro) { $having = 'HAVING MIN(p.status) = ?'; $params[] = $filtro; }
 $pedidos = db()->prepare("
     SELECT g.min_id AS id, pf.numero_pedido,
            pf.data_pedido, g.created_at,
-           pf.tipo_venda, g.valor_total,
+           pf.tipo_venda, g.valor_total, pf.moeda,
            g.status, g.num_itens, g.lote_key
     FROM (
         SELECT MIN(p.id) AS min_id,
@@ -91,7 +91,7 @@ require_once LAYOUT_PATH . '/header.php';
                             <?= ucfirst($p['tipo_venda']) ?>
                         </span>
                     </td>
-                    <td class="fw-semibold"><?= moedaBR($p['valor_total']) ?></td>
+                    <td class="fw-semibold"><?= moedaBR($p['valor_total'], $p['moeda'] ?? 'BRL') ?></td>
                     <td><?= statusBadge($p['status']) ?></td>
                     <td class="text-end pe-3">
                         <a href="<?= BASE_URL ?>/cliente/pedido.php?id=<?= $p['id'] ?>"

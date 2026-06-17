@@ -26,9 +26,11 @@ function logPedido(int $pedidoId, string $numero, string $acao, ?string $antes, 
 
 function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dCanal): void {
     // Busca o canal_venda_id do cliente deste lote para filtrar campanhas
-    $canalRow = db()->prepare('SELECT c.canal_venda_id FROM pedidos p JOIN clientes c ON c.id = p.cliente_id WHERE p.lote_id = ? LIMIT 1');
+    $canalRow = db()->prepare('SELECT c.canal_venda_id, p.moeda FROM pedidos p JOIN clientes c ON c.id = p.cliente_id WHERE p.lote_id = ? LIMIT 1');
     $canalRow->execute([$lote_id]);
-    $canalVendaId = (int)($canalRow->fetchColumn() ?: 0);
+    $canalData    = $canalRow->fetch() ?: [];
+    $canalVendaId = (int)($canalData['canal_venda_id'] ?? 0);
+    $colPreco     = colPrecoMoeda($canalData['moeda'] ?? 'BRL');
 
     $camps = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas ORDER BY desconto DESC')->fetchAll();
     // Campanhas por produto: código -> lista de produto_id (mínimo soma todos os produtos da campanha)
@@ -39,7 +41,7 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
     $stmt  = db()->prepare('
         SELECT p.id, p.produto_id, p.quantidade_total, p.tipo_venda,
                pr.linha, pr.grupo, pr.subgrupo,
-               COALESCE(t.preco_padrao, pr.vendas_varejo) AS preco
+               COALESCE($colPreco, pr.vendas_varejo) AS preco
         FROM pedidos p
         JOIN produtos pr ON pr.id = p.produto_id
         LEFT JOIN tabela_precos t ON t.produto_id = pr.id
@@ -167,7 +169,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $qtd        = max(1, (int)$_POST['quantidade_total']);
                 $tipo       = $_POST['tipo_venda'] === 'bonificacao' ? 'bonificacao' : 'venda';
                 $obs        = trim($_POST['observacoes'] ?? '');
-                $prod = db()->prepare('SELECT p.*, COALESCE(t.preco_padrao, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ?');
+                $colPreco = colPrecoMoeda($ped['moeda'] ?? 'BRL');
+                $prod = db()->prepare("SELECT p.*, COALESCE($colPreco, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ?");
                 $prod->execute([$produto_id]);
                 $prod = $prod->fetch();
                 if (!$prod) throw new Exception('Produto inválido.');
@@ -211,7 +214,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $qtdPacotes = max(1, (int)$_POST['quantidade_total']);
             $tipo = $_POST['tipo_venda'] === 'bonificacao' ? 'bonificacao' : 'venda';
             $obs  = trim($_POST['observacoes'] ?? '');
-            $prod = db()->prepare('SELECT p.*, COALESCE(t.preco_padrao, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ?');
+            $colPreco = colPrecoMoeda($ped['moeda'] ?? 'BRL');
+            $prod = db()->prepare("SELECT p.*, COALESCE($colPreco, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ?");
             $prod->execute([$produto_id]);
             $prod = $prod->fetch();
             if (!$prod) throw new Exception('Produto inválido.');
@@ -226,8 +230,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $lote_id = 'L' . date('Ymd') . str_pad($id, 6, '0', STR_PAD_LEFT);
                 db()->prepare('UPDATE pedidos SET lote_id = ? WHERE id = ?')->execute([$lote_id, $id]);
             }
-            db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                ->execute([$ped['numero_pedido'], $tipo, $ped['data_pedido'], $ped['cliente_id'], $produto_id, $ped['supervisor'] ?? $ped['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $ped['status'], $obs, $lote_id, null]);
+            db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha,moeda,cotacao) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$ped['numero_pedido'], $tipo, $ped['data_pedido'], $ped['cliente_id'], $produto_id, $ped['supervisor'] ?? $ped['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $ped['status'], $obs, $lote_id, null, $ped['moeda'] ?? 'BRL', $ped['cotacao'] ?? null]);
             recalcularDescontosCampanha($lote_id, $dCliente, $dCanal);
             $det = "Adicionado: {$prod['descricao_pt']} | Qtd: {$qtd} | Tipo: {$tipo}";
             logPedido($id, $numPed, 'Produto adicionado', $ped['status'], $ped['status'], $det);
@@ -248,7 +252,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($ped['lote_id']) {
                 recalcularDescontosCampanha($ped['lote_id'], $dC, $dCn);
             } else {
-                $prod = db()->prepare('SELECT p.*, COALESCE(t.preco_padrao, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ?');
+                $colPreco = colPrecoMoeda($ped['moeda'] ?? 'BRL');
+                $prod = db()->prepare("SELECT p.*, COALESCE($colPreco, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ?");
                 $prod->execute([(int)$ped['produto_id']]);
                 $prod = $prod->fetch();
                 $camps_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas')->fetchAll();
@@ -344,19 +349,18 @@ if (!$pedido) {
     header('Location: ' . BASE_URL . '/admin/pedidos.php'); exit;
 }
 
+// Coluna de preço conforme a moeda do pedido (seção fiscal abaixo continua em R$)
+$colPreco = colPrecoMoeda($pedido['moeda'] ?? 'BRL');
+
 $loteId = $pedido['lote_id'] ?: null;
-if ($loteId) {
-    $stmtItens = db()->prepare("
-        SELECT p.*, pr.codigo_produto, pr.multiplo, COALESCE(t.preco_padrao, pr.vendas_varejo) AS preco_unit
-        FROM pedidos p
-        LEFT JOIN produtos pr ON pr.id = p.produto_id
-        LEFT JOIN tabela_precos t ON t.produto_id = pr.id
-        WHERE p.lote_id = ? ORDER BY p.id");
-    $stmtItens->execute([$loteId]);
-    $itensPedido = $stmtItens->fetchAll();
-} else {
-    $itensPedido = [$pedido];
-}
+$stmtItens = db()->prepare("
+    SELECT p.*, pr.codigo_produto, pr.multiplo, COALESCE($colPreco, pr.vendas_varejo) AS preco_unit
+    FROM pedidos p
+    LEFT JOIN produtos pr ON pr.id = p.produto_id
+    LEFT JOIN tabela_precos t ON t.produto_id = pr.id
+    WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?') . " ORDER BY p.id");
+$stmtItens->execute([$loteId ?: $pedidoId]);
+$itensPedido = $stmtItens->fetchAll();
 $valorTotalGeral = array_sum(array_column($itensPedido, 'valor_total'));
 
 // ===== Detalhamento fiscal (preço Network + impostos do NCM) =====
@@ -502,7 +506,7 @@ if ($pedido['lote_id']) {
 }
 $totalAPagarAdmin = max(0, $valorTotalGeral - $descontoPixAdmin - $creditoUsadoAdmin);
 
-$produtos = db()->query('SELECT p.id, p.descricao_pt, p.codigo_produto, p.codigo_barra, p.multiplo, p.linha, p.grupo, p.subgrupo, COALESCE(t.preco_padrao, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.status = "ativo" ORDER BY p.descricao_pt')->fetchAll();
+$produtos = db()->query("SELECT p.id, p.descricao_pt, p.codigo_produto, p.codigo_barra, p.multiplo, p.linha, p.grupo, p.subgrupo, COALESCE($colPreco, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.status = \"ativo\" ORDER BY p.descricao_pt")->fetchAll();
 $campanhas_edit = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto, codigo_campanha FROM campanhas ORDER BY desconto DESC')->fetchAll();
 
 // Logs do pedido — busca por numero_pedido para incluir todos os itens do lote
@@ -651,6 +655,9 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 </div>
 
+<?php /* A partir daqui, valores do pedido usam o símbolo da moeda do cliente (a seção fiscal acima permanece em R$). */
+moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
+
 <!-- Modal Log -->
 <div class="modal fade" id="modalLog" tabindex="-1">
     <div class="modal-dialog modal-dialog-scrollable">
@@ -774,6 +781,12 @@ require_once LAYOUT_PATH . '/header.php';
                         <div class="fw-bold fs-5 text-primary"><?= moedaBR($totalAPagarAdmin) ?></div>
                         <?php if ($descontoPixAdmin > 0 || $creditoUsadoAdmin > 0): ?>
                         <div class="text-muted small text-decoration-line-through"><?= moedaBR($valorTotalGeral) ?></div>
+                        <?php endif; ?>
+                        <?php if (($pedido['moeda'] ?? 'BRL') !== 'BRL' && (float)($pedido['cotacao'] ?? 0) > 0): ?>
+                        <div class="text-success small mt-1">
+                            <i class="bi bi-arrow-left-right me-1"></i>≈ <?= moedaBR($totalAPagarAdmin * (float)$pedido['cotacao'], 'BRL') ?>
+                            <span class="text-muted">(cotação do dia: R$ <?= number_format((float)$pedido['cotacao'], 4, ',', '.') ?>)</span>
+                        </div>
                         <?php endif; ?>
                     </div>
                     <?php if (!empty($pedido['forma_pagamento'])): ?>
@@ -966,6 +979,15 @@ require_once LAYOUT_PATH . '/header.php';
                             <?php if ($canEdit): ?><td></td><?php endif; ?>
                         </tr>
                         <?php endif; ?>
+                        <?php
+                        $finalAdmin = ($descontoPixAdmin > 0 || $creditoUsadoAdmin > 0) ? $totalAPagarAdmin : $valorTotalGeral;
+                        if (($pedido['moeda'] ?? 'BRL') !== 'BRL' && (float)($pedido['cotacao'] ?? 0) > 0): ?>
+                        <tr class="text-success">
+                            <td colspan="<?= $cols ?>" class="text-end fw-semibold pe-3"><i class="bi bi-arrow-left-right me-1"></i>Conversão em BRL (cotação do dia: R$ <?= number_format((float)$pedido['cotacao'], 4, ',', '.') ?>):</td>
+                            <td class="fw-semibold text-end pe-3">≈ <?= moedaBR($finalAdmin * (float)$pedido['cotacao'], 'BRL') ?></td>
+                            <?php if ($canEdit): ?><td></td><?php endif; ?>
+                        </tr>
+                        <?php endif; ?>
                     </tfoot>
                 </table>
             </div>
@@ -1026,7 +1048,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <div class="col-md-2">
                         <label class="form-label fw-semibold">Valor Unit.</label>
                         <input type="text" id="ep_preco_unit" class="form-control bg-light fw-semibold text-primary"
-                               readonly value="<?= $pedido['preco_unit'] > 0 ? 'R$ ' . number_format((float)$pedido['preco_unit'], 2, ',', '.') : '—' ?>">
+                               readonly value="<?= $pedido['preco_unit'] > 0 ? moedaBR((float)$pedido['preco_unit']) : '—' ?>">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label fw-semibold">Valor Estimado</label>
@@ -1090,8 +1112,9 @@ require_once LAYOUT_PATH . '/header.php';
 
             var _prodAtual = null;
 
+            var _simbolo = <?= json_encode(simboloMoeda($pedido['moeda'] ?? 'BRL')) ?>;
             function fmt(v) {
-                return 'R$ ' + v.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+                return _simbolo + ' ' + v.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
             }
 
             function melhorCampanha(prod, qtd) {

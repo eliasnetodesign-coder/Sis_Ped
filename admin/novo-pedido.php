@@ -26,7 +26,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $desconto      = ($tipoVenda === 'bonificacao')
         ? 0.0
         : ((float)($cli['desconto_cliente'] ?? 0) + (float)($cli['desconto_canal'] ?? 0)) / 100;
-    $colPreco      = ($tipoVenda === 'bonificacao') ? 't.preco_network' : 't.preco_padrao';
+    $colPreco      = colPrecoMoeda($cli['moeda'] ?? 'BRL', $tipoVenda === 'bonificacao');
+    // Bonificação usa preço network (BRL); não converte. Demais usam a cotação do dia.
+    $cotacaoPedido = ($tipoVenda === 'bonificacao') ? null : cotacaoDia($cli['moeda'] ?? 'BRL');
     $data          = date('Y-m-d');
     $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas')->fetchAll();
     $canalVendaId  = (int)($cli['canal_venda_id'] ?? 0);
@@ -115,8 +117,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($campDesc > 0) $valor_total *= (1 - $campDesc / 100);
 
             $num = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
-            db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?)')
-                ->execute([$num, $tipoVenda, $data, $cliente_id, $produto_id, $cli['supervisor'] ?? $cli['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $obs_geral, $loteFinal, $campDesc ?: null]);
+            db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha,moeda,cotacao) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?,?)')
+                ->execute([$num, $tipoVenda, $data, $cliente_id, $produto_id, $cli['supervisor'] ?? $cli['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $obs_geral, $loteFinal, $campDesc ?: null, $cli['moeda'] ?? 'BRL', $cotacaoPedido]);
             $ids_criados[] = (int)db()->lastInsertId();
             $criados++;
         }
@@ -153,7 +155,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Location: ' . BASE_URL . '/admin/novo-pedido.php'); exit;
 }
 
-$clientes  = db()->query('SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, canal_venda_id, idioma FROM clientes WHERE status = "ativo" ORDER BY razao_social')->fetchAll();
+$clientes  = db()->query('SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, canal_venda_id, idioma, moeda FROM clientes WHERE status = "ativo" ORDER BY razao_social')->fetchAll();
 $campanhas = db()->query('SELECT c.*, p.descricao_pt, cv.canal FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id ORDER BY c.codigo_campanha')->fetchAll();
 
 // Produtos bonificados por campanha (chips de campanhas de bonificação)
@@ -185,7 +187,9 @@ foreach ($campanhas as $c) {
 
 $produtos = db()->query('SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
     COALESCE(t.preco_padrao, p.vendas_varejo, 0) as preco,
-    COALESCE(t.preco_network, p.vendas_varejo, 0) as preco_network
+    COALESCE(t.preco_network, p.vendas_varejo, 0) as preco_network,
+    COALESCE(t.preco_dolar, p.vendas_varejo, 0) as preco_dolar,
+    COALESCE(t.preco_euro,  p.vendas_varejo, 0) as preco_euro
     FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
     WHERE p.status = "ativo" ORDER BY p.linha, p.descricao_pt')->fetchAll();
 
@@ -286,7 +290,8 @@ require_once LAYOUT_PATH . '/header.php';
                              data-desconto="<?= e($c['desconto_cliente'] ?? 0) ?>"
                              data-desconto-canal="<?= e($c['desconto_canal'] ?? 0) ?>"
                              data-canal-id="<?= (int)($c['canal_venda_id'] ?? 0) ?>"
-                             data-idioma="<?= e($c['idioma'] ?? 'pt') ?>">
+                             data-idioma="<?= e($c['idioma'] ?? 'pt') ?>"
+                             data-moeda="<?= e($c['moeda'] ?? 'BRL') ?>">
                             <span class="badge bg-secondary me-1"><?= e($c['codigo_cliente']) ?></span><?= e($c['razao_social']) ?>
                         </div>
                         <?php endforeach; ?>
@@ -346,7 +351,7 @@ require_once LAYOUT_PATH . '/header.php';
                         <th class="text-center">Múlt.</th>
                         <th class="text-center" style="width:100px">Quantidade</th>
                         <th class="text-center" style="width:140px">Quantidade Total</th>
-                        <th class="text-end">Total R$</th>
+                        <th class="text-end">Total</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -356,11 +361,15 @@ require_once LAYOUT_PATH . '/header.php';
                     $multiplo = $multiplo > 0 ? $multiplo : 1;
                     $preco    = (float)$p['preco'];
                     $precoNet = (float)$p['preco_network'];
+                    $precoUsd = (float)$p['preco_dolar'];
+                    $precoEur = (float)$p['preco_euro'];
                 ?>
                 <tr class="produto-row"
                     data-pid="<?= $pid ?>"
                     data-preco="<?= e($preco) ?>"
                     data-preco-net="<?= e($precoNet) ?>"
+                    data-preco-usd="<?= e($precoUsd) ?>"
+                    data-preco-eur="<?= e($precoEur) ?>"
                     data-nome="<?= e($p['descricao_pt']) ?>"
                     data-codigo="<?= e($p['codigo_produto']) ?>"
                     data-linha="<?= e($p['linha'] ?? '') ?>"
@@ -461,7 +470,16 @@ require_once LAYOUT_PATH . '/header.php';
 <script>
 var desconto   = 0;
 var _canalId   = 0;
+var _moeda     = 'BRL';
 var tipoVenda  = 'venda';
+
+// Preço base do produto conforme a moeda do cliente (bonificação sempre usa Network)
+function precoBaseRow(row, ehBonif) {
+    if (ehBonif) return parseFloat(row.dataset.precoNet) || 0;
+    if (_moeda === 'USD') return parseFloat(row.dataset.precoUsd) || 0;
+    if (_moeda === 'EUR') return parseFloat(row.dataset.precoEur) || 0;
+    return parseFloat(row.dataset.preco) || 0;
+}
 
 function onTipoVendaChange(val) {
     tipoVenda = (val === 'bonificacao') ? 'bonificacao' : 'venda';
@@ -497,13 +515,19 @@ _campanhas.forEach(function(c) {
     if (c.produto_id !== null) (_campProdIds[c.codigo] = _campProdIds[c.codigo] || []).push(c.produto_id);
 });
 
+function simboloMoedaJS() {
+    if (_moeda === 'USD') return 'US$';
+    if (_moeda === 'EUR') return '€';
+    return 'R$';
+}
 function fmtBRL(v) {
-    return 'R$ ' + v.toFixed(2).replace('.', ',');
+    return simboloMoedaJS() + ' ' + v.toFixed(2).replace('.', ',');
 }
 
-function onClienteChange(dCli, dCan, canalId, idioma) {
+function onClienteChange(dCli, dCan, canalId, idioma, moeda) {
     desconto = dCli + dCan;
     _canalId = canalId;
+    _moeda   = moeda || 'BRL';
     idioma   = idioma || 'pt';
     document.querySelectorAll('.produto-row').forEach(function(row) {
         var key = 'desc' + idioma.charAt(0).toUpperCase() + idioma.slice(1);
@@ -554,7 +578,8 @@ function onClienteChange(dCli, dCan, canalId, idioma) {
             var dCan   = (parseFloat(o.dataset.descontoCanal) || 0) / 100;
             var cId    = parseInt(o.dataset.canalId)          || 0;
             var idioma = o.dataset.idioma || 'pt';
-            onClienteChange(dCli, dCan, cId, idioma);
+            var moeda  = o.dataset.moeda || 'BRL';
+            onClienteChange(dCli, dCan, cId, idioma, moeda);
         });
         o.addEventListener('mouseover', function () { o.style.background = '#f0f0f0'; });
         o.addEventListener('mouseout',  function () { o.style.background = ''; });
@@ -590,7 +615,7 @@ function recalcularTodas() {
         var grupo    = row.dataset.grupo    || '';
         var subgrupo = row.dataset.subgrupo || '';
         var ehBonif      = (tipoVenda === 'bonificacao');
-        var precoBase    = parseFloat(ehBonif ? row.dataset.precoNet : row.dataset.preco) || 0;
+        var precoBase    = precoBaseRow(row, ehBonif);
         var descAtual    = ehBonif ? 0 : desconto;
         var precoComDesc = precoBase * (1 - descAtual);
 
@@ -658,7 +683,7 @@ function getItens() {
             var visual       = parseInt(row.querySelector('.qtd-visual').value) || 0;
             var multiplo     = parseFloat(row.dataset.multiplo) || 1;
             var ehBonif      = (tipoVenda === 'bonificacao');
-            var precoBase    = parseFloat(ehBonif ? row.dataset.precoNet : row.dataset.preco) || 0;
+            var precoBase    = precoBaseRow(row, ehBonif);
             var precoComDesc = precoBase * (1 - (ehBonif ? 0 : desconto));
             var campDesc     = parseFloat(row.dataset.campDesc) || 0;
             var preco        = campDesc > 0 ? precoComDesc * (1 - campDesc / 100) : precoComDesc;
@@ -717,7 +742,7 @@ function atualizar() {
             return '<div class="d-flex justify-content-between align-items-start py-2 border-bottom">'
                 + '<div style="max-width:65%"><div class="fw-semibold small lh-sm">' + i.nome + campBadge + '</div>'
                 + '<div class="text-muted" style="font-size:.78rem">' + qtdDesc
-                + ' × R$ ' + i.preco.toFixed(2).replace('.', ',') + '</div></div>'
+                + ' × ' + simboloMoedaJS() + ' ' + i.preco.toFixed(2).replace('.', ',') + '</div></div>'
                 + '<div class="fw-bold text-primary small">' + fmtBRL(i.sub) + '</div></div>';
         }).join('');
     }
@@ -761,7 +786,7 @@ document.getElementById('btnAvancar').addEventListener('click', function() {
                 + '<td class="fw-semibold">' + i.nome + campBadge + '</td>'
                 + '<td class="text-muted small">' + i.codigo + '</td>'
                 + '<td class="text-center small">' + qtdDesc + '</td>'
-                + '<td class="text-end">R$ ' + i.preco.toFixed(2).replace('.', ',') + '</td>'
+                + '<td class="text-end">' + simboloMoedaJS() + ' ' + i.preco.toFixed(2).replace('.', ',') + '</td>'
                 + '<td class="text-end fw-semibold text-primary">' + fmtBRL(i.sub) + '</td>'
                 + '</tr>';
         }).join('');

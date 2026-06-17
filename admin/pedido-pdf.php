@@ -19,28 +19,20 @@ if (!$pedido) {
     header('Location: ' . BASE_URL . '/admin/pedidos.php'); exit;
 }
 
+// Símbolo/coluna de preço conforme a moeda do pedido
+moedaCorrente($pedido['moeda'] ?? 'BRL');
+$colPreco = colPrecoMoeda($pedido['moeda'] ?? 'BRL');
+
 // Carrega todos os itens do lote (ou item único)
-if ($pedido['lote_id']) {
-    $stmtItens = db()->prepare('
-        SELECT p.*, pr.linha, pr.codigo_produto,
-               COALESCE(t.preco_padrao, pr.vendas_varejo, 0) AS preco_padrao
-        FROM pedidos p
-        LEFT JOIN produtos pr ON pr.id = p.produto_id
-        LEFT JOIN tabela_precos t ON t.produto_id = p.produto_id
-        WHERE p.lote_id = ?
-        ORDER BY pr.linha, p.descricao_produto');
-    $stmtItens->execute([$pedido['lote_id']]);
-} else {
-    $stmtItens = db()->prepare('
-        SELECT p.*, pr.linha, pr.codigo_produto,
-               COALESCE(t.preco_padrao, pr.vendas_varejo, 0) AS preco_padrao
-        FROM pedidos p
-        LEFT JOIN produtos pr ON pr.id = p.produto_id
-        LEFT JOIN tabela_precos t ON t.produto_id = p.produto_id
-        WHERE p.id = ?
-        ORDER BY pr.linha, p.descricao_produto');
-    $stmtItens->execute([$pedidoId]);
-}
+$stmtItens = db()->prepare("
+    SELECT p.*, pr.linha, pr.codigo_produto,
+           COALESCE($colPreco, pr.vendas_varejo, 0) AS preco_padrao
+    FROM pedidos p
+    LEFT JOIN produtos pr ON pr.id = p.produto_id
+    LEFT JOIN tabela_precos t ON t.produto_id = p.produto_id
+    WHERE " . ($pedido['lote_id'] ? 'p.lote_id = ?' : 'p.id = ?') . "
+    ORDER BY pr.linha, p.descricao_produto");
+$stmtItens->execute([$pedido['lote_id'] ?: $pedidoId]);
 $pedidos = $stmtItens->fetchAll();
 
 if (empty($pedidos)) {

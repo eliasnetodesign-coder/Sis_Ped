@@ -5,7 +5,7 @@ requireComercial();
 $ano = (int)($_GET['ano'] ?? date('Y'));
 
 $rows = db()->prepare("SELECT COALESCE(p.supervisor, p.vendedor) AS supervisor, COUNT(*) AS pedidos,
-    COALESCE(SUM(p.valor_total),0) AS valor,
+    COALESCE(SUM(p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END)),0) AS valor,
     COUNT(DISTINCT p.cliente_id) AS clientes
 FROM pedidos p
 WHERE p.status = 'faturado' AND YEAR(p.data_pedido) = ?

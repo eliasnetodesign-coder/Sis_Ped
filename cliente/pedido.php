@@ -58,19 +58,19 @@ if (!$pedido) {
     header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit;
 }
 
+// Coluna de preço conforme a moeda do pedido (a moeda "corrente" para os
+// símbolos é definida após o header.php, para não afetar o saldo do sidebar)
+$colPreco = colPrecoMoeda($pedido['moeda'] ?? 'BRL');
+
 $loteId = $pedido['lote_id'] ?: null;
-if ($loteId) {
-    $stmtItens = db()->prepare("
-        SELECT p.*, pr.codigo_produto, COALESCE(t.preco_padrao, pr.vendas_varejo) AS preco_unit
-        FROM pedidos p
-        LEFT JOIN produtos pr ON pr.id = p.produto_id
-        LEFT JOIN tabela_precos t ON t.produto_id = pr.id
-        WHERE p.lote_id = ? ORDER BY p.id");
-    $stmtItens->execute([$loteId]);
-    $itensPedido = $stmtItens->fetchAll();
-} else {
-    $itensPedido = [$pedido];
-}
+$stmtItens = db()->prepare("
+    SELECT p.*, pr.codigo_produto, COALESCE($colPreco, pr.vendas_varejo) AS preco_unit
+    FROM pedidos p
+    LEFT JOIN produtos pr ON pr.id = p.produto_id
+    LEFT JOIN tabela_precos t ON t.produto_id = pr.id
+    WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?') . " ORDER BY p.id");
+$stmtItens->execute([$loteId ?: $pedidoId]);
+$itensPedido = $stmtItens->fetchAll();
 $valorTotalGeral = array_sum(array_column($itensPedido, 'valor_total'));
 
 // Crédito utilizado no pedido
@@ -107,6 +107,8 @@ $si = $statusInfo[$pedido['status']] ?? ['icon' => 'bi-question-circle', 'color'
 
 $pageTitle = 'Pedido ' . e($pedido['numero_pedido']);
 require_once LAYOUT_PATH . '/header.php';
+// A partir daqui os valores do pedido usam o símbolo da moeda do cliente
+moedaCorrente($pedido['moeda'] ?? 'BRL');
 ?>
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">

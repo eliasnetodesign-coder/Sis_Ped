@@ -108,6 +108,15 @@ function db() {
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_wa_usuario (usuario_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN moeda VARCHAR(10) NOT NULL DEFAULT 'BRL'"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN cotacao DECIMAL(10,4) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE tabela_precos ADD COLUMN preco_dolar DECIMAL(10,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE tabela_precos ADD COLUMN preco_euro DECIMAL(10,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS configuracoes (
+                chave      VARCHAR(60) PRIMARY KEY,
+                valor      VARCHAR(255) NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
         } catch (PDOException $e) {
             die('Erro de conexão com o banco de dados. <a href="' . BASE_URL . '/install.php">Clique aqui para configurar.</a>');
         }
@@ -152,6 +161,103 @@ function requireCliente() {
     if (!$u || $u['tipo'] !== 'cliente') {
         header('Location: ' . BASE_URL . '/login.php');
         exit;
+    }
+}
+
+function getConfig($chave, $default = null) {
+    static $cache = null;
+    if ($cache === null) {
+        $cache = [];
+        try {
+            foreach (db()->query('SELECT chave, valor FROM configuracoes')->fetchAll() as $r) {
+                $cache[$r['chave']] = $r['valor'];
+            }
+        } catch (PDOException $e) { /* tabela ainda não existe */ }
+    }
+    return array_key_exists($chave, $cache) && $cache[$chave] !== null && $cache[$chave] !== ''
+        ? $cache[$chave] : $default;
+}
+
+function setConfig($chave, $valor) {
+    db()->prepare('INSERT INTO configuracoes (chave, valor) VALUES (?, ?)
+                   ON DUPLICATE KEY UPDATE valor = VALUES(valor)')
+        ->execute([$chave, $valor]);
+}
+
+/**
+ * Busca a cotação USD/EUR (em BRL) na AwesomeAPI. Retorna
+ * ['usd'=>float, 'eur'=>float, 'data'=>string] ou null em caso de falha.
+ */
+function buscarCotacaoAPI() {
+    $url = 'https://economia.awesomeapi.com.br/json/last/USD-BRL,EUR-BRL';
+    $raw = false;
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_SSL_VERIFYPEER => false,
+        ]);
+        $raw = curl_exec($ch);
+        curl_close($ch);
+    }
+    if ($raw === false) $raw = @file_get_contents($url);
+    $d = $raw ? json_decode($raw, true) : null;
+    if (!$d || empty($d['USDBRL']['bid']) || empty($d['EURBRL']['bid'])) return null;
+    return [
+        'usd'  => (float)$d['USDBRL']['bid'],
+        'eur'  => (float)$d['EURBRL']['bid'],
+        'data' => $d['USDBRL']['create_date'] ?? null,
+    ];
+}
+
+/**
+ * Cotação "do dia" para a moeda informada (em BRL). Registra/usa um cache
+ * diário em `configuracoes` (cotacao_usd, cotacao_eur, cotacao_data) para não
+ * consultar a API repetidamente. Retorna null para BRL/moeda desconhecida.
+ */
+function cotacaoDia($moeda) {
+    static $loaded = false, $usd = 0.0, $eur = 0.0;
+    $moeda = strtoupper((string)$moeda);
+    if ($moeda !== 'USD' && $moeda !== 'EUR') return null;
+
+    if (!$loaded) {
+        $loaded = true;
+        $hoje = date('Y-m-d');
+        if (getConfig('cotacao_data') === $hoje) {
+            $usd = (float)getConfig('cotacao_usd', 0);
+            $eur = (float)getConfig('cotacao_eur', 0);
+        }
+        if ($usd <= 0 || $eur <= 0) {
+            $api = buscarCotacaoAPI();
+            if ($api) {
+                $usd = $api['usd'];
+                $eur = $api['eur'];
+                setConfig('cotacao_usd', $usd);
+                setConfig('cotacao_eur', $eur);
+                setConfig('cotacao_data', $hoje);
+                setConfig('cotacao_atualizado', $api['data'] ?: date('Y-m-d H:i:s'));
+            } else {
+                // Falha na API: usa o último valor conhecido (mesmo de outro dia)
+                if ($usd <= 0) $usd = (float)getConfig('cotacao_usd', 0);
+                if ($eur <= 0) $eur = (float)getConfig('cotacao_eur', 0);
+            }
+        }
+    }
+    $r = $moeda === 'USD' ? $usd : $eur;
+    return $r > 0 ? $r : null;
+}
+
+/**
+ * Coluna de preço da tabela_precos a usar conforme a moeda do cliente.
+ * Bonificação sempre usa preco_network (independente de moeda).
+ */
+function colPrecoMoeda($moeda, $bonificacao = false) {
+    if ($bonificacao) return 't.preco_network';
+    switch (strtoupper((string)$moeda)) {
+        case 'USD': return 't.preco_dolar';
+        case 'EUR': return 't.preco_euro';
+        default:    return 't.preco_padrao';
     }
 }
 
@@ -253,8 +359,27 @@ function enviarWhatsappCodigo($telefone, string $codigo, ?int $usuarioId = null)
     return $ok;
 }
 
-function moedaBR($v) {
-    return 'R$ ' . number_format((float)$v, 2, ',', '.');
+function simboloMoeda($moeda) {
+    switch (strtoupper((string)$moeda)) {
+        case 'USD': return 'US$';
+        case 'EUR': return '€';
+        default:    return 'R$';
+    }
+}
+
+/**
+ * Moeda "corrente" da requisição. Páginas que exibem um único pedido podem
+ * chamar moedaCorrente('USD') uma vez para que todos os moedaBR() seguintes
+ * usem o símbolo correto sem precisar passar a moeda em cada chamada.
+ */
+function moedaCorrente($set = null) {
+    static $cur = 'BRL';
+    if ($set !== null) $cur = strtoupper((string)$set) ?: 'BRL';
+    return $cur;
+}
+
+function moedaBR($v, $moeda = null) {
+    return simboloMoeda($moeda ?? moedaCorrente()) . ' ' . number_format((float)$v, 2, ',', '.');
 }
 
 function dataBR($d) {
@@ -349,7 +474,12 @@ function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $sup
     $num  = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
     $obs  = 'Bonificação automática de campanha' . ($refNumero ? ' (ref. ' . $refNumero . ')' : '')
           . ($codigosAcionados ? ' — ' . implode(', ', $codigosAcionados) : '');
-    $ins  = db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?)');
+    $moedaCli = db()->prepare('SELECT moeda FROM clientes WHERE id = ?');
+    $moedaCli->execute([$clienteId]);
+    $moedaCli = $moedaCli->fetchColumn() ?: 'BRL';
+    // Pedido de bonificação usa preço network (BRL): não recebe cotação (não converte).
+    $cotacaoCli = null;
+    $ins  = db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,moeda,cotacao) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?)');
     $criados = [];
     foreach ($bonusAcc as $pid => $q) {
         // Pedido bonificado usa o preço Network (fallback: venda varejo)
@@ -359,7 +489,7 @@ function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $sup
         $pr->execute([$pid]); $pr = $pr->fetch();
         if (!$pr) continue;
         $valor = $q * (float)$pr['preco'];
-        $ins->execute([$num, 'bonificacao', $dataPedido, $clienteId, $pid, $supervisor, $pr['codigo_barra'], $pr['descricao_pt'], $q, $valor, $obs, $lote]);
+        $ins->execute([$num, 'bonificacao', $dataPedido, $clienteId, $pid, $supervisor, $pr['codigo_barra'], $pr['descricao_pt'], $q, $valor, $obs, $lote, $moedaCli, $cotacaoCli]);
         $criados[] = ['produto_id' => $pid, 'descricao' => $pr['descricao_pt'], 'quantidade' => $q, 'pedido_id' => (int)db()->lastInsertId()];
     }
     if (!$criados) return [];

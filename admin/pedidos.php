@@ -70,7 +70,7 @@ if ($filtro)      { $having = 'HAVING MIN(p.status) = ?'; $params[] = $filtro; }
 $pedidos = db()->prepare("
     SELECT g.min_id AS id, pf.numero_pedido,
            pf.data_pedido, g.created_at,
-           pf.tipo_venda, g.valor_total,
+           pf.tipo_venda, g.valor_total, pf.moeda, pf.cotacao,
            g.status, g.num_itens, g.lote_key,
            g.razao_social, g.codigo_cliente, g.cliente_id, g.supervisor, pf.observacoes
     FROM (
@@ -145,11 +145,14 @@ if ($busca_cli !== '') {
 }
 $t_where = $t_where_parts ? 'WHERE ' . implode(' AND ', $t_where_parts) : '';
 
+// Valor de cada pedido convertido para BRL (USD/EUR usam a cotação gravada no pedido)
+$valBRLexpr = "p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END)";
+
 $totais_stmt = db()->prepare("
     SELECT status, COUNT(*) AS qtd, SUM(valor_total) AS total
     FROM (
         SELECT MIN(p.status) AS status,
-               SUM(p.valor_total) AS valor_total
+               SUM($valBRLexpr) AS valor_total
         FROM pedidos p
         $t_join
         $t_where
@@ -170,7 +173,7 @@ $tipo_stmt = db()->prepare("
     FROM (
         SELECT MIN(p.status) AS status,
                MIN(p.tipo_venda) AS tipo_venda,
-               SUM(p.valor_total) AS valor_total
+               SUM($valBRLexpr) AS valor_total
         FROM pedidos p
         $t_join
         $t_where
@@ -385,7 +388,12 @@ $cardDefs = [
                             <?= ucfirst($p['tipo_venda']) ?>
                         </span>
                     </td>
-                    <td class="fw-semibold"><?= moedaBR($p['valor_total']) ?></td>
+                    <td class="fw-semibold">
+                        <?= moedaBR($p['valor_total'], $p['moeda'] ?? 'BRL') ?>
+                        <?php if (($p['moeda'] ?? 'BRL') !== 'BRL' && (float)($p['cotacao'] ?? 0) > 0): ?>
+                        <div class="text-success small" title="Cotação do dia: R$ <?= number_format((float)$p['cotacao'], 4, ',', '.') ?>">≈ <?= moedaBR((float)$p['valor_total'] * (float)$p['cotacao'], 'BRL') ?></div>
+                        <?php endif; ?>
+                    </td>
                     <?php if ($isFinanceiro):
                         $fisc      = $fiscalMap[$p['lote_key']] ?? ['credito' => 0, 'nf_total' => 0, 'desc_pgto' => 0];
                         $credito   = (float)$fisc['credito'];

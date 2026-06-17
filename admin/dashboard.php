@@ -16,7 +16,7 @@ if ($u['tipo'] === 'supervisor') {
 $totais_stmt = db()->prepare("
     SELECT status, COUNT(*) AS qtd, SUM(valor_total) AS total
     FROM (
-        SELECT MIN(p.status) AS status, SUM(p.valor_total) AS valor_total
+        SELECT MIN(p.status) AS status, SUM(p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END)) AS valor_total
         FROM pedidos p $d_join $d_where
         GROUP BY COALESCE(p.lote_id, CAST(p.id AS CHAR))
     ) g
@@ -33,7 +33,7 @@ $total_geral_val = array_sum(array_column($totais_rows, 'total'));
 $tipo_stmt = db()->prepare("
     SELECT g.status, g.tipo_venda, SUM(g.valor_total) AS total
     FROM (
-        SELECT MIN(p.status) AS status, MIN(p.tipo_venda) AS tipo_venda, SUM(p.valor_total) AS valor_total
+        SELECT MIN(p.status) AS status, MIN(p.tipo_venda) AS tipo_venda, SUM(p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END)) AS valor_total
         FROM pedidos p $d_join $d_where
         GROUP BY COALESCE(p.lote_id, CAST(p.id AS CHAR))
     ) g

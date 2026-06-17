@@ -147,7 +147,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 SELECT c.material_apoio,
                        COALESCE((SELECT acao FROM bonus_ma_logs WHERE cliente_id=c.id AND mes=? AND ano=? ORDER BY id DESC LIMIT 1),'') AS acao,
                        COALESCE((SELECT valor_utilizado FROM bonus_ma_logs WHERE cliente_id=c.id AND mes=? AND ano=? ORDER BY id DESC LIMIT 1),0) AS utilizado,
-                       COALESCE((SELECT SUM(valor_total) FROM pedidos WHERE cliente_id=c.id AND status='faturado' AND DATE(data_pedido) BETWEEN ? AND ?),0) AS fat
+                       COALESCE((SELECT SUM(valor_total * (CASE WHEN moeda <> 'BRL' AND cotacao > 0 THEN cotacao ELSE 1 END)) FROM pedidos WHERE cliente_id=c.id AND status='faturado' AND DATE(data_pedido) BETWEEN ? AND ?),0) AS fat
                 FROM clientes c WHERE c.id=?
             ");
             $_maR->execute([$_mn,$_ay,$_mn,$_ay,$_di,$_df,$_usuario['id']]);

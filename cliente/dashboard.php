@@ -9,7 +9,7 @@ $totais = db()->prepare('SELECT
     SUM(status = "financeiro") AS financeiro,
     SUM(status = "faturado") AS faturados,
     SUM(status = "reprovado") AS reprovados,
-    COALESCE(SUM(CASE WHEN status="faturado" THEN valor_total ELSE 0 END),0) AS valor_faturado
+    COALESCE(SUM(CASE WHEN status="faturado" THEN valor_total * (CASE WHEN moeda <> "BRL" AND cotacao > 0 THEN cotacao ELSE 1 END) ELSE 0 END),0) AS valor_faturado
 FROM pedidos WHERE cliente_id = ?');
 $totais->execute([$u['id']]);
 $t = $totais->fetch();
@@ -53,7 +53,7 @@ if ($maLog && $maLog['acao'] === 'aprovado') {
     if ($maPct > 0) {
         $dtIni = sprintf('%04d-%02d-01', $fatAno, $fatMes);
         $dtFim = date('Y-m-t', mktime(0, 0, 0, $fatMes, 1, $fatAno));
-        $fat = db()->prepare("SELECT COALESCE(SUM(valor_total),0) AS total FROM pedidos WHERE cliente_id=? AND status='faturado' AND DATE(data_pedido) BETWEEN ? AND ?");
+        $fat = db()->prepare("SELECT COALESCE(SUM(valor_total * (CASE WHEN moeda <> 'BRL' AND cotacao > 0 THEN cotacao ELSE 1 END)),0) AS total FROM pedidos WHERE cliente_id=? AND status='faturado' AND DATE(data_pedido) BETWEEN ? AND ?");
         $fat->execute([$u['id'], $dtIni, $dtFim]);
         $maTotal = (float)$fat->fetch()['total'] * $maPct / 100;
         $maValor = max(0, $maTotal - (float)($maLog['valor_utilizado'] ?? 0));

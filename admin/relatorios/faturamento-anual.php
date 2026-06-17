@@ -3,7 +3,7 @@ require_once __DIR__ . '/../../config.php';
 requireComercial();
 
 $rows = db()->query("SELECT YEAR(created_at) AS ano,
-    COUNT(*) AS pedidos, COALESCE(SUM(valor_total),0) AS valor,
+    COUNT(*) AS pedidos, COALESCE(SUM(valor_total * (CASE WHEN moeda <> 'BRL' AND cotacao > 0 THEN cotacao ELSE 1 END)),0) AS valor,
     COUNT(DISTINCT cliente_id) AS clientes
 FROM pedidos WHERE status='faturado'
 GROUP BY ano ORDER BY ano DESC")->fetchAll();

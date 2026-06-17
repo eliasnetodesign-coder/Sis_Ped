@@ -7,7 +7,7 @@ $data_fim = $_GET['data_fim'] ?? date('Y-m-d');
 
 $rows = db()->prepare("SELECT DATE(created_at) AS dia,
     COUNT(*) AS pedidos,
-    COALESCE(SUM(valor_total),0) AS valor,
+    COALESCE(SUM(valor_total * (CASE WHEN moeda <> 'BRL' AND cotacao > 0 THEN cotacao ELSE 1 END)),0) AS valor,
     COUNT(DISTINCT cliente_id) AS clientes
 FROM pedidos
 WHERE status = 'faturado' AND DATE(created_at) BETWEEN ? AND ?

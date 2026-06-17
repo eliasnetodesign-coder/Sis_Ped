@@ -2,29 +2,74 @@
 require_once __DIR__ . '/../../config.php';
 requireComercial();
 
+// Endpoint AJAX: cotação do dia (USD/EUR em BRL) via AwesomeAPI
+if (isset($_GET['cotacao'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    $api = buscarCotacaoAPI();
+    if (!$api) {
+        echo json_encode(['ok' => false]);
+        exit;
+    }
+    // Registra a cotação do dia (cache usado também na criação dos pedidos)
+    $atualizado = $api['data'] ?: date('Y-m-d H:i:s');
+    setConfig('cotacao_usd', $api['usd']);
+    setConfig('cotacao_eur', $api['eur']);
+    setConfig('cotacao_data', date('Y-m-d'));
+    setConfig('cotacao_atualizado', $atualizado);
+    echo json_encode([
+        'ok'   => true,
+        'usd'  => $api['usd'],
+        'eur'  => $api['eur'],
+        'data' => $atualizado,
+    ]);
+    exit;
+}
+
+$dolarSeg = (float)getConfig('dolar_seguranca', 0);
+$euroSeg  = (float)getConfig('euro_seguranca', 0);
+// preço em moeda estrangeira = preço auxiliar / câmbio de segurança
+$calcMoeda = function ($aux, $rate) {
+    if ($aux === null || $rate <= 0) return null;
+    return round($aux / $rate, 2);
+};
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $a = $_POST['action'] ?? '';
     try {
-        if ($a === 'criar') {
+        if ($a === 'cambio') {
+            $ds = $_POST['dolar_seguranca'] !== '' ? (float)$_POST['dolar_seguranca'] : 0;
+            $es = $_POST['euro_seguranca']  !== '' ? (float)$_POST['euro_seguranca']  : 0;
+            setConfig('dolar_seguranca', $ds);
+            setConfig('euro_seguranca', $es);
+            db()->prepare('UPDATE tabela_precos SET
+                preco_dolar = CASE WHEN preco_auxiliar IS NOT NULL AND ? > 0 THEN ROUND(preco_auxiliar / ?, 2) ELSE NULL END,
+                preco_euro  = CASE WHEN preco_auxiliar IS NOT NULL AND ? > 0 THEN ROUND(preco_auxiliar / ?, 2) ELSE NULL END')
+                ->execute([$ds, $ds, $es, $es]);
+            flash('success', 'Câmbio de segurança atualizado e preços recalculados!');
+        } elseif ($a === 'criar') {
             $pid  = (int)$_POST['produto_id'];
             $pp   = (float)$_POST['preco_padrao'];
             $pn   = $_POST['preco_network']  !== '' ? (float)$_POST['preco_network']  : null;
             $pa   = $_POST['preco_auxiliar'] !== '' ? (float)$_POST['preco_auxiliar'] : null;
+            $pd   = $calcMoeda($pa, $dolarSeg);
+            $pe   = $calcMoeda($pa, $euroSeg);
             $exists = db()->prepare('SELECT id FROM tabela_precos WHERE produto_id=?');
             $exists->execute([$pid]);
             if ($exists->fetchColumn()) {
-                db()->prepare('UPDATE tabela_precos SET preco_padrao=?,preco_network=?,preco_auxiliar=? WHERE produto_id=?')
-                    ->execute([$pp, $pn, $pa, $pid]);
+                db()->prepare('UPDATE tabela_precos SET preco_padrao=?,preco_network=?,preco_auxiliar=?,preco_dolar=?,preco_euro=? WHERE produto_id=?')
+                    ->execute([$pp, $pn, $pa, $pd, $pe, $pid]);
             } else {
-                db()->prepare('INSERT INTO tabela_precos (produto_id,preco_padrao,preco_network,preco_auxiliar) VALUES (?,?,?,?)')
-                    ->execute([$pid, $pp, $pn, $pa]);
+                db()->prepare('INSERT INTO tabela_precos (produto_id,preco_padrao,preco_network,preco_auxiliar,preco_dolar,preco_euro) VALUES (?,?,?,?,?,?)')
+                    ->execute([$pid, $pp, $pn, $pa, $pd, $pe]);
             }
             flash('success', 'Preço salvo!');
         } elseif ($a === 'editar') {
             $pn = $_POST['preco_network']  !== '' ? (float)$_POST['preco_network']  : null;
             $pa = $_POST['preco_auxiliar'] !== '' ? (float)$_POST['preco_auxiliar'] : null;
-            db()->prepare('UPDATE tabela_precos SET preco_padrao=?,preco_network=?,preco_auxiliar=? WHERE id=?')
-                ->execute([(float)$_POST['preco_padrao'], $pn, $pa, (int)$_POST['id']]);
+            $pd = $calcMoeda($pa, $dolarSeg);
+            $pe = $calcMoeda($pa, $euroSeg);
+            db()->prepare('UPDATE tabela_precos SET preco_padrao=?,preco_network=?,preco_auxiliar=?,preco_dolar=?,preco_euro=? WHERE id=?')
+                ->execute([(float)$_POST['preco_padrao'], $pn, $pa, $pd, $pe, (int)$_POST['id']]);
             flash('success', 'Preço atualizado!');
         } elseif ($a === 'excluir') {
             db()->prepare('DELETE FROM tabela_precos WHERE id=?')->execute([(int)$_POST['id']]);
@@ -43,16 +88,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pp = isset($row['preco_padrao'])  && $row['preco_padrao']  !== '' ? (float)$row['preco_padrao']  : 0;
                 $pn = isset($row['preco_network']) && $row['preco_network'] !== '' ? (float)$row['preco_network'] : null;
                 $pa = isset($row['preco_auxiliar'])&& $row['preco_auxiliar']!== '' ? (float)$row['preco_auxiliar']: null;
+                $pd = $calcMoeda($pa, $dolarSeg);
+                $pe = $calcMoeda($pa, $euroSeg);
                 $exists = db()->prepare('SELECT id FROM tabela_precos WHERE produto_id=?');
                 $exists->execute([$prodId]);
                 $existId = $exists->fetchColumn();
                 if ($existId) {
-                    db()->prepare('UPDATE tabela_precos SET preco_padrao=?,preco_network=?,preco_auxiliar=? WHERE id=?')
-                        ->execute([$pp, $pn, $pa, $existId]);
+                    db()->prepare('UPDATE tabela_precos SET preco_padrao=?,preco_network=?,preco_auxiliar=?,preco_dolar=?,preco_euro=? WHERE id=?')
+                        ->execute([$pp, $pn, $pa, $pd, $pe, $existId]);
                     $upd++;
                 } else {
-                    db()->prepare('INSERT INTO tabela_precos (produto_id,preco_padrao,preco_network,preco_auxiliar) VALUES (?,?,?,?)')
-                        ->execute([$prodId, $pp, $pn, $pa]);
+                    db()->prepare('INSERT INTO tabela_precos (produto_id,preco_padrao,preco_network,preco_auxiliar,preco_dolar,preco_euro) VALUES (?,?,?,?,?,?)')
+                        ->execute([$prodId, $pp, $pn, $pa, $pd, $pe]);
                     $ins++;
                 }
             }
@@ -73,6 +120,12 @@ $tabelaStmt->execute([':q' => $busca, ':qlike' => "%$busca%", ':qlike2' => "%$bu
 $tabela   = $tabelaStmt->fetchAll();
 $produtos = db()->query('SELECT id, codigo_produto, descricao_pt FROM produtos WHERE status="ativo" ORDER BY descricao_pt')->fetchAll();
 
+// Última cotação registrada (exibida ao abrir a tela)
+$cotUsd  = (float)getConfig('cotacao_usd', 0);
+$cotEur  = (float)getConfig('cotacao_eur', 0);
+$cotAtu  = getConfig('cotacao_atualizado');
+$cotAtuFmt = $cotAtu ? date('d/m/Y H:i', strtotime($cotAtu)) : '';
+
 $pageTitle = 'Tabela de Preços';
 require_once LAYOUT_PATH . '/header.php';
 ?>
@@ -85,6 +138,70 @@ require_once LAYOUT_PATH . '/header.php';
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modal" onclick="novoReg()">
             <i class="bi bi-plus-lg me-1"></i>Adicionar Preço
         </button>
+    </div>
+</div>
+
+<div class="card shadow-sm border-0 mb-3">
+    <div class="card-body">
+        <form method="POST" class="row g-3 align-items-end">
+            <input type="hidden" name="action" value="cambio">
+            <div class="col-12">
+                <h6 class="fw-bold mb-0"><i class="bi bi-currency-exchange me-2 text-primary"></i>Câmbio de Segurança</h6>
+                <small class="text-muted">Usado para calcular <strong>Preço Dólar</strong> e <strong>Preço Euro</strong> a partir do Preço Auxiliar.</small>
+            </div>
+
+            <div class="col-12">
+                <div class="p-3 rounded-3 border bg-light">
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold small mb-1">Dólar hoje (USD→BRL)</label>
+                            <div class="input-group">
+                                <span class="input-group-text">R$</span>
+                                <input type="text" id="cot_usd" class="form-control bg-white" readonly placeholder="—"
+                                       value="<?= $cotUsd > 0 ? number_format($cotUsd, 4, ',', '.') : '' ?>"
+                                       data-raw="<?= $cotUsd > 0 ? e($cotUsd) : '' ?>">
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold small mb-1">Euro hoje (EUR→BRL)</label>
+                            <div class="input-group">
+                                <span class="input-group-text">R$</span>
+                                <input type="text" id="cot_eur" class="form-control bg-white" readonly placeholder="—"
+                                       value="<?= $cotEur > 0 ? number_format($cotEur, 4, ',', '.') : '' ?>"
+                                       data-raw="<?= $cotEur > 0 ? e($cotEur) : '' ?>">
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <button type="button" id="btnCotacao" class="btn btn-outline-primary" onclick="buscarCotacao()">
+                                <i class="bi bi-arrow-repeat me-1"></i>Buscar cotação
+                            </button>
+                        </div>
+                        <div class="col-12">
+                            <small id="cot_info" class="text-muted"><?= $cotAtuFmt ? 'Cotação comercial (compra) — atualizada em ' . e($cotAtuFmt) . '. Fonte: AwesomeAPI.' : '' ?></small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label fw-semibold small mb-1">Dólar de Segurança</label>
+                <div class="input-group">
+                    <span class="input-group-text">US$</span>
+                    <input type="number" step="0.0001" min="0" name="dolar_seguranca" class="form-control" placeholder="0,00" value="<?= $dolarSeg > 0 ? e($dolarSeg) : '' ?>">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label fw-semibold small mb-1">Euro de Segurança</label>
+                <div class="input-group">
+                    <span class="input-group-text">€</span>
+                    <input type="number" step="0.0001" min="0" name="euro_seguranca" class="form-control" placeholder="0,00" value="<?= $euroSeg > 0 ? e($euroSeg) : '' ?>">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-primary" onclick="return confirm('Salvar o câmbio e recalcular os preços Dólar e Euro de todos os produtos?')">
+                    <i class="bi bi-save me-1"></i>Salvar e recalcular
+                </button>
+            </div>
+        </form>
     </div>
 </div>
 
@@ -118,6 +235,8 @@ require_once LAYOUT_PATH . '/header.php';
                     <th class="text-end">Preço Padrão</th>
                     <th class="text-end">Preço Network</th>
                     <th class="text-end">Preço Auxiliar</th>
+                    <th class="text-end">Preço Dólar</th>
+                    <th class="text-end">Preço Euro</th>
                     <th class="text-end pe-3">Ações</th>
                 </tr>
             </thead>
@@ -129,6 +248,8 @@ require_once LAYOUT_PATH . '/header.php';
                     <td class="text-end fw-semibold"><?= moedaBR($t['preco_padrao']) ?></td>
                     <td class="text-end text-muted"><?= $t['preco_network']  !== null ? moedaBR($t['preco_network'])  : '—' ?></td>
                     <td class="text-end text-muted"><?= $t['preco_auxiliar'] !== null ? moedaBR($t['preco_auxiliar']) : '—' ?></td>
+                    <td class="text-end text-muted"><?= $t['preco_dolar'] !== null ? 'US$ ' . number_format((float)$t['preco_dolar'], 2, ',', '.') : '—' ?></td>
+                    <td class="text-end text-muted"><?= $t['preco_euro']  !== null ? '€ '   . number_format((float)$t['preco_euro'],  2, ',', '.') : '—' ?></td>
                     <td class="text-end pe-3">
                         <button class="btn btn-sm btn-outline-primary" onclick="editarReg(<?= htmlspecialchars(json_encode($t),ENT_QUOTES) ?>)"><i class="bi bi-pencil"></i></button>
                         <form method="POST" class="d-inline" onsubmit="return confirm('Remover preço?')">
@@ -139,7 +260,7 @@ require_once LAYOUT_PATH . '/header.php';
                     </td>
                 </tr>
             <?php endforeach; else: ?>
-                <tr><td colspan="6" class="text-center text-muted py-4">Nenhum preço cadastrado.</td></tr>
+                <tr><td colspan="8" class="text-center text-muted py-4">Nenhum preço cadastrado.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -423,6 +544,36 @@ function editarReg(d) {
     document.getElementById('f_pn').value = d.preco_network  != null ? d.preco_network  : '';
     document.getElementById('f_pa').value = d.preco_auxiliar != null ? d.preco_auxiliar : '';
     new bootstrap.Modal(document.getElementById('modal')).show();
+}
+</script>
+<script>
+function fmtData(s) {
+    if (!s) return '';
+    // "2026-06-16 19:54:07" -> "16/06/2026 19:54"
+    var m = String(s).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+    if (m) return m[3] + '/' + m[2] + '/' + m[1] + ' ' + m[4] + ':' + m[5];
+    return s;
+}
+function buscarCotacao() {
+    var btn = document.getElementById('btnCotacao');
+    var original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Buscando...';
+    fetch('?cotacao=1', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            if (!d.ok) throw new Error();
+            var usd = document.getElementById('cot_usd');
+            var eur = document.getElementById('cot_eur');
+            usd.value = parseFloat(d.usd).toFixed(4).replace('.', ',');
+            eur.value = parseFloat(d.eur).toFixed(4).replace('.', ',');
+            usd.dataset.raw = d.usd;
+            eur.dataset.raw = d.eur;
+            document.getElementById('cot_info').textContent =
+                'Cotação comercial (compra) — atualizada em ' + fmtData(d.data) + '. Fonte: AwesomeAPI.';
+        })
+        .catch(function () { alert('Não foi possível buscar a cotação agora. Tente novamente em instantes.'); })
+        .finally(function () { btn.disabled = false; btn.innerHTML = original; });
 }
 </script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>

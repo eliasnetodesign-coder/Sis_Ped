@@ -5,7 +5,7 @@ requireComercial();
 $ano = (int)($_GET['ano'] ?? date('Y'));
 
 $rows = db()->prepare("SELECT MONTH(created_at) AS mes, MONTHNAME(created_at) AS mes_nome,
-    COUNT(*) AS pedidos, COALESCE(SUM(valor_total),0) AS valor,
+    COUNT(*) AS pedidos, COALESCE(SUM(valor_total * (CASE WHEN moeda <> 'BRL' AND cotacao > 0 THEN cotacao ELSE 1 END)),0) AS valor,
     COUNT(DISTINCT cliente_id) AS clientes
 FROM pedidos WHERE status='faturado' AND YEAR(created_at) = ?
 GROUP BY mes ORDER BY mes");

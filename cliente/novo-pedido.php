@@ -30,8 +30,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $desconto = ($tipoVenda === 'bonificacao')
         ? 0.0
         : ((float)($cli['desconto_cliente'] ?? 0) + (float)($cli['desconto_canal'] ?? 0)) / 100;
-    // Bonificação usa a tabela de preços Network; venda normal usa a Padrão
-    $colPreco = ($tipoVenda === 'bonificacao') ? 't.preco_network' : 't.preco_padrao';
+    // Bonificação usa a tabela Network; venda normal usa a coluna conforme a moeda do cliente
+    $colPreco = colPrecoMoeda($cli['moeda'] ?? 'BRL', $tipoVenda === 'bonificacao');
+    // Bonificação usa preço network (BRL); não converte. Demais usam a cotação do dia.
+    $cotacaoPedido = ($tipoVenda === 'bonificacao') ? null : cotacaoDia($cli['moeda'] ?? 'BRL');
     $data          = date('Y-m-d');
     $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas')->fetchAll();
     $canalVendaId  = (int)($cli['canal_venda_id'] ?? 0);
@@ -158,8 +160,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ids_criados[]  = $loteMap[$produto_id];
             } else {
                 $num = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
-                db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha,forma_pagamento) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?)')
-                    ->execute([$num,$tipoVenda,$data,$u['id'],$produto_id,$cli['supervisor']??$cli['vendedor']??'',$prod['codigo_barra'],$prod['descricao_pt'],$qtd,$valor_total,$obs_geral,$lote_id,$campDesc ?: null,$formaPagamento ?: null]);
+                db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha,forma_pagamento,moeda,cotacao) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?,?,?)')
+                    ->execute([$num,$tipoVenda,$data,$u['id'],$produto_id,$cli['supervisor']??$cli['vendedor']??'',$prod['codigo_barra'],$prod['descricao_pt'],$qtd,$valor_total,$obs_geral,$lote_id,$campDesc ?: null,$formaPagamento ?: null,$cli['moeda'] ?? 'BRL',$cotacaoPedido]);
                 $newId = (int)db()->lastInsertId();
                 $processedIds[] = $newId;
                 $ids_criados[]  = $newId;
@@ -194,7 +196,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // Total bruto do pedido (soma dos itens)
             $phT = implode(',', array_fill(0, count($ids_criados), '?'));
-            $totBrStmt = db()->prepare("SELECT COALESCE(SUM(valor_total),0) FROM pedidos WHERE id IN ($phT)");
+            $totBrStmt = db()->prepare("SELECT COALESCE(SUM(valor_total * (CASE WHEN moeda <> 'BRL' AND cotacao > 0 THEN cotacao ELSE 1 END)),0) FROM pedidos WHERE id IN ($phT)");
             $totBrStmt->execute($ids_criados);
             $totalPedido = (float)$totBrStmt->fetchColumn();
 
@@ -298,7 +300,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit;
 }
 
-$cli_data = db()->prepare('SELECT desconto_cliente, desconto_canal, canal_venda_id, idioma FROM clientes WHERE id = ?');
+$cli_data = db()->prepare('SELECT desconto_cliente, desconto_canal, canal_venda_id, idioma, moeda FROM clientes WHERE id = ?');
 $cli_data->execute([$u['id']]);
 $cli_data     = $cli_data->fetch();
 
@@ -332,7 +334,8 @@ $creditoStmt->execute([$u['id']]);
 $creditosDisponiveis = $creditoStmt->fetchAll();
 $creditoDisponivel   = array_sum(array_column($creditosDisponiveis, 'saldo'));
 
-$colPrecoExib = $bonifFlag ? 't.preco_network' : 't.preco_padrao';
+$colPrecoExib = colPrecoMoeda($cli_data['moeda'] ?? 'BRL', $bonifFlag);
+$simboloCli   = simboloMoeda($cli_data['moeda'] ?? 'BRL');
 $produtos = db()->query("SELECT p.id, p.codigo_produto, p.codigo_barra, p.descricao_pt, p.multiplo, p.linha, p.grupo, p.subgrupo, p.desc_cliente_pt, p.desc_cliente_en, p.desc_cliente_es,
     COALESCE($colPrecoExib, p.vendas_varejo, 0) as preco,
     COALESCE(t.preco_network, 0) as preco_net, COALESCE(n.ipi, 0) as ipi_ncm
@@ -421,7 +424,7 @@ if ($modoMA) {
     $maStmt = db()->prepare("
         SELECT l.id AS log_id, COALESCE(l.valor_utilizado,0) AS valor_utilizado,
                c.material_apoio,
-               COALESCE((SELECT SUM(valor_total) FROM pedidos
+               COALESCE((SELECT SUM(valor_total * (CASE WHEN moeda <> 'BRL' AND cotacao > 0 THEN cotacao ELSE 1 END)) FROM pedidos
                          WHERE cliente_id=c.id AND status='faturado'
                          AND DATE(data_pedido) BETWEEN ? AND ?),0) AS fat
         FROM clientes c
@@ -566,7 +569,7 @@ require_once LAYOUT_PATH . '/header.php';
                         <th class="text-center">Múlt.</th>
                         <th class="text-center" style="width:100px">Quantidade</th>
                         <th class="text-center" style="width:140px">Quantidade Total</th>
-                        <th class="text-end">Total R$</th>
+                        <th class="text-end">Total <?= e($simboloCli) ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -594,8 +597,8 @@ require_once LAYOUT_PATH . '/header.php';
                     <td class="text-muted small"><?= e($p['codigo_barra'] ?: '—') ?></td>
                     <?php $dc = trim($p['desc_cliente_' . $idiomaCliente] ?? ''); ?>
                     <td class="fw-semibold"><?= e($dc ?: $p['descricao_pt']) ?></td>
-                    <td class="text-end text-muted small preco-unit-col" data-preco-fmt="<?= $precoExib > 0 ? e('R$ ' . number_format($precoExib, 2, ',', '.')) : '—' ?>">
-                        <?= $precoExib > 0 ? 'R$ ' . number_format($precoExib, 2, ',', '.') : '—' ?>
+                    <td class="text-end text-muted small preco-unit-col" data-preco-fmt="<?= $precoExib > 0 ? e($simboloCli . ' ' . number_format($precoExib, 2, ',', '.')) : '—' ?>">
+                        <?= $precoExib > 0 ? e($simboloCli) . ' ' . number_format($precoExib, 2, ',', '.') : '—' ?>
                     </td>
                     <td class="text-center">
                         <?php if ($multiplo > 1): ?>
@@ -791,7 +794,7 @@ require_once LAYOUT_PATH . '/header.php';
         <div class="border-top px-3 pt-3 pb-3 bg-white">
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <span class="fw-semibold">Total</span>
-                <span class="fw-bold fs-5 text-primary" id="carrinhoTotal">R$ 0,00</span>
+                <span class="fw-bold fs-5 text-primary" id="carrinhoTotal"><?= e($simboloCli) ?> 0,00</span>
             </div>
             <button type="button" class="btn btn-primary w-100 btn-lg" id="btnAvancar">
                 <i class="bi bi-arrow-right me-2"></i>Avançar
@@ -869,8 +872,9 @@ _campanhas.forEach(function(c) {
     if (c.produto_id !== null) (_campProdIds[c.codigo] = _campProdIds[c.codigo] || []).push(c.produto_id);
 });
 
+var _simbolo = <?= json_encode(simboloMoeda($cli_data['moeda'] ?? 'BRL')) ?>;
 function fmtBRL(v) {
-    return 'R$ ' + v.toFixed(2).replace('.', ',');
+    return _simbolo + ' ' + v.toFixed(2).replace('.', ',');
 }
 
 function recalcularTodas() {
@@ -1041,7 +1045,7 @@ function atualizar() {
             return '<div class="d-flex justify-content-between align-items-start py-2 border-bottom">'
                 + '<div style="max-width:65%"><div class="fw-semibold small lh-sm">' + i.nome + campBadge + '</div>'
                 + '<div class="text-muted" style="font-size:.78rem">' + qtdDesc
-                + ' × R$ ' + i.preco.toFixed(2).replace('.', ',') + '</div></div>'
+                + ' × ' + _simbolo + ' ' + i.preco.toFixed(2).replace('.', ',') + '</div></div>'
                 + '<div class="fw-bold text-primary small">' + fmtBRL(i.sub) + '</div></div>';
         }).join('');
     }
@@ -1127,7 +1131,7 @@ function gerarResumo() {
             + '<th class="text-center small" style="white-space:nowrap">Múlt.</th>'
             + '<th class="text-center small" style="white-space:nowrap">Quantidade</th>'
             + '<th class="text-center small" style="white-space:nowrap">Quantidade<br>Total</th>'
-            + '<th class="text-end small pe-3" style="white-space:nowrap">Total R$</th>'
+            + '<th class="text-end small pe-3" style="white-space:nowrap">Total ' + _simbolo + '</th>'
             + '</tr></thead><tbody>' + rows + '</tbody>'
             + '<tfoot class="table-light"><tr><td colspan="7" class="text-end fw-semibold small pe-3">Subtotal ' + linha + '</td>'
             + '<td class="text-end fw-bold text-primary pe-3">' + fmtBRL(linhaTotal) + '</td>'

@@ -6,7 +6,7 @@ $status_list = ['comercial','financeiro','faturamento','faturado','cancelado','r
 
 $rows = db()->query("SELECT p.status,
     COUNT(*) AS qtd,
-    COALESCE(SUM(p.valor_total),0) AS total,
+    COALESCE(SUM(p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END)),0) AS total,
     GROUP_CONCAT(DISTINCT c.razao_social ORDER BY c.razao_social SEPARATOR ', ') AS clientes
 FROM pedidos p
 LEFT JOIN clientes c ON c.id = p.cliente_id

@@ -19,7 +19,7 @@ function bdCalcValor($cliId, $tri, $ano) {
     $m3 = $tri * 3;
     $stmt = db()->prepare("
         SELECT CAST(c.bonus_desempenho AS DECIMAL(10,2)) AS pct,
-               COALESCE(SUM(CASE WHEN p.status='faturado' AND MONTH(p.data_pedido) BETWEEN ? AND ? THEN p.valor_total ELSE 0 END), 0) AS fat
+               COALESCE(SUM(CASE WHEN p.status='faturado' AND MONTH(p.data_pedido) BETWEEN ? AND ? THEN p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END) ELSE 0 END), 0) AS fat
         FROM clientes c
         LEFT JOIN pedidos p ON p.cliente_id = c.id AND YEAR(p.data_pedido) = ?
         WHERE c.id = ?
@@ -116,9 +116,9 @@ $rows = db()->prepare("
         cv.canal,
         c.desconto_cliente,
         CAST(c.bonus_desempenho AS DECIMAL(10,2)) AS bonus_pct,
-        COALESCE(SUM(CASE WHEN MONTH(p.data_pedido) = ? AND p.status = 'faturado' THEN p.valor_total ELSE 0 END), 0) AS fat_mes1,
-        COALESCE(SUM(CASE WHEN MONTH(p.data_pedido) = ? AND p.status = 'faturado' THEN p.valor_total ELSE 0 END), 0) AS fat_mes2,
-        COALESCE(SUM(CASE WHEN MONTH(p.data_pedido) = ? AND p.status = 'faturado' THEN p.valor_total ELSE 0 END), 0) AS fat_mes3,
+        COALESCE(SUM(CASE WHEN MONTH(p.data_pedido) = ? AND p.status = 'faturado' THEN p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END) ELSE 0 END), 0) AS fat_mes1,
+        COALESCE(SUM(CASE WHEN MONTH(p.data_pedido) = ? AND p.status = 'faturado' THEN p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END) ELSE 0 END), 0) AS fat_mes2,
+        COALESCE(SUM(CASE WHEN MONTH(p.data_pedido) = ? AND p.status = 'faturado' THEN p.valor_total * (CASE WHEN p.moeda <> 'BRL' AND p.cotacao > 0 THEN p.cotacao ELSE 1 END) ELSE 0 END), 0) AS fat_mes3,
         COALESCE(m.meta_cliente, 0) AS meta,
         COALESCE(cr_avg.media_atrasos, 0) AS media_atrasos
     FROM clientes c

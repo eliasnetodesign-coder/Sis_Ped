@@ -3,8 +3,14 @@ require_once __DIR__ . '/../config.php';
 requireCliente();
 $u = usuario();
 
+$moedaCli = db()->prepare('SELECT moeda FROM clientes WHERE id = ?');
+$moedaCli->execute([$u['id']]);
+$moedaCli = $moedaCli->fetchColumn() ?: 'BRL';
+moedaCorrente($moedaCli);
+$colPreco = colPrecoMoeda($moedaCli);
+
 $selCols = "p.*, pr.linha, pr.codigo_produto,
-            COALESCE(t.preco_padrao, pr.vendas_varejo, 0) AS preco_padrao
+            COALESCE($colPreco, pr.vendas_varejo, 0) AS preco_padrao
      FROM pedidos p
      LEFT JOIN produtos pr ON pr.id = p.produto_id
      LEFT JOIN tabela_precos t ON t.produto_id = p.produto_id";
