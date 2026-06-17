@@ -398,7 +398,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
     </nav><!-- /sidebar -->
 
     <!-- Main content -->
-    <main class="flex-grow-1 p-3 p-md-4 overflow-x-hidden">
+    <main class="flex-grow-1 p-3 p-md-4" style="overflow-x: clip">
 <?php endif; // usuario logado ?>
 
 <?php if ($_flash): ?>

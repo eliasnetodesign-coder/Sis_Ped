@@ -544,8 +544,9 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 </div>
 
+<div class="pedido-sticky-top">
 <?php if ($campanhas && !$modoMA): ?>
-<div class="mb-3 p-3 rounded-3 border bg-white">
+<div class="mb-3 p-3 rounded-3 border bg-white shadow-sm campanhas-box">
     <div class="d-flex align-items-center gap-2 mb-2">
         <i class="bi bi-megaphone-fill text-primary"></i>
         <span class="fw-semibold text-primary small text-uppercase">Campanhas Ativas</span>
@@ -646,6 +647,7 @@ require_once LAYOUT_PATH . '/header.php';
     </li>
     <?php endforeach; ?>
 </ul>
+</div><!-- /pedido-sticky-top -->
 
 <div class="tab-content border border-top-0 rounded-bottom mb-4">
     <?php foreach ($linhas as $i => $linha):
@@ -1508,5 +1510,14 @@ if (_preFill) {
 if (!_preFill) restaurarCarrinho();
 recalcularTodas();
 atualizar();
+
+// Mede a altura do bloco fixo (campanhas + abas) p/ posicionar o cabeçalho da tabela logo abaixo
+function ajustarOffsetSticky() {
+    var el = document.querySelector('.pedido-sticky-top');
+    document.documentElement.style.setProperty('--pedido-sticky-h', (el ? el.offsetHeight : 0) + 'px');
+}
+ajustarOffsetSticky();
+window.addEventListener('load', ajustarOffsetSticky);
+window.addEventListener('resize', ajustarOffsetSticky);
 </script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>
