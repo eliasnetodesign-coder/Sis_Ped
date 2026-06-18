@@ -24,16 +24,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $erros = [];
     foreach ($camps as $cp) {
         $code = $cp['codigo'];
-        $precoById = [];
-        foreach ($cp['produtos'] as $p) $precoById[(int)$p['id']] = (float)$p['preco'];
+        $precoById   = [];
+        $multiploById = [];
+        foreach ($cp['produtos'] as $p) {
+            $precoById[(int)$p['id']]   = (float)$p['preco'];
+            $multiploById[(int)$p['id']] = max(1, (int)($p['multiplo'] ?? 1));
+        }
 
         $somaQtd = 0; $somaVal = 0.0; $itens = [];
         foreach (($sel[$code] ?? []) as $pid => $q) {
-            $pid = (int)$pid; $q = max(0, (int)$q);
+            $pid  = (int)$pid; $q = max(0, (int)$q);
             if ($q <= 0 || !isset($precoById[$pid])) continue;
-            $itens[$pid] = $q;
-            $somaQtd += $q;
-            $somaVal += $q * $precoById[$pid];
+            $mult   = $multiploById[$pid] ?? 1;
+            $actual = $q * $mult;
+            $itens[$pid] = $actual;
+            $somaQtd += $actual;
+            $somaVal += $actual * $precoById[$pid];
         }
         if ($cp['limite_tipo'] === 'valor') {
             if ($somaVal - (float)$cp['limite'] > 0.001) { $erros[] = "Campanha {$code}: valor selecionado excede o limite."; continue; }
@@ -93,21 +99,30 @@ require_once LAYOUT_PATH . '/header.php';
             <div class="table-responsive">
                 <table class="table table-hover mb-0 align-middle">
                     <thead class="table-light">
-                        <tr><th>Código</th><th>Produto</th><th class="text-end">Preço unit.</th><th style="width:140px" class="text-center">Qtd. bônus</th></tr>
+                        <tr><th>Código</th><th>Produto</th><th class="text-end">Preço unit.</th><th class="text-center">Múlt.</th><th style="width:120px" class="text-center">Quantidade</th><th class="text-center">Qtd. Total</th></tr>
                     </thead>
                     <tbody>
-                    <?php foreach ($cp['produtos'] as $p): ?>
+                    <?php foreach ($cp['produtos'] as $p):
+                        $pMult = max(1.0, (float)($p['multiplo'] ?? 1));
+                    ?>
                         <tr>
                             <td class="fw-semibold"><?= e($p['codigo']) ?></td>
                             <td><?= e($p['descricao']) ?></td>
                             <td class="text-end"><?= moedaBR((float)$p['preco']) ?></td>
                             <td class="text-center">
+                                <?php if ($pMult > 1): ?>
+                                <span class="badge bg-light text-dark border"><?= number_format($pMult, 0) ?></span>
+                                <?php else: ?><span class="text-muted small">—</span><?php endif; ?>
+                            </td>
+                            <td class="text-center">
                                 <input type="number" min="0" value="0"
                                        class="form-control form-control-sm text-center mx-auto bonif-qtd"
-                                       style="max-width:100px"
+                                       style="max-width:90px"
                                        data-preco="<?= e($p['preco']) ?>"
+                                       data-multiplo="<?= $pMult ?>"
                                        name="sel[<?= e($cp['codigo']) ?>][<?= (int)$p['id'] ?>]">
                             </td>
+                            <td class="text-center fw-semibold bonif-total text-muted">—</td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -140,9 +155,17 @@ function bonifRecalc() {
         var limite   = parseFloat(card.dataset.limite) || 0;
         var usado    = 0;
         card.querySelectorAll('.bonif-qtd').forEach(function(inp) {
-            var q = parseInt(inp.value, 10) || 0;
+            var q    = parseInt(inp.value, 10) || 0;
+            var mult = parseFloat(inp.dataset.multiplo) || 1;
             if (q < 0) { q = 0; inp.value = 0; }
-            usado += porValor ? q * (parseFloat(inp.dataset.preco) || 0) : q;
+            var actual = q * mult;
+            var totalCell = inp.closest('tr').querySelector('.bonif-total');
+            if (totalCell) {
+                totalCell.textContent = actual > 0 ? actual + ' un.' : '—';
+                totalCell.classList.toggle('text-muted', actual <= 0);
+                totalCell.classList.toggle('text-primary', actual > 0);
+            }
+            usado += porValor ? actual * (parseFloat(inp.dataset.preco) || 0) : actual;
         });
         var excede = usado - limite > 0.001;
         card.querySelector('.camp-usado').textContent = bonifFmt(porValor ? Math.round(usado * 100) / 100 : usado, porValor);

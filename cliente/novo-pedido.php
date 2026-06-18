@@ -962,6 +962,23 @@ var _campanhas = <?= json_encode(array_values(array_map(function($c) {
     ];
 }, $campanhas))) ?>;
 
+// Campanhas de DESCONTO do novo modelo (condições E / valor-alvo OU) — espelha o PHP.
+// O desconto incide só nos itens dos grupos das condições (gruposAlvo).
+var _campCondicoes = <?= json_encode(array_values(array_filter(array_map(function ($code, $g) use ($condByCode) {
+    if (($g['tipo'] ?? 'desconto') !== 'desconto') return null;
+    $conds = $condByCode[$code] ?? [];
+    if (!$conds) return null; // só novo modelo (com condições); valor-alvo puro não é tratado aqui
+    return [
+        'desconto'  => (float)$g['desconto'],
+        'valorAlvo' => (float)($g['valor_alvo'] ?? 0),
+        'conds'     => array_map(fn($c) => [
+            'tipo'  => $c['criterio_tipo'],
+            'valor' => trim($c['criterio_valor']),
+            'qtd'   => (int)$c['quantidade'],
+        ], $conds),
+    ];
+}, array_keys($campGroup), array_values($campGroup))))) ?>;
+
 // Campanhas por produto: código -> lista de produto_id (para somar a quantidade mínima)
 var _campProdIds = {};
 _campanhas.forEach(function(c) {
@@ -995,6 +1012,22 @@ function recalcularTodas() {
         var soma = 0;
         _campProdIds[cod].forEach(function(pid) { soma += (totProd[pid] || 0); });
         totCamp[cod] = soma;
+    });
+
+    // Campanhas de desconto do novo modelo: aciona se TODAS as condições (E) forem
+    // atingidas OU se o valor-alvo (OU) for alcançado. Mantém os grupos-alvo p/ aplicar
+    // o desconto só nos itens dessas condições (espelha avaliarCampanhaTrigger no PHP).
+    var descAvancados = [];
+    _campCondicoes.forEach(function(c) {
+        var allMet = c.conds.length > 0;
+        c.conds.forEach(function(cd) {
+            var tot = cd.tipo === 'linha'    ? (totLinha[cd.valor] || 0)
+                    : cd.tipo === 'grupo'    ? (totGrupo[cd.valor] || 0)
+                    : cd.tipo === 'subgrupo' ? (totSub[cd.valor]   || 0) : 0;
+            if (!(cd.qtd > 0 && tot >= cd.qtd)) allMet = false;
+        });
+        var acionada = allMet || (c.valorAlvo > 0 && valorTotal >= c.valorAlvo);
+        if (acionada) descAvancados.push({ desconto: c.desconto, conds: c.conds });
     });
 
     // Aplica desconto a cada linha
@@ -1032,6 +1065,16 @@ function recalcularTodas() {
                 }
                 if (qtdRef < c.quantidade) return;
                 if (c.desconto > campDesc) campDesc = c.desconto;
+            });
+            // Novo modelo: desconto incide só nos itens dos grupos das condições
+            descAvancados.forEach(function(ac) {
+                if (ac.desconto <= campDesc) return;
+                var bate = ac.conds.some(function(cd) {
+                    return (cd.tipo === 'linha'    && cd.valor === linha)
+                        || (cd.tipo === 'grupo'    && cd.valor === grupo)
+                        || (cd.tipo === 'subgrupo' && cd.valor === subgrupo);
+                });
+                if (bate) campDesc = ac.desconto;
             });
             row.dataset.campDesc = campDesc;
         }

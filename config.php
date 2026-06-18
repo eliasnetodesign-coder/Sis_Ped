@@ -651,7 +651,7 @@ function detectarBonificacaoSelecionavel(array $itensVenda, int $canalVendaId): 
         if (!$r['acionada']) continue;
         $mult = max(1, (int)$r['mult']);
 
-        $lp = db()->prepare("SELECT cb.produto_id, p.codigo_produto, p.descricao_pt,
+        $lp = db()->prepare("SELECT cb.produto_id, p.codigo_produto, p.descricao_pt, p.multiplo,
                                     COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
                              FROM campanha_bonificacao cb
                              JOIN produtos p ON p.id = cb.produto_id
@@ -663,6 +663,7 @@ function detectarBonificacaoSelecionavel(array $itensVenda, int $canalVendaId): 
             'codigo'    => $p['codigo_produto'],
             'descricao' => $p['descricao_pt'],
             'preco'     => (float)$p['preco'],
+            'multiplo'  => max(1.0, (float)($p['multiplo'] ?? 1)),
         ], $lp->fetchAll());
         if (!$produtos) continue;
 

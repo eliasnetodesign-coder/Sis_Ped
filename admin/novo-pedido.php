@@ -578,6 +578,33 @@ var _campanhas = <?= json_encode(array_map(function($c) {
     ];
 }, $campanhas)) ?>;
 
+// Campanhas de DESCONTO do novo modelo (condições E / valor-alvo OU) — espelha o PHP.
+// O desconto incide só nos itens dos grupos das condições.
+var _campCondicoes = <?= json_encode((function () use ($campanhas, $condByCode) {
+    $hdr = [];
+    foreach ($campanhas as $c) {
+        $code = $c['codigo_campanha'];
+        if (!isset($hdr[$code])) $hdr[$code] = $c; // 1ª linha = cabeçalho da campanha
+    }
+    $out = [];
+    foreach ($hdr as $code => $c) {
+        if (($c['tipo'] ?? 'desconto') !== 'desconto') continue;
+        $conds = $condByCode[$code] ?? [];
+        if (!$conds) continue; // só novo modelo (com condições)
+        $out[] = [
+            'canal_id'  => $c['canal_venda_id'] ? (int)$c['canal_venda_id'] : null,
+            'desconto'  => (float)$c['desconto'],
+            'valorAlvo' => (float)($c['valor_alvo'] ?? 0),
+            'conds'     => array_map(fn($cd) => [
+                'tipo'  => $cd['criterio_tipo'],
+                'valor' => trim($cd['criterio_valor']),
+                'qtd'   => (int)$cd['quantidade'],
+            ], $conds),
+        ];
+    }
+    return $out;
+})()) ?>;
+
 // Campanhas por produto: código -> lista de produto_id (para somar a quantidade mínima)
 var _campProdIds = {};
 _campanhas.forEach(function(c) {
@@ -657,7 +684,7 @@ function onClienteChange(dCli, dCan, canalId, idioma, moeda) {
 
 function recalcularTodas() {
     // Soma quantidades por linha, grupo, subgrupo e por produto
-    var totLinha = {}, totGrupo = {}, totSub = {}, totProd = {};
+    var totLinha = {}, totGrupo = {}, totSub = {}, totProd = {}, valorTotal = 0;
     document.querySelectorAll('.produto-row').forEach(function(row) {
         var actual = parseInt(row.querySelector('.qtd-hidden').value) || 0;
         var l = row.dataset.linha    || '';
@@ -667,6 +694,7 @@ function recalcularTodas() {
         if (g) totGrupo[g] = (totGrupo[g] || 0) + actual;
         if (s) totSub[s]   = (totSub[s]   || 0) + actual;
         totProd[parseInt(row.dataset.pid)] = (totProd[parseInt(row.dataset.pid)] || 0) + actual;
+        valorTotal += actual * precoBaseRow(row, false);
     });
 
     // Soma por campanha de produtos (mínimo considera todos os produtos da campanha)
@@ -675,6 +703,22 @@ function recalcularTodas() {
         var soma = 0;
         _campProdIds[cod].forEach(function(pid) { soma += (totProd[pid] || 0); });
         totCamp[cod] = soma;
+    });
+
+    // Campanhas de desconto do novo modelo: aciona se TODAS as condições (E) forem
+    // atingidas OU se o valor-alvo (OU) for alcançado (espelha avaliarCampanhaTrigger no PHP).
+    var descAvancados = [];
+    _campCondicoes.forEach(function(c) {
+        if (c.canal_id && c.canal_id !== _canalId) return; // filtra por canal do cliente
+        var allMet = c.conds.length > 0;
+        c.conds.forEach(function(cd) {
+            var tot = cd.tipo === 'linha'    ? (totLinha[cd.valor] || 0)
+                    : cd.tipo === 'grupo'    ? (totGrupo[cd.valor] || 0)
+                    : cd.tipo === 'subgrupo' ? (totSub[cd.valor]   || 0) : 0;
+            if (!(cd.qtd > 0 && tot >= cd.qtd)) allMet = false;
+        });
+        var acionada = allMet || (c.valorAlvo > 0 && valorTotal >= c.valorAlvo);
+        if (acionada) descAvancados.push({ desconto: c.desconto, conds: c.conds });
     });
 
     document.querySelectorAll('.produto-row').forEach(function(row) {
@@ -711,6 +755,16 @@ function recalcularTodas() {
             }
             if (qtdRef < c.quantidade) return;
             if (c.desconto > campDesc) campDesc = c.desconto;
+        });
+        // Novo modelo: desconto incide só nos itens dos grupos das condições
+        if (!ehBonif) descAvancados.forEach(function(ac) {
+            if (ac.desconto <= campDesc) return;
+            var bate = ac.conds.some(function(cd) {
+                return (cd.tipo === 'linha'    && cd.valor === linha)
+                    || (cd.tipo === 'grupo'    && cd.valor === grupo)
+                    || (cd.tipo === 'subgrupo' && cd.valor === subgrupo);
+            });
+            if (bate) campDesc = ac.desconto;
         });
         row.dataset.campDesc = campDesc;
 
