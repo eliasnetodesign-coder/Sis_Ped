@@ -141,6 +141,62 @@ function e($s) {
     return htmlspecialchars((string)($s ?? ''), ENT_QUOTES, 'UTF-8');
 }
 
+/**
+ * Idioma corrente da ÁREA DO CLIENTE (pt|en|es). Resolve a partir do idioma
+ * cadastrado no cliente logado; para admin/visitante retorna sempre 'pt'.
+ * Cacheado por requisição (uma consulta por cliente). Os produtos têm tradução
+ * própria nos cadastros e NÃO usam este idioma.
+ */
+function idiomaAtual(): string {
+    static $cache = [];
+    $u = usuario();
+    if (!$u || ($u['tipo'] ?? '') !== 'cliente') return 'pt';
+    $id = (int)($u['id'] ?? 0);
+    if (!array_key_exists($id, $cache)) {
+        $idi = 'pt';
+        try {
+            $st = db()->prepare('SELECT idioma FROM clientes WHERE id = ?');
+            $st->execute([$id]);
+            $v = strtolower(substr((string)$st->fetchColumn(), 0, 2));
+            if ($v === 'en' || $v === 'es') $idi = $v;
+        } catch (PDOException $e) { /* mantém pt */ }
+        $cache[$id] = $idi;
+    }
+    return $cache[$id];
+}
+
+/** Código de idioma para o atributo <html lang="..."> da área do cliente. */
+function htmlLang(): string {
+    switch (idiomaAtual()) {
+        case 'en': return 'en';
+        case 'es': return 'es';
+        default:   return 'pt-BR';
+    }
+}
+
+/**
+ * Traduz uma string da área do cliente. A própria frase em PT é a chave:
+ * em 'pt' retorna a frase original; em 'en'/'es' busca no dicionário lang.php
+ * e cai de volta para a frase PT quando não há tradução. Aceita placeholders
+ * sprintf opcionais: t('Olá, %s', $nome).
+ */
+function t(string $pt, ...$args): string {
+    static $dict = null;
+    if ($dict === null) {
+        $f = __DIR__ . '/lang.php';
+        $dict = is_file($f) ? (require $f) : [];
+    }
+    $lang = idiomaAtual();
+    $s = ($lang !== 'pt' && isset($dict[$lang][$pt])) ? $dict[$lang][$pt] : $pt;
+    if ($args) $s = vsprintf($s, $args);
+    return $s;
+}
+
+/** Igual a t(), mas já escapa para HTML (htmlspecialchars). */
+function et(string $pt, ...$args): string {
+    return e(t($pt, ...$args));
+}
+
 function usuario() {
     return $_SESSION['usuario'] ?? null;
 }
@@ -417,7 +473,7 @@ function statusBadge($s) {
         'pendente'    => ['secondary', 'Pendente'],
     ];
     [$cls, $label] = $map[$s] ?? ['secondary', ucfirst($s)];
-    return '<span class="badge bg-' . $cls . '">' . $label . '</span>';
+    return '<span class="badge bg-' . $cls . '">' . e(t($label)) . '</span>';
 }
 
 /**

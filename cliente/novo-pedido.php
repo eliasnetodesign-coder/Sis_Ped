@@ -17,7 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Forma de pagamento obrigatória (exceto pedidos de bonificação MA)
     if ($tipoVenda !== 'bonificacao' && $formaPagamento === '') {
-        flash('danger', 'Selecione uma forma de pagamento para continuar.');
+        flash('danger', t('Selecione uma forma de pagamento para continuar.'));
         header('Location: ' . BASE_URL . '/cliente/novo-pedido.php' . ($editarId ? '?editar=' . $editarId : ''));
         exit;
     }
@@ -49,7 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $orig = db()->prepare('SELECT id, lote_id, produto_id FROM pedidos WHERE id = ? AND cliente_id = ? AND status = "comercial"');
             $orig->execute([$editarId, $u['id']]);
             $orig = $orig->fetch();
-            if (!$orig) throw new Exception('Pedido não disponível para edição.');
+            if (!$orig) throw new Exception(t('Pedido não disponível para edição.'));
             $existingLote = $orig['lote_id'] ?: null;
             if ($existingLote) {
                 $loteItems = db()->prepare('SELECT id, produto_id, desconto_campanha FROM pedidos WHERE lote_id = ? AND cliente_id = ?');
@@ -325,10 +325,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['pdf_pedidos_ids'] = $ids_criados;
             header('Location: ' . BASE_URL . '/cliente/pedido-pdf.php'); exit;
         } else {
-            flash('warning', 'Adicione ao menos um produto ao carrinho.');
+            flash('warning', t('Adicione ao menos um produto ao carrinho.'));
         }
     } catch (Exception $e) {
-        flash('danger', 'Erro: ' . $e->getMessage());
+        flash('danger', t('Erro:') . ' ' . $e->getMessage());
     }
     header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit;
 }
@@ -418,25 +418,25 @@ foreach ($campanhas as $c) {
         ];
     }
     $alvo = $c['descricao_pt']
-        ?? ($c['linha']    ? 'Linha '    . trim($c['linha'])    : null)
-        ?? ($c['grupo']    ? 'Grupo '    . trim($c['grupo'])    : null)
-        ?? ($c['subgrupo'] ? 'Subgrupo ' . trim($c['subgrupo']) : 'Todos os produtos');
+        ?? ($c['linha']    ? t('Linha')    . ' ' . trim($c['linha'])    : null)
+        ?? ($c['grupo']    ? t('Grupo')    . ' ' . trim($c['grupo'])    : null)
+        ?? ($c['subgrupo'] ? t('Subgrupo') . ' ' . trim($c['subgrupo']) : t('Todos os produtos'));
     if (!in_array($alvo, $campGroup[$code]['alvos'], true)) $campGroup[$code]['alvos'][] = $alvo;
 }
 
 // Texto do gatilho: condições (E) + valor-alvo (OU) no novo modelo; alvo + qtd no legado
-$labelCrit = ['linha' => 'Linha', 'grupo' => 'Grupo', 'subgrupo' => 'Subgrupo'];
+$labelCrit = ['linha' => t('Linha'), 'grupo' => t('Grupo'), 'subgrupo' => t('Subgrupo')];
 foreach ($campGroup as $code => &$g) {
     $conds = $condByCode[$code] ?? [];
     if ($conds) {
-        $parts = array_map(fn($cd) => ($labelCrit[$cd['criterio_tipo']] ?? $cd['criterio_tipo']) . ' ' . $cd['criterio_valor'] . ' ≥ ' . (int)$cd['quantidade'] . ' un.', $conds);
-        $txt = implode(' E ', $parts);
-        if ((float)$g['valor_alvo'] > 0) $txt .= ' OU valor ≥ ' . moedaBR((float)$g['valor_alvo']);
+        $parts = array_map(fn($cd) => ($labelCrit[$cd['criterio_tipo']] ?? $cd['criterio_tipo']) . ' ' . $cd['criterio_valor'] . ' ≥ ' . (int)$cd['quantidade'] . ' ' . t('un.'), $conds);
+        $txt = implode(' ' . t('E') . ' ', $parts);
+        if ((float)$g['valor_alvo'] > 0) $txt .= ' ' . t('OU valor ≥') . ' ' . moedaBR((float)$g['valor_alvo']);
         $g['gatilho'] = $txt;
-    } elseif ((float)$g['valor_alvo'] > 0 && $g['alvos'] === ['Todos os produtos']) {
-        $g['gatilho'] = 'Valor ≥ ' . moedaBR((float)$g['valor_alvo']);
+    } elseif ((float)$g['valor_alvo'] > 0 && $g['alvos'] === [t('Todos os produtos')]) {
+        $g['gatilho'] = t('Valor ≥') . ' ' . moedaBR((float)$g['valor_alvo']);
     } else {
-        $g['gatilho'] = implode(', ', $g['alvos']) . ' · a partir de ' . (int)$g['quantidade'] . ' un.';
+        $g['gatilho'] = implode(', ', $g['alvos']) . ' · ' . t('a partir de') . ' ' . (int)$g['quantidade'] . ' ' . t('un.');
     }
 }
 unset($g);
@@ -459,7 +459,7 @@ if ($editarId) {
     $stmt->execute([$editarId, $u['id']]);
     $editarPedido = $stmt->fetch();
     if (!$editarPedido) {
-        flash('warning', 'Pedido não disponível para edição.');
+        flash('warning', t('Pedido não disponível para edição.'));
         header('Location: ' . BASE_URL . '/cliente/meus-pedidos.php'); exit;
     }
     if ($editarPedido['lote_id']) {
@@ -510,7 +510,7 @@ if ($modoMA) {
 }
 $linhas = array_keys($porLinha);
 
-$pageTitle = $editarId ? 'Editar Pedido' : 'Novo Pedido';
+$pageTitle = $editarId ? t('Editar Pedido') : t('Novo Pedido');
 require_once LAYOUT_PATH . '/header.php';
 ?>
 
@@ -529,15 +529,15 @@ require_once LAYOUT_PATH . '/header.php';
     <div>
         <h4 class="fw-bold mb-0">
             <i class="bi bi-<?= $editarId ? 'pencil-square' : 'plus-circle' ?> me-2 text-primary"></i>
-            <?= $editarId ? 'Editar Pedido — ' . e($editarPedido['numero_pedido']) : 'Novo Pedido' ?>
+            <?= $editarId ? t('Editar Pedido') . ' — ' . e($editarPedido['numero_pedido']) : t('Novo Pedido') ?>
         </h4>
-        <small class="text-muted">Informe as quantidades e clique em Carrinho para avançar</small>
+        <small class="text-muted"><?= et('Informe as quantidades e clique em Carrinho para avançar') ?></small>
     </div>
     <div class="d-flex align-items-center gap-2">
         <span id="headerTotal" class="fw-bold text-primary" style="display:none;font-size:1.05rem"></span>
         <button type="button" class="btn btn-primary position-relative px-4"
                 data-bs-toggle="offcanvas" data-bs-target="#offCarrinho">
-            <i class="bi bi-cart3 me-2"></i>Carrinho
+            <i class="bi bi-cart3 me-2"></i><?= et('Carrinho') ?>
             <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger"
                   id="cartBadge" style="display:none">0</span>
         </button>
@@ -549,7 +549,7 @@ require_once LAYOUT_PATH . '/header.php';
 <div class="mb-3 p-3 rounded-3 border bg-white shadow-sm campanhas-box">
     <div class="d-flex align-items-center gap-2 mb-2">
         <i class="bi bi-megaphone-fill text-primary"></i>
-        <span class="fw-semibold text-primary small text-uppercase">Campanhas Ativas</span>
+        <span class="fw-semibold text-primary small text-uppercase"><?= et('Campanhas Ativas') ?></span>
     </div>
     <div class="d-flex flex-wrap gap-2">
         <?php
@@ -568,7 +568,7 @@ require_once LAYOUT_PATH . '/header.php';
             }
             if ($valorAlvo > 0) {
                 $h .= '<div class="camp-bar mb-1" data-tipo="valor" data-meta="' . $valorAlvo . '" data-modo="valor">'
-                    . '<div class="d-flex justify-content-between" style="font-size:.68rem"><span>' . ($conds ? 'ou Valor' : 'Valor') . '</span><span class="bar-txt">' . moedaBR(0) . '/' . moedaBR($valorAlvo) . '</span></div>'
+                    . '<div class="d-flex justify-content-between" style="font-size:.68rem"><span>' . ($conds ? t('ou Valor') : t('Valor')) . '</span><span class="bar-txt">' . moedaBR(0) . '/' . moedaBR($valorAlvo) . '</span></div>'
                     . '<div class="progress" style="height:5px"><div class="progress-bar bg-info" style="width:0%"></div></div>'
                     . '</div>';
             }
@@ -580,7 +580,7 @@ require_once LAYOUT_PATH . '/header.php';
             $pct = rtrim(rtrim(number_format((float)$c['desconto'], 2, ',', '.'), '0'), ',');
             $limiteTxt = ($c['bonif_limite_tipo'] ?? '') === 'valor'
                 ? moedaBR((float)$c['bonif_limite_valor'])
-                : ((int)$c['bonif_limite_valor'] . ' un.');
+                : ((int)$c['bonif_limite_valor'] . ' ' . t('un.'));
         ?>
         <div class="camp-chip d-flex align-items-start gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
             <?php if ($ehBonif): ?>
@@ -590,9 +590,9 @@ require_once LAYOUT_PATH . '/header.php';
                 <div class="text-muted" style="font-size:.76rem"><?= e($c['gatilho']) ?></div>
                 <div class="text-warning fw-semibold" style="font-size:.74rem">
                     <?php if ($ehSelec): ?>
-                    <i class="bi bi-hand-index me-1"></i>Você escolhe (até <?= e($limiteTxt) ?>): <?= e(implode(', ', $bonifNomesByCode[$c['codigo_campanha']] ?? ['—'])) ?>
+                    <i class="bi bi-hand-index me-1"></i><?= et('Você escolhe (até %s):', e($limiteTxt)) ?> <?= e(implode(', ', $bonifNomesByCode[$c['codigo_campanha']] ?? ['—'])) ?>
                     <?php else: ?>
-                    <i class="bi bi-gift-fill me-1"></i>Brinde: <?= e(implode(', ', $bonifByCode[$c['codigo_campanha']] ?? ['—'])) ?>
+                    <i class="bi bi-gift-fill me-1"></i><?= et('Brinde:') ?> <?= e(implode(', ', $bonifByCode[$c['codigo_campanha']] ?? ['—'])) ?>
                     <?php endif; ?>
                 </div>
                 <?= $renderBarras($c) ?>
@@ -616,21 +616,21 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="d-flex align-items-center gap-3">
         <i class="bi bi-gift-fill fs-4 text-success"></i>
         <div>
-            <strong>Pedido de Bônus de Material de Apoio</strong><br>
-            <span class="small">Apenas linhas de Material de Apoio disponíveis. Tipo de venda: <strong>Bonificação</strong>.</span>
+            <strong><?= et('Pedido de Bônus de Material de Apoio') ?></strong><br>
+            <span class="small"><?= et('Apenas linhas de Material de Apoio disponíveis. Tipo de venda:') ?> <strong><?= et('Bonificação') ?></strong>.</span>
         </div>
     </div>
     <div class="text-end flex-shrink-0">
-        <div class="text-muted small fw-semibold">Saldo disponível</div>
+        <div class="text-muted small fw-semibold"><?= et('Saldo disponível') ?></div>
         <div class="fw-bold fs-5 text-success" id="maSaldoDisplay"><?= moedaBR($maSaldo) ?></div>
     </div>
 </div>
 <?php endif; ?>
 
 <div class="d-flex align-items-center gap-3 mb-0">
-    <h6 class="mb-0 text-muted fw-semibold text-uppercase small"><i class="bi bi-grid me-1"></i>Linhas</h6>
+    <h6 class="mb-0 text-muted fw-semibold text-uppercase small"><i class="bi bi-grid me-1"></i><?= et('Linhas') ?></h6>
     <input type="text" id="filtroProduto" class="form-control form-control-sm ms-auto"
-           style="max-width:220px" placeholder="Filtrar produto...">
+           style="max-width:220px" placeholder="<?= et('Filtrar produto...') ?>">
 </div>
 
 <ul class="nav nav-tabs mt-2 mb-0 flex-nowrap"
@@ -658,14 +658,14 @@ require_once LAYOUT_PATH . '/header.php';
             <table class="table table-hover align-middle mb-0">
                 <thead class="table-light">
                     <tr>
-                        <th>Código</th>
-                        <th>Cod. Barras</th>
-                        <th>Produto</th>
-                        <th class="text-end">Preço Unit.</th>
-                        <th class="text-center">Múlt.</th>
-                        <th class="text-center" style="width:100px">Quantidade</th>
-                        <th class="text-center" style="width:140px">Quantidade Total</th>
-                        <th class="text-end">Total <?= e($simboloCli) ?></th>
+                        <th><?= et('Código') ?></th>
+                        <th><?= et('Cod. Barras') ?></th>
+                        <th><?= et('Produto') ?></th>
+                        <th class="text-end"><?= et('Preço Unit.') ?></th>
+                        <th class="text-center"><?= et('Múlt.') ?></th>
+                        <th class="text-center" style="width:100px"><?= et('Quantidade') ?></th>
+                        <th class="text-center" style="width:140px"><?= et('Quantidade Total') ?></th>
+                        <th class="text-end"><?= et('Total') ?> <?= e($simboloCli) ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -727,11 +727,11 @@ require_once LAYOUT_PATH . '/header.php';
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
     <div>
-        <h4 class="fw-bold mb-0"><i class="bi bi-clipboard-check me-2 text-primary"></i>Resumo do Pedido</h4>
-        <small class="text-muted">Confira os itens e finalize</small>
+        <h4 class="fw-bold mb-0"><i class="bi bi-clipboard-check me-2 text-primary"></i><?= et('Resumo do Pedido') ?></h4>
+        <small class="text-muted"><?= et('Confira os itens e finalize') ?></small>
     </div>
     <button type="button" class="btn btn-outline-secondary" onclick="voltarStep1()">
-        <i class="bi bi-arrow-left me-1"></i>Voltar aos produtos
+        <i class="bi bi-arrow-left me-1"></i><?= et('Voltar aos produtos') ?>
     </button>
 </div>
 
@@ -739,9 +739,9 @@ require_once LAYOUT_PATH . '/header.php';
 
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-body p-4">
-        <label class="form-label fw-semibold">Observação (opcional)</label>
+        <label class="form-label fw-semibold"><?= et('Observação (opcional)') ?></label>
         <textarea class="form-control" name="observacoes" rows="2"
-                  placeholder="Instruções especiais, prazo, etc."></textarea>
+                  placeholder="<?= et('Instruções especiais, prazo, etc.') ?>"></textarea>
     </div>
 </div>
 
@@ -751,12 +751,12 @@ require_once LAYOUT_PATH . '/header.php';
 <div class="d-flex justify-content-end">
 <?php if ($modoMA): ?>
     <button type="button" class="btn btn-success btn-lg px-5" id="btnFinalizarDireto">
-        <i class="bi bi-check-lg me-2"></i>Finalizar Pedido
+        <i class="bi bi-check-lg me-2"></i><?= et('Finalizar Pedido') ?>
     </button>
 <?php else: ?>
     <button type="button" class="btn btn-primary btn-lg px-5" id="btnAvancarPagamento"
             data-bs-toggle="modal" data-bs-target="#modalPagamento">
-        <i class="bi bi-arrow-right me-2"></i>Avançar para Pagamento
+        <i class="bi bi-arrow-right me-2"></i><?= et('Avançar para Pagamento') ?>
     </button>
 <?php endif; ?>
 </div>
@@ -769,12 +769,12 @@ require_once LAYOUT_PATH . '/header.php';
         <div class="modal-content border-0 shadow">
             <div class="modal-header border-0 pb-0">
                 <h5 class="modal-title fw-bold">
-                    <i class="bi bi-credit-card-2-front me-2 text-primary"></i>Forma de Pagamento
+                    <i class="bi bi-credit-card-2-front me-2 text-primary"></i><?= et('Forma de Pagamento') ?>
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" id="btnFecharModalPagto"></button>
             </div>
             <div class="modal-body pt-2">
-                <p class="text-muted small mb-3">Selecione como deseja pagar este pedido:</p>
+                <p class="text-muted small mb-3"><?= et('Selecione como deseja pagar este pedido:') ?></p>
                 <div class="d-grid gap-2" id="opcoesPagamento">
 
                     <label class="pagto-card d-flex align-items-center gap-3 p-3 border rounded-3"
@@ -785,9 +785,9 @@ require_once LAYOUT_PATH . '/header.php';
                         <div class="flex-grow-1">
                             <div class="fw-semibold d-flex align-items-center gap-2">
                                 Pix
-                                <span class="badge bg-success">5% de desconto</span>
+                                <span class="badge bg-success"><?= et('5% de desconto') ?></span>
                             </div>
-                            <div class="text-muted small">Pagamento à vista instantâneo — ganhe <strong>5% de desconto</strong></div>
+                            <div class="text-muted small"><?= et('Pagamento à vista instantâneo — ganhe') ?> <strong><?= et('5% de desconto') ?></strong></div>
                         </div>
                     </label>
 
@@ -797,8 +797,8 @@ require_once LAYOUT_PATH . '/header.php';
                                name="pagamento_sel" value="Boleto 30 Dias">
                         <span class="fs-4 text-primary"><i class="bi bi-calendar-check"></i></span>
                         <div>
-                            <div class="fw-semibold">Boleto 30 Dias</div>
-                            <div class="text-muted small">1 parcela — vencimento em 30 dias</div>
+                            <div class="fw-semibold"><?= et('Boleto 30 Dias') ?></div>
+                            <div class="text-muted small"><?= et('1 parcela — vencimento em 30 dias') ?></div>
                         </div>
                     </label>
 
@@ -808,8 +808,8 @@ require_once LAYOUT_PATH . '/header.php';
                                name="pagamento_sel" value="Boleto 30/60 Dias">
                         <span class="fs-4 text-primary"><i class="bi bi-calendar2-range"></i></span>
                         <div>
-                            <div class="fw-semibold">Boleto 30/60 Dias</div>
-                            <div class="text-muted small">2 parcelas — 30 e 60 dias</div>
+                            <div class="fw-semibold"><?= et('Boleto 30/60 Dias') ?></div>
+                            <div class="text-muted small"><?= et('2 parcelas — 30 e 60 dias') ?></div>
                         </div>
                     </label>
 
@@ -819,23 +819,23 @@ require_once LAYOUT_PATH . '/header.php';
                                name="pagamento_sel" value="Boleto 30/60/90 Dias">
                         <span class="fs-4 text-primary"><i class="bi bi-calendar3-range"></i></span>
                         <div>
-                            <div class="fw-semibold">Boleto 30/60/90 Dias</div>
-                            <div class="text-muted small">3 parcelas — 30, 60 e 90 dias</div>
+                            <div class="fw-semibold"><?= et('Boleto 30/60/90 Dias') ?></div>
+                            <div class="text-muted small"><?= et('3 parcelas — 30, 60 e 90 dias') ?></div>
                         </div>
                     </label>
 
                 </div>
                 <div class="alert alert-danger py-2 mt-2 mb-0" id="pagtoErro" style="display:none">
-                    <i class="bi bi-exclamation-triangle me-1"></i>Selecione uma forma de pagamento para continuar.
+                    <i class="bi bi-exclamation-triangle me-1"></i><?= et('Selecione uma forma de pagamento para continuar.') ?>
                 </div>
                 <div class="alert alert-success py-2 mt-2 mb-0" id="pixDescInfo" style="display:none">
-                    <i class="bi bi-qr-code-scan me-1"></i>Pagamento via <strong>Pix</strong>: desconto de <strong>5%</strong>
-                    (<strong id="pixDescValor"></strong>) sobre o valor total do pedido.
+                    <i class="bi bi-qr-code-scan me-1"></i><?= et('Pagamento via') ?> <strong>Pix</strong>: <?= et('desconto de') ?> <strong>5%</strong>
+                    (<strong id="pixDescValor"></strong>) <?= et('sobre o valor total do pedido.') ?>
                 </div>
 
                 <?php if ($creditoDisponivel > 0): ?>
                 <div class="border-top pt-3 mt-3">
-                    <p class="small text-muted mb-2 fw-semibold">CRÉDITO DISPONÍVEL</p>
+                    <p class="small text-muted mb-2 fw-semibold"><?= et('CRÉDITO DISPONÍVEL') ?></p>
                     <!-- Lançamentos individuais -->
                     <div class="mb-2" style="max-height:110px;overflow-y:auto">
                         <?php foreach ($creditosDisponiveis as $cr): ?>
@@ -850,8 +850,8 @@ require_once LAYOUT_PATH . '/header.php';
                         <div class="d-flex align-items-center gap-3">
                             <span class="fs-4 text-warning"><i class="bi bi-coin"></i></span>
                             <div>
-                                <div class="fw-semibold">Usar crédito no pedido</div>
-                                <div class="text-muted small">Total disponível: <strong class="text-success"><?= moedaBR($creditoDisponivel) ?></strong></div>
+                                <div class="fw-semibold"><?= et('Usar crédito no pedido') ?></div>
+                                <div class="text-muted small"><?= et('Total disponível:') ?> <strong class="text-success"><?= moedaBR($creditoDisponivel) ?></strong></div>
                             </div>
                         </div>
                         <div class="form-check form-switch mb-0 ms-2">
@@ -861,17 +861,17 @@ require_once LAYOUT_PATH . '/header.php';
                     </label>
                     <div id="creditoAvisoBox" class="mt-2 p-2 rounded small" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0">
                         <i class="bi bi-check-circle-fill text-success me-1"></i>
-                        Será aplicado <strong id="creditoValorTexto"></strong> de crédito neste pedido.
+                        <?= et('Será aplicado') ?> <strong id="creditoValorTexto"></strong> <?= et('de crédito neste pedido.') ?>
                     </div>
                 </div>
                 <?php endif; ?>
             </div>
             <div class="modal-footer border-0 pt-0">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
-                    <i class="bi bi-arrow-left me-1"></i>Voltar
+                    <i class="bi bi-arrow-left me-1"></i><?= et('Voltar') ?>
                 </button>
                 <button type="button" class="btn btn-success btn-lg px-5" id="btnFinalizarPedido">
-                    <i class="bi bi-check-lg me-2"></i>Finalizar Pedido
+                    <i class="bi bi-check-lg me-2"></i><?= et('Finalizar Pedido') ?>
                 </button>
             </div>
         </div>
@@ -882,21 +882,21 @@ require_once LAYOUT_PATH . '/header.php';
 <div class="offcanvas offcanvas-end" tabindex="-1" id="offCarrinho"
      style="width:400px;max-width:100vw">
     <div class="offcanvas-header border-bottom">
-        <h5 class="offcanvas-title"><i class="bi bi-cart3 me-2 text-primary"></i>Carrinho</h5>
+        <h5 class="offcanvas-title"><i class="bi bi-cart3 me-2 text-primary"></i><?= et('Carrinho') ?></h5>
         <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
     </div>
     <div class="offcanvas-body d-flex flex-column p-0">
         <div id="carrinhoItens" class="flex-grow-1 overflow-auto px-3 py-2"></div>
         <div class="border-top px-3 pt-3 pb-3 bg-white">
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <span class="fw-semibold">Total</span>
+                <span class="fw-semibold"><?= et('Total') ?></span>
                 <span class="fw-bold fs-5 text-primary" id="carrinhoTotal"><?= e($simboloCli) ?> 0,00</span>
             </div>
             <button type="button" class="btn btn-primary w-100 btn-lg" id="btnAvancar">
-                <i class="bi bi-arrow-right me-2"></i>Avançar
+                <i class="bi bi-arrow-right me-2"></i><?= et('Avançar') ?>
             </button>
             <button type="button" class="btn btn-outline-danger w-100 mt-2" id="btnLimparCarrinho">
-                <i class="bi bi-trash me-1"></i>Limpar Carrinho
+                <i class="bi bi-trash me-1"></i><?= et('Limpar Carrinho') ?>
             </button>
         </div>
     </div>
@@ -909,6 +909,39 @@ var _cartKey           = 'sis_ped_cart_<?= (int)$u['id'] ?>';
 var _maSaldo           = <?= $modoMA ? number_format($maSaldo, 2, '.', '') : 'Infinity' ?>;
 var _modoMA            = <?= $modoMA ? 'true' : 'false' ?>;
 var _creditoDisponivel = <?= number_format($creditoDisponivel, 2, '.', '') ?>;
+
+// Traduções para os textos gerados em JavaScript (idioma do cliente)
+var T = {
+    nenhumProduto:   <?= json_encode(t('Nenhum produto adicionado.')) ?>,
+    informeQtd:      <?= json_encode(t('Informe as quantidades na lista.')) ?>,
+    un:              <?= json_encode(t('un.')) ?>,
+    confirmLimpar:   <?= json_encode(t('Deseja remover todos os produtos do carrinho?')) ?>,
+    addPeloMenos:    <?= json_encode(t('Adicione pelo menos um produto ao carrinho.')) ?>,
+    maExcedeAvancar: <?= json_encode(t('O valor do pedido (%1) ultrapassa o saldo disponível de Bônus MA (%2).')) ?>,
+    maExcedeResumo:  <?= json_encode(t('O valor do pedido (%1) ultrapassa o saldo de Bônus MA (%2).')) ?>,
+    reduzProdutos:   <?= json_encode(t('Reduza a quantidade dos produtos para continuar.')) ?>,
+    reduzQtd:        <?= json_encode(t('Reduza a quantidade para continuar.')) ?>,
+    subtotal:        <?= json_encode(t('Subtotal')) ?>,
+    subtotalDP:      <?= json_encode(t('Subtotal:')) ?>,
+    codigo:          <?= json_encode(t('Código')) ?>,
+    codBarras:       <?= json_encode(t('Cod. Barras')) ?>,
+    produto:         <?= json_encode(t('Produto')) ?>,
+    precoUnit:       <?= json_encode(t('Preço Unit.')) ?>,
+    mult:            <?= json_encode(t('Múlt.')) ?>,
+    quantidade:      <?= json_encode(t('Quantidade')) ?>,
+    quantidadeTotal: <?= json_encode(t('Quantidade<br>Total')) ?>,
+    total:           <?= json_encode(t('Total')) ?>,
+    totalGeral:      <?= json_encode(t('Total Geral')) ?>,
+    processando:     <?= json_encode(t('Processando...')) ?>,
+    credSemDif:      <?= json_encode(t('Neste pedido não há diferença disponível entre o valor do pedido e o detalhamento fiscal%1, portanto não é possível aplicar crédito. O pedido seguirá sem uso de crédito.')) ?>,
+    credPixConsid:   <?= json_encode(t(' (já considerando o desconto Pix)')) ?>,
+    credConfirm:     <?= json_encode(t("Você tem %1 de crédito, mas neste pedido só pode usar %2 (diferença entre o valor do pedido e o detalhamento fiscal%3).\n\nDeseja usar %2 e manter %4 para outro pedido?")) ?>,
+    credJaPix:       <?= json_encode(t(', já descontado o Pix')) ?>
+};
+function _tfmt(str, map) {
+    Object.keys(map).forEach(function (k) { str = str.split(k).join(map[k]); });
+    return str;
+}
 
 function salvarCarrinho() {
     if (_modoMA) return;
@@ -1228,12 +1261,12 @@ function atualizar() {
     if (itens.length === 0) {
         el.innerHTML = '<div class="text-center text-muted py-5">'
             + '<i class="bi bi-cart3 display-4 d-block mb-3 opacity-25"></i>'
-            + 'Nenhum produto adicionado.<br><small>Informe as quantidades na lista.</small></div>';
+            + T.nenhumProduto + '<br><small>' + T.informeQtd + '</small></div>';
     } else {
         el.innerHTML = itens.map(function(i) {
             var qtdDesc   = i.multiplo > 1
-                ? i.visual + ' × ' + i.multiplo + ' = ' + i.qtd + ' un.'
-                : i.qtd + ' un.';
+                ? i.visual + ' × ' + i.multiplo + ' = ' + i.qtd + ' ' + T.un
+                : i.qtd + ' ' + T.un;
             var campBadge = i.campDesc > 0
                 ? ' <span class="badge bg-success">-' + i.campDesc + '%</span>' : '';
             return '<div class="d-flex justify-content-between align-items-start py-2 border-bottom">'
@@ -1246,7 +1279,7 @@ function atualizar() {
 }
 
 document.getElementById('btnLimparCarrinho').addEventListener('click', function() {
-    if (!confirm('Deseja remover todos os produtos do carrinho?')) return;
+    if (!confirm(T.confirmLimpar)) return;
     document.querySelectorAll('.produto-row').forEach(function(row) {
         var inp = row.querySelector('input[type="number"]');
         if (inp) { inp.value = 0; inp.dispatchEvent(new Event('input')); }
@@ -1258,14 +1291,14 @@ document.getElementById('btnLimparCarrinho').addEventListener('click', function(
 document.getElementById('btnAvancar').addEventListener('click', function() {
     var itens = getItens();
     if (itens.length === 0) {
-        alert('Adicione pelo menos um produto ao carrinho.');
+        alert(T.addPeloMenos);
         return;
     }
 
     if (isFinite(_maSaldo)) {
         var totalMA = itens.reduce(function(a, i) { return a + i.sub; }, 0);
         if (totalMA > _maSaldo + 0.01) {
-            alert('O valor do pedido (' + fmtBRL(totalMA) + ') ultrapassa o saldo disponível de Bônus MA (' + fmtBRL(_maSaldo) + ').\nReduz a quantidade dos produtos para continuar.');
+            alert(_tfmt(T.maExcedeAvancar, { '%1': fmtBRL(totalMA), '%2': fmtBRL(_maSaldo) }) + '\n' + T.reduzProdutos);
             return;
         }
     }
@@ -1315,26 +1348,26 @@ function gerarResumo() {
         html += '<div class="card border-0 shadow-sm mb-3">'
             + '<div class="card-header bg-white d-flex justify-content-between align-items-center py-2">'
             + '<span class="fw-bold"><i class="bi bi-tag me-2 text-primary"></i>' + linha + '</span>'
-            + '<span class="text-muted small">Subtotal: <strong class="text-primary">' + fmtBRL(linhaTotal) + '</strong></span>'
+            + '<span class="text-muted small">' + T.subtotalDP + ' <strong class="text-primary">' + fmtBRL(linhaTotal) + '</strong></span>'
             + '</div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">'
             + '<thead class="table-light"><tr>'
-            + '<th class="small ps-3" style="white-space:nowrap">Código</th>'
-            + '<th class="small" style="white-space:nowrap">Cod. Barras</th>'
-            + '<th class="small">Produto</th>'
-            + '<th class="text-end small pe-3" style="white-space:nowrap">Preço Unit.</th>'
-            + '<th class="text-center small" style="white-space:nowrap">Múlt.</th>'
-            + '<th class="text-center small" style="white-space:nowrap">Quantidade</th>'
-            + '<th class="text-center small" style="white-space:nowrap">Quantidade<br>Total</th>'
-            + '<th class="text-end small pe-3" style="white-space:nowrap">Total ' + _simbolo + '</th>'
+            + '<th class="small ps-3" style="white-space:nowrap">' + T.codigo + '</th>'
+            + '<th class="small" style="white-space:nowrap">' + T.codBarras + '</th>'
+            + '<th class="small">' + T.produto + '</th>'
+            + '<th class="text-end small pe-3" style="white-space:nowrap">' + T.precoUnit + '</th>'
+            + '<th class="text-center small" style="white-space:nowrap">' + T.mult + '</th>'
+            + '<th class="text-center small" style="white-space:nowrap">' + T.quantidade + '</th>'
+            + '<th class="text-center small" style="white-space:nowrap">' + T.quantidadeTotal + '</th>'
+            + '<th class="text-end small pe-3" style="white-space:nowrap">' + T.total + ' ' + _simbolo + '</th>'
             + '</tr></thead><tbody>' + rows + '</tbody>'
-            + '<tfoot class="table-light"><tr><td colspan="7" class="text-end fw-semibold small pe-3">Subtotal ' + linha + '</td>'
+            + '<tfoot class="table-light"><tr><td colspan="7" class="text-end fw-semibold small pe-3">' + T.subtotal + ' ' + linha + '</td>'
             + '<td class="text-end fw-bold text-primary pe-3">' + fmtBRL(linhaTotal) + '</td>'
             + '</tr></tfoot></table></div></div>';
     });
 
     html += '<div class="card border-0 shadow-sm mb-4">'
         + '<div class="card-body d-flex justify-content-between align-items-center py-3">'
-        + '<span class="fw-bold fs-5">Total Geral</span>'
+        + '<span class="fw-bold fs-5">' + T.totalGeral + '</span>'
         + '<span class="fw-bold fs-4 text-primary">' + fmtBRL(total) + '</span>'
         + '</div></div>';
 
@@ -1361,7 +1394,7 @@ document.getElementById('resumoConteudo').addEventListener('change', function(e)
     if (isFinite(_maSaldo)) {
         var totalMA = getItens().reduce(function(a, i) { return a + i.sub; }, 0);
         if (totalMA > _maSaldo + 0.01) {
-            alert('O valor do pedido (' + fmtBRL(totalMA) + ') ultrapassa o saldo de Bônus MA (' + fmtBRL(_maSaldo) + ').\nReduz a quantidade para continuar.');
+            alert(_tfmt(T.maExcedeResumo, { '%1': fmtBRL(totalMA), '%2': fmtBRL(_maSaldo) }) + '\n' + T.reduzQtd);
             // Reverte
             var visAntes = parseInt(row.querySelector('.qtd-visual').value) || 0;
             var actAntes = Math.round(visAntes * mult);
@@ -1410,7 +1443,7 @@ document.getElementById('filtroProduto').addEventListener('input', function() {
 
 function _submeterPedido(btnSpinner) {
     btnSpinner.disabled = true;
-    btnSpinner.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Processando...';
+    btnSpinner.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' + T.processando;
     recalcularTodas();
     document.querySelectorAll('.produto-row').forEach(function(row) {
         var campDesc = parseFloat(row.dataset.campDesc) || 0;
@@ -1511,21 +1544,19 @@ if (_modoMA) {
         if (chk && chk.checked && _creditoDisponivel > 0) {
             var r = _calcResumo();
             if (r.limite <= 0) {
-                alert('Neste pedido não há diferença disponível entre o valor do pedido e o detalhamento fiscal'
-                    + (r.pix > 0 ? ' (já considerando o desconto Pix)' : '') + ', '
-                    + 'portanto não é possível aplicar crédito. O pedido seguirá sem uso de crédito.');
+                alert(_tfmt(T.credSemDif, { '%1': (r.pix > 0 ? T.credPixConsid : '') }));
                 chk.checked = false;
                 atualizarAvisoCredito();
                 return;
             }
             if (_creditoDisponivel > r.limite + 0.001) {
                 var resto = Math.round((_creditoDisponivel - r.limite) * 100) / 100;
-                var ok = confirm(
-                    'Você tem ' + fmtBRL(_creditoDisponivel) + ' de crédito, mas neste pedido só pode usar '
-                    + fmtBRL(r.limite) + ' (diferença entre o valor do pedido e o detalhamento fiscal'
-                    + (r.pix > 0 ? ', já descontado o Pix' : '') + ').\n\n'
-                    + 'Deseja usar ' + fmtBRL(r.limite) + ' e manter ' + fmtBRL(resto) + ' para outro pedido?'
-                );
+                var ok = confirm(_tfmt(T.credConfirm, {
+                    '%1': fmtBRL(_creditoDisponivel),
+                    '%2': fmtBRL(r.limite),
+                    '%3': (r.pix > 0 ? T.credJaPix : ''),
+                    '%4': fmtBRL(resto)
+                }));
                 if (!ok) { return; }
             }
             document.getElementById('creditoAplicadoInput').value = r.credito.toFixed(2);

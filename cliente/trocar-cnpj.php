@@ -12,7 +12,7 @@ $voltar    = $_POST['voltar'] ?? BASE_URL . '/cliente/dashboard.php';
 // Valida que o ID pertence às opções do grupo na sessão
 $ids = array_column($_SESSION['grupo_opcoes'] ?? [], 'id');
 if (!$clienteId || !in_array($clienteId, $ids)) {
-    flash('danger', 'Seleção inválida.');
+    flash('danger', t('Seleção inválida.'));
     header('Location: ' . BASE_URL . '/cliente/dashboard.php'); exit;
 }
 
@@ -20,7 +20,7 @@ $stmt = db()->prepare('SELECT id, razao_social, email, cnpj FROM clientes WHERE 
 $stmt->execute([$clienteId]);
 $cli = $stmt->fetch();
 if (!$cli) {
-    flash('danger', 'Empresa não encontrada.');
+    flash('danger', t('Empresa não encontrada.'));
     header('Location: ' . BASE_URL . '/cliente/dashboard.php'); exit;
 }
 

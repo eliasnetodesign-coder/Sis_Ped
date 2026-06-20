@@ -30,13 +30,13 @@ $pedidos = db()->prepare("
 $pedidos->execute($params);
 $pedidos = $pedidos->fetchAll();
 
-$pageTitle = 'Meus Pedidos';
+$pageTitle = t('Meus Pedidos');
 require_once LAYOUT_PATH . '/header.php';
 ?>
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
-    <h4 class="fw-bold mb-0"><i class="bi bi-list-ul me-2"></i>Meus Pedidos</h4>
+    <h4 class="fw-bold mb-0"><i class="bi bi-list-ul me-2"></i><?= et('Meus Pedidos') ?></h4>
     <a href="<?= BASE_URL ?>/cliente/novo-pedido.php" class="btn btn-primary btn-sm">
-        <i class="bi bi-plus-lg me-1"></i>Novo Pedido
+        <i class="bi bi-plus-lg me-1"></i><?= et('Novo Pedido') ?>
     </a>
 </div>
 
@@ -51,7 +51,7 @@ require_once LAYOUT_PATH . '/header.php';
                 $ativo = $filtro === $val;
                 $cls   = $ativo ? 'btn-' . $cores[$val] : 'btn-outline-secondary';
             ?>
-            <a href="?status=<?= $val ?>" class="btn btn-sm <?= $cls ?>"><?= $label ?></a>
+            <a href="?status=<?= $val ?>" class="btn btn-sm <?= $cls ?>"><?= et($label) ?></a>
             <?php endforeach; ?>
         </div>
     </div>
@@ -63,12 +63,12 @@ require_once LAYOUT_PATH . '/header.php';
             <table class="table table-hover align-middle mb-0">
                 <thead class="table-light">
                     <tr>
-                        <th class="ps-3">Nº Pedido</th>
-                        <th>Data</th>
-                        <th>Tipo</th>
-                        <th>Valor</th>
-                        <th>Status</th>
-                        <th class="text-end pe-3">Ação</th>
+                        <th class="ps-3"><?= et('Nº Pedido') ?></th>
+                        <th><?= et('Data') ?></th>
+                        <th><?= et('Tipo') ?></th>
+                        <th><?= et('Valor') ?></th>
+                        <th><?= et('Status') ?></th>
+                        <th class="text-end pe-3"><?= et('Ação') ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -77,7 +77,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <td class="ps-3">
                         <strong class="text-primary"><?= e($p['numero_pedido']) ?></strong>
                         <?php if ($p['num_itens'] > 1): ?>
-                        <span class="badge bg-secondary ms-1"><?= $p['num_itens'] ?> itens</span>
+                        <span class="badge bg-secondary ms-1"><?= $p['num_itens'] ?> <?= et('itens') ?></span>
                         <?php endif; ?>
                     </td>
                     <td>
@@ -88,7 +88,7 @@ require_once LAYOUT_PATH . '/header.php';
                     </td>
                     <td>
                         <span class="badge bg-<?= $p['tipo_venda'] === 'venda' ? 'primary' : 'info' ?>">
-                            <?= ucfirst($p['tipo_venda']) ?>
+                            <?= et(ucfirst($p['tipo_venda'])) ?>
                         </span>
                     </td>
                     <td class="fw-semibold"><?= moedaBR($p['valor_total'], $p['moeda'] ?? 'BRL') ?></td>
@@ -96,13 +96,13 @@ require_once LAYOUT_PATH . '/header.php';
                     <td class="text-end pe-3">
                         <a href="<?= BASE_URL ?>/cliente/pedido.php?id=<?= $p['id'] ?>"
                            class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-eye me-1"></i>Detalhes
+                            <i class="bi bi-eye me-1"></i><?= et('Detalhes') ?>
                         </a>
                     </td>
                 </tr>
                 <?php endforeach; else: ?>
                 <tr><td colspan="6" class="text-center text-muted py-5">
-                    <i class="bi bi-inbox display-5 d-block mb-2"></i>Nenhum pedido encontrado.
+                    <i class="bi bi-inbox display-5 d-block mb-2"></i><?= et('Nenhum pedido encontrado.') ?>
                 </td></tr>
                 <?php endif; ?>
                 </tbody>
@@ -111,7 +111,7 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
     <?php if (!empty($pedidos)): ?>
     <div class="card-footer bg-white text-muted small py-2 ps-3">
-        <?= count($pedidos) ?> pedido(s) encontrado(s).
+        <?= et('%s pedido(s) encontrado(s).', count($pedidos)) ?>
     </div>
     <?php endif; ?>
 </div>

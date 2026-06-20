@@ -78,20 +78,20 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content border-0 shadow-lg">
             <div class="modal-header bg-success text-white border-0">
-                <h5 class="modal-title fw-bold"><i class="bi bi-gift-fill me-2"></i>Bônus de Material de Apoio Disponível!</h5>
+                <h5 class="modal-title fw-bold"><i class="bi bi-gift-fill me-2"></i><?= et('Bônus de Material de Apoio Disponível!') ?></h5>
             </div>
             <div class="modal-body text-center py-5">
                 <i class="bi bi-gift text-success" style="font-size:3rem"></i>
-                <p class="fs-5 mt-3 mb-2">Você possui</p>
+                <p class="fs-5 mt-3 mb-2"><?= et('Você possui') ?></p>
                 <div class="display-5 fw-bold text-success mb-3"><?= moedaBR($maValor) ?></div>
-                <p class="text-muted mb-0">de Bônus MA para utilizar em produtos de Material de Apoio.<br>Deseja utilizá-lo agora?</p>
+                <p class="text-muted mb-0"><?= et('de Bônus MA para utilizar em produtos de Material de Apoio.') ?><br><?= et('Deseja utilizá-lo agora?') ?></p>
             </div>
             <div class="modal-footer justify-content-center gap-3 border-0 pb-4">
                 <button type="button" class="btn btn-outline-secondary btn-lg px-5" data-bs-dismiss="modal">
-                    <i class="bi bi-x-lg me-2"></i>Não
+                    <i class="bi bi-x-lg me-2"></i><?= et('Não') ?>
                 </button>
                 <a href="<?= BASE_URL ?>/cliente/novo-pedido.php?modo=ma_bonus" class="btn btn-success btn-lg px-5">
-                    <i class="bi bi-check-lg me-2"></i>Sim, utilizar agora
+                    <i class="bi bi-check-lg me-2"></i><?= et('Sim, utilizar agora') ?>
                 </a>
             </div>
         </div>
@@ -106,11 +106,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
     <div>
-        <h4 class="fw-bold mb-0">Dashboard</h4>
-        <p class="text-muted small mb-0">Bem-vindo, <?= e($u['nome']) ?>!</p>
+        <h4 class="fw-bold mb-0"><?= et('Dashboard') ?></h4>
+        <p class="text-muted small mb-0"><?= et('Bem-vindo, %s!', e($u['nome'])) ?></p>
     </div>
     <a href="<?= BASE_URL ?>/cliente/novo-pedido.php" class="btn btn-primary">
-        <i class="bi bi-plus-lg me-1"></i>Novo Pedido
+        <i class="bi bi-plus-lg me-1"></i><?= et('Novo Pedido') ?>
     </a>
 </div>
 
@@ -120,7 +120,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-primary">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Total de Pedidos</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Total de Pedidos') ?></div>
                 <div class="display-5 fw-bold text-primary"><?= $t['total'] ?></div>
             </div>
         </div>
@@ -128,7 +128,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-warning">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Em Andamento</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Em Andamento') ?></div>
                 <div class="display-5 fw-bold" style="color:#c8880a"><?= (int)$t['comercial'] + (int)$t['financeiro'] ?></div>
             </div>
         </div>
@@ -136,7 +136,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-success">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Faturados</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Faturados') ?></div>
                 <div class="display-5 fw-bold text-success"><?= $t['faturados'] ?></div>
             </div>
         </div>
@@ -144,7 +144,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-info">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Valor Faturado</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Valor Faturado') ?></div>
                 <div class="fw-bold text-info" style="font-size:1.4rem"><?= moedaBR($t['valor_faturado']) ?></div>
             </div>
         </div>
@@ -155,10 +155,10 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="card shadow-sm border-0 border-start border-4 border-success h-100" style="cursor:pointer">
                 <div class="card-body">
                     <div class="text-muted small fw-semibold text-uppercase d-flex align-items-center gap-1">
-                        <i class="bi bi-gift-fill text-success"></i> Bônus MA
+                        <i class="bi bi-gift-fill text-success"></i> <?= et('Bônus MA') ?>
                     </div>
                     <div class="fw-bold text-success" style="font-size:1.4rem"><?= moedaBR($maValor) ?></div>
-                    <div class="text-muted small">Clique para utilizar</div>
+                    <div class="text-muted small"><?= et('Clique para utilizar') ?></div>
                 </div>
             </div>
         </a>
@@ -170,7 +170,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-danger">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Boletos Vencidos</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Boletos Vencidos') ?></div>
                 <div class="display-5 fw-bold text-danger"><?= $b['vencidos'] ?></div>
             </div>
         </div>
@@ -178,7 +178,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-warning">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Boletos em Aberto</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Boletos em Aberto') ?></div>
                 <div class="display-5 fw-bold" style="color:#c8880a"><?= $b['abertos'] ?></div>
             </div>
         </div>
@@ -186,7 +186,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-secondary">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Saldo a Pagar</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Saldo a Pagar') ?></div>
                 <div class="fw-bold text-danger" style="font-size:1.2rem"><?= moedaBR($b['saldo']) ?></div>
             </div>
         </div>
@@ -194,7 +194,7 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-danger">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Cancelados</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Cancelados') ?></div>
                 <div class="display-5 fw-bold text-danger"><?= $t['reprovados'] ?></div>
             </div>
         </div>
@@ -204,20 +204,20 @@ document.addEventListener('DOMContentLoaded', function () {
 <!-- Últimos pedidos -->
 <div class="card shadow-sm border-0">
     <div class="card-header bg-white d-flex justify-content-between align-items-center">
-        <span class="fw-semibold"><i class="bi bi-clock-history me-2"></i>Últimos Pedidos</span>
-        <a href="<?= BASE_URL ?>/cliente/meus-pedidos.php" class="btn btn-sm btn-outline-primary">Ver todos</a>
+        <span class="fw-semibold"><i class="bi bi-clock-history me-2"></i><?= et('Últimos Pedidos') ?></span>
+        <a href="<?= BASE_URL ?>/cliente/meus-pedidos.php" class="btn btn-sm btn-outline-primary"><?= et('Ver todos') ?></a>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
         <table class="table table-hover mb-0">
             <thead class="table-light">
                 <tr>
-                    <th>Nº Pedido</th>
-                    <th>Produto</th>
-                    <th>Data</th>
-                    <th>Qtd</th>
-                    <th>Valor</th>
-                    <th>Status</th>
+                    <th><?= et('Nº Pedido') ?></th>
+                    <th><?= et('Produto') ?></th>
+                    <th><?= et('Data') ?></th>
+                    <th><?= et('Qtd') ?></th>
+                    <th><?= et('Valor') ?></th>
+                    <th><?= et('Status') ?></th>
                 </tr>
             </thead>
             <tbody>
@@ -231,7 +231,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     <td><?= statusBadge($r['status']) ?></td>
                 </tr>
             <?php endforeach; else: ?>
-                <tr><td colspan="6" class="text-center text-muted py-4">Nenhum pedido encontrado.</td></tr>
+                <tr><td colspan="6" class="text-center text-muted py-4"><?= et('Nenhum pedido encontrado.') ?></td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -251,9 +251,9 @@ document.addEventListener('DOMContentLoaded', function () {
             var el = document.createElement('div');
             el.className = 'alert alert-info alert-dismissible fade show position-fixed bottom-0 end-0 m-3 shadow';
             el.style.zIndex = 9999;
-            el.innerHTML = '<i class="bi bi-cart-check me-2"></i>Você tem <strong>' + count
-                + '</strong> produto(s) salvos no carrinho do acesso anterior.'
-                + ' <a href="<?= BASE_URL ?>/cliente/novo-pedido.php" class="alert-link">Continuar pedido</a>'
+            el.innerHTML = '<i class="bi bi-cart-check me-2"></i>' + <?= json_encode(t('Você tem')) ?> + ' <strong>' + count
+                + '</strong> ' + <?= json_encode(t('produto(s) salvos no carrinho do acesso anterior.')) ?>
+                + ' <a href="<?= BASE_URL ?>/cliente/novo-pedido.php" class="alert-link"><?= et('Continuar pedido') ?></a>'
                 + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
             document.body.appendChild(el);
             setTimeout(function() { try { bootstrap.Alert.getOrCreateInstance(el).close(); } catch(e) {} }, 7000);

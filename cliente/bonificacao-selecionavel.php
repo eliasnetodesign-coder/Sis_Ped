@@ -42,9 +42,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $somaVal += $actual * $precoById[$pid];
         }
         if ($cp['limite_tipo'] === 'valor') {
-            if ($somaVal - (float)$cp['limite'] > 0.001) { $erros[] = "Campanha {$code}: valor selecionado excede o limite."; continue; }
+            if ($somaVal - (float)$cp['limite'] > 0.001) { $erros[] = t('Campanha %s: valor selecionado excede o limite.', $code); continue; }
         } else {
-            if ($somaQtd > (int)$cp['limite']) { $erros[] = "Campanha {$code}: quantidade selecionada excede o limite."; continue; }
+            if ($somaQtd > (int)$cp['limite']) { $erros[] = t('Campanha %s: quantidade selecionada excede o limite.', $code); continue; }
         }
         foreach ($itens as $pid => $q) $bonusAcc[$pid] = ($bonusAcc[$pid] ?? 0) + $q;
     }
@@ -68,38 +68,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     _concluirSelecao($ctx, $retorno);
 }
 
-$pageTitle = 'Escolha seus bônus';
+$pageTitle = t('Escolha seus bônus');
 require_once LAYOUT_PATH . '/header.php';
 ?>
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
-    <h4 class="fw-bold mb-0"><i class="bi bi-gift me-2 text-warning"></i>Escolha seus produtos bônus</h4>
+    <h4 class="fw-bold mb-0"><i class="bi bi-gift me-2 text-warning"></i><?= et('Escolha seus produtos bônus') ?></h4>
 </div>
 <div class="alert alert-info">
-    Seu pedido participa de campanha(s) de bonificação. Escolha os produtos bônus respeitando o limite de cada campanha.
+    <?= et('Seu pedido participa de campanha(s) de bonificação. Escolha os produtos bônus respeitando o limite de cada campanha.') ?>
 </div>
 
 <form method="POST" id="bonifForm">
     <?php foreach ($camps as $cp):
         $porValor = $cp['limite_tipo'] === 'valor';
-        $limiteTxt = $porValor ? moedaBR((float)$cp['limite']) : ((int)$cp['limite'] . ' un.');
+        $limiteTxt = $porValor ? moedaBR((float)$cp['limite']) : ((int)$cp['limite'] . ' ' . t('un.'));
     ?>
     <div class="card shadow-sm border-0 mb-3 camp-card"
          data-codigo="<?= e($cp['codigo']) ?>" data-tipo="<?= e($cp['limite_tipo']) ?>" data-limite="<?= e($cp['limite']) ?>">
         <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
-            <div><strong>Campanha <?= e($cp['codigo']) ?></strong>
-                <span class="text-muted small ms-2">Limite: <?= e($limiteTxt) ?></span>
+            <div><strong><?= et('Campanha') ?> <?= e($cp['codigo']) ?></strong>
+                <span class="text-muted small ms-2"><?= et('Limite:') ?> <?= e($limiteTxt) ?></span>
             </div>
             <div class="small">
-                <span class="text-muted">Selecionado:</span>
+                <span class="text-muted"><?= et('Selecionado:') ?></span>
                 <span class="fw-bold camp-usado">0</span> / <?= e($limiteTxt) ?>
-                <span class="badge bg-danger ms-2 d-none camp-excede">Limite excedido</span>
+                <span class="badge bg-danger ms-2 d-none camp-excede"><?= et('Limite excedido') ?></span>
             </div>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
                 <table class="table table-hover mb-0 align-middle">
                     <thead class="table-light">
-                        <tr><th>Código</th><th>Produto</th><th class="text-end">Preço unit.</th><th class="text-center">Múlt.</th><th style="width:120px" class="text-center">Quantidade</th><th class="text-center">Qtd. Total</th></tr>
+                        <tr><th><?= et('Código') ?></th><th><?= et('Produto') ?></th><th class="text-end"><?= et('Preço unit.') ?></th><th class="text-center"><?= et('Múlt.') ?></th><th style="width:120px" class="text-center"><?= et('Quantidade') ?></th><th class="text-center"><?= et('Qtd. Total') ?></th></tr>
                     </thead>
                     <tbody>
                     <?php foreach ($cp['produtos'] as $p):
@@ -134,18 +134,19 @@ require_once LAYOUT_PATH . '/header.php';
 
     <div class="d-flex flex-wrap gap-2 justify-content-end">
         <button type="submit" name="action" value="pular" class="btn btn-outline-secondary"
-                onclick="return confirm('Concluir sem escolher bônus? Você não poderá selecionar depois.')">
-            Pular
+                onclick="return confirm('<?= e(t('Concluir sem escolher bônus? Você não poderá selecionar depois.')) ?>')">
+            <?= et('Pular') ?>
         </button>
         <button type="submit" name="action" value="confirmar" class="btn btn-primary" id="btnConfirmar">
-            <i class="bi bi-check-lg me-1"></i>Confirmar bônus
+            <i class="bi bi-check-lg me-1"></i><?= et('Confirmar bônus') ?>
         </button>
     </div>
 </form>
 
 <script>
+var BONIF_UN = <?= json_encode(t('un.')) ?>;
 function bonifFmt(v, porValor) {
-    if (!porValor) return String(v) + ' un.';
+    if (!porValor) return String(v) + ' ' + BONIF_UN;
     return 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function bonifRecalc() {
@@ -161,7 +162,7 @@ function bonifRecalc() {
             var actual = q * mult;
             var totalCell = inp.closest('tr').querySelector('.bonif-total');
             if (totalCell) {
-                totalCell.textContent = actual > 0 ? actual + ' un.' : '—';
+                totalCell.textContent = actual > 0 ? actual + ' ' + BONIF_UN : '—';
                 totalCell.classList.toggle('text-muted', actual <= 0);
                 totalCell.classList.toggle('text-primary', actual > 0);
             }

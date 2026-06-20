@@ -12,7 +12,7 @@ $_inFinanceiro  = strpos($_self, '/financeiro/')  !== false;
 $_sectionActive = isset($activeSection) ? $activeSection : '';
 ?>
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="<?= htmlLang() ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -36,7 +36,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 type="button"
                 data-bs-toggle="offcanvas"
                 data-bs-target="#sidebarMenu"
-                aria-label="Abrir menu">
+                aria-label="<?= et('Abrir menu') ?>">
             <i class="bi bi-list fs-3 lh-1"></i>
         </button>
         <div class="ms-auto d-flex align-items-center gap-2 gap-md-3">
@@ -45,12 +45,12 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
             <button type="button"
                     class="btn btn-link text-white text-decoration-none p-0 small d-none d-sm-inline-flex align-items-center gap-1"
                     data-bs-toggle="modal" data-bs-target="#modalTrocarCnpj"
-                    title="Trocar empresa">
+                    title="<?= et('Trocar empresa') ?>">
                 <i class="bi bi-person-circle me-1"></i><?= e($_usuario['nome']) ?>
                 <?php if (!empty($_usuario['cnpj'])): ?>
                 <span class="text-white-50" style="font-size:.78rem"><?= e($_usuario['cnpj']) ?></span>
                 <?php endif; ?>
-                <span class="badge bg-white text-primary ms-1"><?= ucfirst($_usuario['tipo']) ?></span>
+                <span class="badge bg-white text-primary ms-1"><?= $_usuario['tipo'] === 'cliente' ? et('Cliente') : e(ucfirst($_usuario['tipo'])) ?></span>
                 <i class="bi bi-chevron-down ms-1" style="font-size:.7rem;opacity:.7"></i>
             </button>
             <?php else: ?>
@@ -59,13 +59,13 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 <?php if (!empty($_usuario['cnpj'])): ?>
                 <span class="text-white-50 ms-1" style="font-size:.78rem"><?= e($_usuario['cnpj']) ?></span>
                 <?php endif; ?>
-                <span class="badge bg-white text-primary ms-1"><?= ucfirst($_usuario['tipo']) ?></span>
+                <span class="badge bg-white text-primary ms-1"><?= $_usuario['tipo'] === 'cliente' ? et('Cliente') : e(ucfirst($_usuario['tipo'])) ?></span>
             </span>
             <?php endif; ?>
             <a href="<?= BASE_URL ?>/logout.php"
                class="btn btn-outline-light btn-sm"
-               onclick="return confirm('Deseja realmente sair?')">
-                <i class="bi bi-box-arrow-right me-1"></i><span class="d-none d-sm-inline">Sair</span>
+               onclick="return confirm('<?= et('Deseja realmente sair?') ?>')">
+                <i class="bi bi-box-arrow-right me-1"></i><span class="d-none d-sm-inline"><?= et('Sair') ?></span>
             </a>
         </div>
         <?php endif; ?>
@@ -78,12 +78,12 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
         <div class="modal-content border-0 shadow">
             <div class="modal-header border-0 pb-0">
                 <h5 class="modal-title fw-bold">
-                    <i class="bi bi-building me-2 text-primary"></i>Trocar Empresa
+                    <i class="bi bi-building me-2 text-primary"></i><?= et('Trocar Empresa') ?>
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body pt-2 pb-1">
-                <p class="text-muted small mb-3">Selecione o CNPJ para o qual deseja realizar o pedido:</p>
+                <p class="text-muted small mb-3"><?= et('Selecione o CNPJ para o qual deseja realizar o pedido:') ?></p>
                 <form method="POST" action="<?= BASE_URL ?>/cliente/trocar-cnpj.php">
                     <input type="hidden" name="voltar" value="<?= e($_SERVER['REQUEST_URI']) ?>">
                     <div class="d-flex flex-column gap-2 mb-3">
@@ -101,7 +101,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                                     <?= !empty($op['cnpj']) ? e($op['cnpj']) . ' &nbsp;' : '' ?>
                                     <span class="badge bg-secondary" style="font-size:.68rem"><?= e($op['codigo_cliente']) ?></span>
                                     <?php if ($op['id'] == $_usuario['id']): ?>
-                                    <span class="badge bg-success ms-1" style="font-size:.68rem">Atual</span>
+                                    <span class="badge bg-success ms-1" style="font-size:.68rem"><?= et('Atual') ?></span>
                                     <?php endif; ?>
                                 </div>
                             </div>
@@ -109,8 +109,8 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                         <?php endforeach; ?>
                     </div>
                     <div class="d-flex gap-2 justify-content-end pb-1">
-                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-check-lg me-1"></i>Confirmar</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal"><?= et('Cancelar') ?></button>
+                        <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-check-lg me-1"></i><?= et('Confirmar') ?></button>
                     </div>
                 </form>
             </div>
@@ -127,7 +127,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
          id="sidebarMenu" tabindex="-1" style="width:220px">
 
         <div class="offcanvas-header border-bottom d-md-none">
-            <span class="fw-semibold text-primary"><i class="bi bi-grid-3x3-gap me-2"></i>Menu</span>
+            <span class="fw-semibold text-primary"><i class="bi bi-grid-3x3-gap me-2"></i><?= et('Menu') ?></span>
             <button type="button" class="btn-close"
                     data-bs-dismiss="offcanvas"
                     data-bs-target="#sidebarMenu"></button>
@@ -157,41 +157,41 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 $_maSidebar = max(0, $_maTotal - (float)$_maR['utilizado']);
             }
         ?>
-            <div class="px-3 pb-2 text-uppercase text-muted small fw-semibold">Área do Cliente</div>
+            <div class="px-3 pb-2 text-uppercase text-muted small fw-semibold"><?= et('Área do Cliente') ?></div>
             <ul class="nav flex-column">
                 <li class="nav-item">
                     <a class="nav-link <?= $_pg === 'dashboard' ? 'active' : '' ?>"
                        href="<?= BASE_URL ?>/cliente/dashboard.php"
                        data-bs-dismiss="offcanvas">
-                        <i class="bi bi-speedometer2 me-2"></i>Dashboard
+                        <i class="bi bi-speedometer2 me-2"></i><?= et('Dashboard') ?>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link <?= $_pg === 'novo-pedido' ? 'active' : '' ?>"
                        href="<?= BASE_URL ?>/cliente/novo-pedido.php"
                        data-bs-dismiss="offcanvas">
-                        <i class="bi bi-plus-circle me-2"></i>Novo Pedido
+                        <i class="bi bi-plus-circle me-2"></i><?= et('Novo Pedido') ?>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link <?= $_pg === 'meus-pedidos' ? 'active' : '' ?>"
                        href="<?= BASE_URL ?>/cliente/meus-pedidos.php"
                        data-bs-dismiss="offcanvas">
-                        <i class="bi bi-list-ul me-2"></i>Meus Pedidos
+                        <i class="bi bi-list-ul me-2"></i><?= et('Meus Pedidos') ?>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link <?= $_pg === 'financeiro' ? 'active' : '' ?>"
                        href="<?= BASE_URL ?>/cliente/financeiro.php"
                        data-bs-dismiss="offcanvas">
-                        <i class="bi bi-receipt me-2"></i>Financeiro
+                        <i class="bi bi-receipt me-2"></i><?= et('Financeiro') ?>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link <?= $_pg === 'perfil' ? 'active' : '' ?>"
                        href="<?= BASE_URL ?>/cliente/perfil.php"
                        data-bs-dismiss="offcanvas">
-                        <i class="bi bi-person-gear me-2"></i>Meu Perfil
+                        <i class="bi bi-person-gear me-2"></i><?= et('Meu Perfil') ?>
                     </a>
                 </li>
                 <?php if ($_maSidebar > 0): ?>

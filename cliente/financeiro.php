@@ -21,12 +21,12 @@ FROM contas_receber WHERE cliente_id = ?');
 $resumo->execute([$u['id']]);
 $r = $resumo->fetch();
 
-$pageTitle = 'Financeiro';
+$pageTitle = t('Financeiro');
 require_once LAYOUT_PATH . '/header.php';
 ?>
 <div class="mb-4">
-    <h4 class="fw-bold mb-0"><i class="bi bi-receipt me-2"></i>Financeiro</h4>
-    <p class="text-muted small">Seus títulos e boletos a receber</p>
+    <h4 class="fw-bold mb-0"><i class="bi bi-receipt me-2"></i><?= et('Financeiro') ?></h4>
+    <p class="text-muted small"><?= et('Seus títulos e boletos a receber') ?></p>
 </div>
 
 <!-- Cards resumo -->
@@ -34,7 +34,7 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-primary">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Total</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Total') ?></div>
                 <div class="fw-bold text-primary" style="font-size:1.3rem"><?= moedaBR($r['total']) ?></div>
             </div>
         </div>
@@ -42,7 +42,7 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-warning">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Em Aberto</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Em Aberto') ?></div>
                 <div class="fw-bold" style="color:#c8880a;font-size:1.3rem"><?= moedaBR($r['aberto']) ?></div>
             </div>
         </div>
@@ -50,7 +50,7 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-danger">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Vencido</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Vencido') ?></div>
                 <div class="fw-bold text-danger" style="font-size:1.3rem"><?= moedaBR($r['vencido']) ?></div>
             </div>
         </div>
@@ -58,7 +58,7 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="col-6 col-xl-3">
         <div class="card shadow-sm border-0 border-start border-4 border-success">
             <div class="card-body">
-                <div class="text-muted small fw-semibold text-uppercase">Pago</div>
+                <div class="text-muted small fw-semibold text-uppercase"><?= et('Pago') ?></div>
                 <div class="fw-bold text-success" style="font-size:1.3rem"><?= moedaBR($r['pago']) ?></div>
             </div>
         </div>
@@ -72,7 +72,7 @@ require_once LAYOUT_PATH . '/header.php';
     foreach ($filtros as $val => $label):
         $active = $filtro === $val;
     ?>
-    <a href="?situacao=<?= $val ?>" class="btn btn-sm btn-<?= $active ? 'primary' : 'outline-primary' ?>"><?= $label ?></a>
+    <a href="?situacao=<?= $val ?>" class="btn btn-sm btn-<?= $active ? 'primary' : 'outline-primary' ?>"><?= et($label) ?></a>
     <?php endforeach; ?>
 </div>
 
@@ -82,14 +82,14 @@ require_once LAYOUT_PATH . '/header.php';
         <table class="table table-hover mb-0">
             <thead class="table-light">
                 <tr>
-                    <th>Documento</th>
-                    <th>Valor</th>
-                    <th>Desconto</th>
-                    <th>Líquido</th>
-                    <th>Emissão</th>
-                    <th>Vencimento</th>
-                    <th>Pagamento</th>
-                    <th>Situação</th>
+                    <th><?= et('Documento') ?></th>
+                    <th><?= et('Valor') ?></th>
+                    <th><?= et('Desconto') ?></th>
+                    <th><?= et('Líquido') ?></th>
+                    <th><?= et('Emissão') ?></th>
+                    <th><?= et('Vencimento') ?></th>
+                    <th><?= et('Pagamento') ?></th>
+                    <th><?= et('Situação') ?></th>
                 </tr>
             </thead>
             <tbody>
@@ -106,7 +106,7 @@ require_once LAYOUT_PATH . '/header.php';
                 </tr>
             <?php endforeach; else: ?>
                 <tr><td colspan="8" class="text-center text-muted py-4">
-                    <i class="bi bi-inbox display-6 d-block mb-2"></i>Nenhum título encontrado.
+                    <i class="bi bi-inbox display-6 d-block mb-2"></i><?= et('Nenhum título encontrado.') ?>
                 </td></tr>
             <?php endif; ?>
             </tbody>

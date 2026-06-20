@@ -10,14 +10,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'senha
     try {
         $nova = $_POST['nova_senha']      ?? '';
         $conf = $_POST['confirmar_senha'] ?? '';
-        if (!$nova)            throw new Exception('Informe a nova senha.');
-        if ($nova !== $conf)   throw new Exception('As senhas não conferem.');
-        if (strlen($nova) < 4) throw new Exception('A senha deve ter pelo menos 4 caracteres.');
+        if (!$nova)            throw new Exception(t('Informe a nova senha.'));
+        if ($nova !== $conf)   throw new Exception(t('As senhas não conferem.'));
+        if (strlen($nova) < 4) throw new Exception(t('A senha deve ter pelo menos 4 caracteres.'));
         db()->prepare('UPDATE clientes SET senha=?, senha_temporaria=0 WHERE id=?')->execute([$nova, $usr['id']]);
         $_SESSION['usuario']['must_change'] = false;
-        flash('success', 'Senha alterada com sucesso!');
+        flash('success', t('Senha alterada com sucesso!'));
     } catch (Exception $e) {
-        flash('danger', 'Erro: ' . $e->getMessage());
+        flash('danger', t('Erro:') . ' ' . $e->getMessage());
     }
     header('Location: ' . BASE_URL . '/cliente/perfil.php'); exit;
 }
@@ -26,12 +26,12 @@ $cliente = db()->prepare('SELECT c.*, cv.canal FROM clientes c LEFT JOIN canal_v
 $cliente->execute([$usr['id']]);
 $cliente = $cliente->fetch();
 
-$pageTitle = 'Meu Perfil';
+$pageTitle = t('Meu Perfil');
 require_once LAYOUT_PATH . '/header.php';
 ?>
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
-    <h4 class="fw-bold mb-0"><i class="bi bi-person-circle me-2"></i>Meu Perfil</h4>
+    <h4 class="fw-bold mb-0"><i class="bi bi-person-circle me-2"></i><?= et('Meu Perfil') ?></h4>
 </div>
 
 <div class="row g-4">
@@ -39,60 +39,60 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="col-lg-8">
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white py-3">
-                <h5 class="mb-0"><i class="bi bi-person-lines-fill me-2 text-primary"></i>Contato e Endereço</h5>
+                <h5 class="mb-0"><i class="bi bi-person-lines-fill me-2 text-primary"></i><?= et('Contato e Endereço') ?></h5>
             </div>
             <div class="card-body">
                 <div class="row g-3">
                     <div class="col-md-6">
-                        <label class="form-label fw-semibold text-muted small">E-mail <small class="fw-normal">(login)</small></label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('E-mail') ?> <small class="fw-normal">(<?= et('login') ?>)</small></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['email'] ?? '—') ?>">
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label fw-semibold text-muted small">Telefone 1</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('Telefone 1') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['telefone1'] ?? '—') ?>">
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label fw-semibold text-muted small">Telefone 2</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('Telefone 2') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['telefone2'] ?? '—') ?>">
                     </div>
                     <div class="col-12"><hr class="my-1"></div>
                     <div class="col-md-3">
-                        <label class="form-label fw-semibold text-muted small">CEP</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('CEP') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['cep'] ?? '—') ?>">
                     </div>
                     <div class="col-md-7">
-                        <label class="form-label fw-semibold text-muted small">Endereço</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('Endereço') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['endereco'] ?? '—') ?>">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label fw-semibold text-muted small">Número</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('Número') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['numero'] ?? '—') ?>">
                     </div>
                     <div class="col-md-4">
-                        <label class="form-label fw-semibold text-muted small">Complemento</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('Complemento') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['complemento'] ?? '—') ?>">
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label fw-semibold text-muted small">Bairro</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('Bairro') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['bairro'] ?? '—') ?>">
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label fw-semibold text-muted small">Cidade</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('Cidade') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['cidade'] ?? '—') ?>">
                     </div>
                     <div class="col-md-1">
-                        <label class="form-label fw-semibold text-muted small">UF</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('UF') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['estado'] ?? '—') ?>">
                     </div>
                     <div class="col-md-1">
-                        <label class="form-label fw-semibold text-muted small">País</label>
+                        <label class="form-label fw-semibold text-muted small"><?= et('País') ?></label>
                         <input type="text" class="form-control bg-light" readonly value="<?= e($cliente['pais'] ?? 'Brasil') ?>">
                     </div>
                 </div>
                 <div class="mt-3 pt-2 border-top">
                     <small class="text-muted">
                         <i class="bi bi-info-circle me-1"></i>
-                        Para alterar seus dados, entre em contato com o suporte.
+                        <?= et('Para alterar seus dados, entre em contato com o suporte.') ?>
                     </small>
                 </div>
             </div>
@@ -103,39 +103,39 @@ require_once LAYOUT_PATH . '/header.php';
 
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white py-3">
-                <h5 class="mb-0"><i class="bi bi-building me-2 text-primary"></i>Dados Cadastrais</h5>
+                <h5 class="mb-0"><i class="bi bi-building me-2 text-primary"></i><?= et('Dados Cadastrais') ?></h5>
             </div>
             <div class="card-body">
                 <div class="row g-3">
                     <div class="col-12">
-                        <div class="text-muted small fw-semibold text-uppercase">Código</div>
+                        <div class="text-muted small fw-semibold text-uppercase"><?= et('Código') ?></div>
                         <div class="fw-bold text-primary fs-5"><?= e($cliente['codigo_cliente'] ?? '—') ?></div>
                     </div>
                     <div class="col-12">
-                        <div class="text-muted small fw-semibold text-uppercase">Razão Social</div>
+                        <div class="text-muted small fw-semibold text-uppercase"><?= et('Razão Social') ?></div>
                         <div class="fw-semibold"><?= e($cliente['razao_social'] ?? '—') ?></div>
                     </div>
                     <?php if (!empty($cliente['cnpj'])): ?>
                     <div class="col-12">
-                        <div class="text-muted small fw-semibold text-uppercase">CNPJ</div>
+                        <div class="text-muted small fw-semibold text-uppercase"><?= et('CNPJ') ?></div>
                         <div><?= e($cliente['cnpj']) ?></div>
                     </div>
                     <?php endif; ?>
                     <?php $_supCli = $cliente['supervisor'] ?? $cliente['vendedor'] ?? ''; ?>
                     <?php if (!empty($_supCli)): ?>
                     <div class="col-12">
-                        <div class="text-muted small fw-semibold text-uppercase">Supervisor</div>
+                        <div class="text-muted small fw-semibold text-uppercase"><?= et('Supervisor') ?></div>
                         <div><?= e($_supCli) ?></div>
                     </div>
                     <?php endif; ?>
                     <?php if (!empty($cliente['canal'])): ?>
                     <div class="col-12">
-                        <div class="text-muted small fw-semibold text-uppercase">Canal de Venda</div>
+                        <div class="text-muted small fw-semibold text-uppercase"><?= et('Canal de Venda') ?></div>
                         <div><?= e($cliente['canal']) ?></div>
                     </div>
                     <?php endif; ?>
                     <div class="col-6">
-                        <div class="text-muted small fw-semibold text-uppercase">Status</div>
+                        <div class="text-muted small fw-semibold text-uppercase"><?= et('Status') ?></div>
                         <div><?= statusBadge($cliente['status'] ?? 'ativo') ?></div>
                     </div>
                 </div>
@@ -144,26 +144,26 @@ require_once LAYOUT_PATH . '/header.php';
 
         <div class="card border-0 shadow-sm border-start border-warning border-4">
             <div class="card-header bg-white py-3">
-                <h5 class="mb-0"><i class="bi bi-shield-lock me-2 text-warning"></i>Alterar Senha</h5>
+                <h5 class="mb-0"><i class="bi bi-shield-lock me-2 text-warning"></i><?= et('Alterar Senha') ?></h5>
             </div>
             <div class="card-body">
                 <form method="POST">
                     <input type="hidden" name="action" value="senha">
                     <div class="row g-3">
                         <div class="col-12">
-                            <label class="form-label fw-semibold">Nova Senha <span class="text-danger">*</span></label>
+                            <label class="form-label fw-semibold"><?= et('Nova Senha') ?> <span class="text-danger">*</span></label>
                             <input type="password" name="nova_senha" class="form-control"
                                    placeholder="••••••" autocomplete="new-password">
                         </div>
                         <div class="col-12">
-                            <label class="form-label fw-semibold">Confirmar Senha <span class="text-danger">*</span></label>
+                            <label class="form-label fw-semibold"><?= et('Confirmar Senha') ?> <span class="text-danger">*</span></label>
                             <input type="password" name="confirmar_senha" class="form-control"
                                    placeholder="••••••" autocomplete="new-password">
                         </div>
                     </div>
                     <div class="mt-3">
                         <button type="submit" class="btn btn-warning w-100">
-                            <i class="bi bi-key me-1"></i>Alterar Senha
+                            <i class="bi bi-key me-1"></i><?= et('Alterar Senha') ?>
                         </button>
                     </div>
                 </form>

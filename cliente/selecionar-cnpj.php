@@ -13,7 +13,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Valida que o ID selecionado está na lista de opções da sessão
     $ids = array_column($_SESSION['grupo_selecao'], 'id');
     if (!in_array($clienteId, $ids)) {
-        flash('danger', 'Seleção inválida.');
+        flash('danger', t('Seleção inválida.'));
         header('Location: ' . BASE_URL . '/cliente/selecionar-cnpj.php'); exit;
     }
 
@@ -22,7 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->execute([$clienteId]);
     $cli = $stmt->fetch();
     if (!$cli) {
-        flash('danger', 'Empresa não encontrada.');
+        flash('danger', t('Empresa não encontrada.'));
         header('Location: ' . BASE_URL . '/cliente/selecionar-cnpj.php'); exit;
     }
 
@@ -39,11 +39,11 @@ $opcoes = $_SESSION['grupo_selecao'];
 $u      = usuario();
 ?>
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="<?= htmlLang() ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Selecionar Empresa — Sis_Ped</title>
+    <title><?= et('Selecionar Empresa') ?> — Sis_Ped</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
     <style>
@@ -64,10 +64,10 @@ $u      = usuario();
     <div class="sel-card card">
         <div class="sel-header text-white text-center py-4 px-4">
             <i class="bi bi-building display-6 d-block mb-2"></i>
-            <h5 class="fw-bold mb-1">Selecionar Empresa</h5>
+            <h5 class="fw-bold mb-1"><?= et('Selecionar Empresa') ?></h5>
             <div class="small text-white-50">
-                Olá, <strong class="text-white"><?= e($u['nome']) ?></strong>.<br>
-                Com qual CNPJ deseja realizar o pedido?
+                <?= et('Olá, %s.', '<strong class="text-white">' . e($u['nome']) . '</strong>') ?><br>
+                <?= et('Com qual CNPJ deseja realizar o pedido?') ?>
             </div>
         </div>
         <div class="card-body p-4">
@@ -95,13 +95,13 @@ $u      = usuario();
                 </div>
 
                 <button type="submit" class="btn btn-confirmar btn-lg w-100 fw-semibold text-white" id="btnConfirmar">
-                    <i class="bi bi-box-arrow-in-right me-2"></i>Continuar
+                    <i class="bi bi-box-arrow-in-right me-2"></i><?= et('Continuar') ?>
                 </button>
             </form>
 
             <div class="text-center mt-3">
                 <a href="<?= BASE_URL ?>/logout.php" class="text-muted small text-decoration-none">
-                    <i class="bi bi-box-arrow-left me-1"></i>Sair e entrar com outra conta
+                    <i class="bi bi-box-arrow-left me-1"></i><?= et('Sair e entrar com outra conta') ?>
                 </a>
             </div>
         </div>

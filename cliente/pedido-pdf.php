@@ -54,14 +54,14 @@ $data_pedido     = $pedidos[0]['data_pedido'];
 $supervisor      = $pedidos[0]['supervisor'] ?? $pedidos[0]['vendedor'];
 $observacoes     = $pedidos[0]['observacoes'];
 $forma_pagamento = $pedidos[0]['forma_pagamento'] ?? '';
-$tipo_venda      = ($pedidos[0]['tipo_venda'] ?? 'venda') === 'bonificacao' ? 'Bonificação' : 'Venda';
+$tipo_venda      = ($pedidos[0]['tipo_venda'] ?? 'venda') === 'bonificacao' ? t('Bonificação') : t('Venda');
 $statusLabels    = [
-    'comercial'   => 'Aguardando Comercial',
-    'financeiro'  => 'Aguardando Financeiro',
-    'faturamento' => 'Aguardando Faturamento',
-    'faturado'    => 'Faturado',
-    'cancelado'   => 'Cancelado',
-    'reprovado'   => 'Cancelado',
+    'comercial'   => t('Aguardando Comercial'),
+    'financeiro'  => t('Aguardando Financeiro'),
+    'faturamento' => t('Aguardando Faturamento'),
+    'faturado'    => t('Faturado'),
+    'cancelado'   => t('Cancelado'),
+    'reprovado'   => t('Cancelado'),
 ];
 $statusLabel     = $statusLabels[$pedidos[0]['status']] ?? ucfirst($pedidos[0]['status']);
 
@@ -89,17 +89,17 @@ $total_a_pagar = max(0, $total_geral - $desconto_pagamento - $credito_utilizado)
 $porLinha = [];
 foreach ($pedidos as $p) {
     $linha = trim($p['linha'] ?? '');
-    $linha = $linha !== '' ? $linha : 'Outros';
+    $linha = $linha !== '' ? $linha : t('Outros');
     $porLinha[$linha][] = $p;
 }
 ksort($porLinha);
 ?>
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="<?= htmlLang() ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Confirmação de Pedido — <?= date('d/m/Y', strtotime($data_pedido)) ?></title>
+    <title><?= et('Confirmação de Pedido') ?> — <?= date('d/m/Y', strtotime($data_pedido)) ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
     <style>
@@ -233,7 +233,7 @@ ksort($porLinha);
 <div class="action-bar mt-3 no-print">
     <div class="alert alert-warning mb-0 w-100">
         <i class="bi bi-gift-fill me-1"></i>
-        <strong>Você foi bonificado!</strong> Um pedido bonificado foi gerado com:
+        <strong><?= et('Você foi bonificado!') ?></strong> <?= et('Um pedido bonificado foi gerado com:') ?>
         <?= e(implode(', ', $bonusAviso)) ?>.
     </div>
 </div>
@@ -241,10 +241,10 @@ ksort($porLinha);
 
 <div class="action-bar mt-3">
     <a href="<?= BASE_URL ?>/cliente/meus-pedidos.php" class="btn btn-outline-secondary btn-sm">
-        <i class="bi bi-list-ul me-1"></i>Meus Pedidos
+        <i class="bi bi-list-ul me-1"></i><?= et('Meus Pedidos') ?>
     </a>
     <button onclick="window.print()" class="btn btn-success btn-sm">
-        <i class="bi bi-file-earmark-pdf me-1"></i>Salvar / Imprimir PDF
+        <i class="bi bi-file-earmark-pdf me-1"></i><?= et('Salvar / Imprimir PDF') ?>
     </button>
 </div>
 
@@ -254,21 +254,21 @@ ksort($porLinha);
     <div class="pdf-header">
         <div>
             <h1>Itallian Hairtech</h1>
-            <div class="subtitle">Confirmação de Pedido</div>
+            <div class="subtitle"><?= et('Confirmação de Pedido') ?></div>
             <div class="mt-2">
                 <span class="badge-status" style="background:rgba(255,255,255,.25);color:#fff;border:1px solid rgba(255,255,255,.5)">
                     <?= e($statusLabel) ?>
                 </span>
                 <span class="badge-status" style="background:rgba(255,255,255,.25);color:#fff;border:1px solid rgba(255,255,255,.5)">
-                    <i class="bi bi-tag me-1"></i><?= $tipo_venda ?>
+                    <i class="bi bi-tag me-1"></i><?= e($tipo_venda) ?>
                 </span>
             </div>
         </div>
         <div class="doc-num">
-            <div style="font-size:.8rem;opacity:.8">Data do Pedido</div>
+            <div style="font-size:.8rem;opacity:.8"><?= et('Data do Pedido') ?></div>
             <span><?= date('d/m/Y', strtotime($data_pedido)) ?></span>
             <?php if ($supervisor): ?>
-            <div style="font-size:.8rem;opacity:.8;margin-top:8px">Supervisor</div>
+            <div style="font-size:.8rem;opacity:.8;margin-top:8px"><?= et('Supervisor') ?></div>
             <span style="font-size:.95rem"><?= e($supervisor) ?></span>
             <?php endif; ?>
         </div>
@@ -277,28 +277,28 @@ ksort($porLinha);
     <div class="pdf-body">
 
         <!-- Informações do Cliente -->
-        <div class="section-title"><i class="bi bi-person me-1"></i>Dados do Cliente</div>
+        <div class="section-title"><i class="bi bi-person me-1"></i><?= et('Dados do Cliente') ?></div>
         <div class="info-grid" style="margin-bottom:24px">
             <div class="info-box">
-                <label>Razão Social</label>
+                <label><?= et('Razão Social') ?></label>
                 <span><?= e($cli['razao_social'] ?? '—') ?></span>
             </div>
             <div class="info-box">
-                <label>CNPJ / CPF</label>
+                <label><?= et('CNPJ / CPF') ?></label>
                 <span><?= e($cli['cnpj'] ?? $cli['cpf'] ?? '—') ?></span>
             </div>
             <div class="info-box">
-                <label>Cidade / Estado</label>
+                <label><?= et('Cidade / Estado') ?></label>
                 <span><?= e(($cli['cidade'] ?? '') . ($cli['estado'] ? ' — ' . $cli['estado'] : '')) ?></span>
             </div>
             <div class="info-box">
-                <label>Canal de Venda</label>
+                <label><?= et('Canal de Venda') ?></label>
                 <span><?= e($cli['canal_venda'] ?? '—') ?></span>
             </div>
         </div>
 
         <!-- Itens do Pedido -->
-        <div class="section-title"><i class="bi bi-cart3 me-1"></i>Itens do Pedido</div>
+        <div class="section-title"><i class="bi bi-cart3 me-1"></i><?= et('Itens do Pedido') ?></div>
 
         <?php foreach ($porLinha as $linha => $itens):
             $subtotal_linha = array_sum(array_column($itens, 'valor_total'));
@@ -307,13 +307,13 @@ ksort($porLinha);
         <table>
             <thead>
                 <tr>
-                    <th>Produto</th>
-                    <th>Cód. Produto</th>
-                    <th>Cód. Barras</th>
-                    <th class="text-center">Qtd.</th>
-                    <th class="text-end">Preço Unit.</th>
-                    <th class="text-center">Desconto</th>
-                    <th class="text-end">Valor Total</th>
+                    <th><?= et('Produto') ?></th>
+                    <th><?= et('Cód. Produto') ?></th>
+                    <th><?= et('Cód. Barras') ?></th>
+                    <th class="text-center"><?= et('Qtd.') ?></th>
+                    <th class="text-end"><?= et('Preço Unit.') ?></th>
+                    <th class="text-center"><?= et('Desconto') ?></th>
+                    <th class="text-end"><?= et('Valor Total') ?></th>
                 </tr>
             </thead>
             <tbody>
@@ -343,7 +343,7 @@ ksort($porLinha);
             </tbody>
             <tfoot>
                 <tr>
-                    <td colspan="6" class="text-end">Subtotal <?= e($linha) ?></td>
+                    <td colspan="6" class="text-end"><?= et('Subtotal') ?> <?= e($linha) ?></td>
                     <td class="text-end"><?= moedaBR($subtotal_linha) ?></td>
                 </tr>
             </tfoot>
@@ -354,38 +354,38 @@ ksort($porLinha);
         <?php if ($credito_utilizado > 0 || $desconto_pagamento > 0): ?>
         <table style="width:100%;border-collapse:collapse;margin-bottom:0">
             <tr>
-                <td style="text-align:right;padding:6px 8px;color:#555">Subtotal:</td>
+                <td style="text-align:right;padding:6px 8px;color:#555"><?= et('Subtotal:') ?></td>
                 <td style="text-align:right;padding:6px 8px;min-width:110px;color:#555"><?= moedaBR($total_geral) ?></td>
             </tr>
             <?php if ($credito_utilizado > 0): ?>
             <tr>
-                <td style="text-align:right;padding:4px 8px;color:#198754">Crédito aplicado:</td>
+                <td style="text-align:right;padding:4px 8px;color:#198754"><?= et('Crédito aplicado:') ?></td>
                 <td style="text-align:right;padding:4px 8px;color:#198754;font-weight:600">− <?= moedaBR($credito_utilizado) ?></td>
             </tr>
             <?php endif; ?>
             <?php if ($desconto_pagamento > 0): ?>
             <tr>
-                <td style="text-align:right;padding:4px 8px;color:#198754">Desconto Pix (5%):</td>
+                <td style="text-align:right;padding:4px 8px;color:#198754"><?= et('Desconto Pix (5%):') ?></td>
                 <td style="text-align:right;padding:4px 8px;color:#198754;font-weight:600">− <?= moedaBR($desconto_pagamento) ?></td>
             </tr>
             <?php endif; ?>
         </table>
         <?php endif; ?>
         <div class="total-geral">
-            <span><?= ($credito_utilizado > 0 || $desconto_pagamento > 0) ? 'Total a Pagar' : 'Total Geral do Pedido' ?></span>
+            <span><?= ($credito_utilizado > 0 || $desconto_pagamento > 0) ? et('Total a Pagar') : et('Total Geral do Pedido') ?></span>
             <span><?= moedaBR($total_a_pagar) ?></span>
         </div>
 
         <?php if (trim($forma_pagamento ?? '')): ?>
         <div class="obs-box mt-3">
-            <strong><i class="bi bi-credit-card-2-front me-1"></i>Forma de Pagamento:</strong>
+            <strong><i class="bi bi-credit-card-2-front me-1"></i><?= et('Forma de Pagamento:') ?></strong>
             <?= e($forma_pagamento) ?>
         </div>
         <?php endif; ?>
 
         <?php if (trim($observacoes ?? '')): ?>
         <div class="obs-box mt-3">
-            <strong><i class="bi bi-chat-left-text me-1"></i>Observações:</strong>
+            <strong><i class="bi bi-chat-left-text me-1"></i><?= et('Observações:') ?></strong>
             <?= e($observacoes) ?>
         </div>
         <?php endif; ?>
@@ -393,8 +393,8 @@ ksort($porLinha);
     </div><!-- /pdf-body -->
 
     <div class="pdf-footer">
-        <span>Itallian Hairtech &mdash; Sistema de Pedidos</span>
-        <span>Gerado em <?= date('d/m/Y H:i') ?></span>
+        <span>Itallian Hairtech &mdash; <?= et('Sistema de Pedidos') ?></span>
+        <span><?= et('Gerado em') ?> <?= date('d/m/Y H:i') ?></span>
     </div>
 
 </div><!-- /pdf-wrapper -->
