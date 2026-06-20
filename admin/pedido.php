@@ -466,58 +466,79 @@ $descCanal     = (float)($pedido['desconto_canal'] ?? 0);
 $pedidoCanalId = (int)($pedido['cliente_canal_id'] ?? 0);
 $ehBonifPedido = ($pedido['tipo_venda'] ?? 'venda') === 'bonificacao';
 
-// Itens do pedido com categoria (para checar gatilho das campanhas)
-$ci = db()->prepare("SELECT p.produto_id, p.quantidade_total, pr.linha, pr.grupo, pr.subgrupo
+// Itens do pedido com categoria e preço (para checar gatilho das campanhas).
+// Usa os helpers centrais para cobrir o modelo legado E o novo modelo
+// (campanha_condicoes em "E" + valor_alvo em "OU").
+$ci = db()->prepare("SELECT p.produto_id, p.quantidade_total,
+                            COALESCE($colPreco, pr.vendas_varejo) AS preco_unit,
+                            pr.linha, pr.grupo, pr.subgrupo
                      FROM pedidos p LEFT JOIN produtos pr ON pr.id = p.produto_id
+                     LEFT JOIN tabela_precos t ON t.produto_id = pr.id
                      WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?'));
 $ci->execute([$loteId ?: $pedidoId]);
-$cTotProd = $cTotL = $cTotG = $cTotS = [];
+$itensCamp = [];
 foreach ($ci->fetchAll() as $it) {
-    $q = (int)$it['quantidade_total']; if ($q <= 0) continue;
-    $pid = (int)$it['produto_id'];
-    if ($pid) $cTotProd[$pid] = ($cTotProd[$pid] ?? 0) + $q;
-    $l = trim($it['linha'] ?? '');    if ($l) $cTotL[$l] = ($cTotL[$l] ?? 0) + $q;
-    $g = trim($it['grupo'] ?? '');    if ($g) $cTotG[$g] = ($cTotG[$g] ?? 0) + $q;
-    $s = trim($it['subgrupo'] ?? ''); if ($s) $cTotS[$s] = ($cTotS[$s] ?? 0) + $q;
+    $itensCamp[] = [
+        'produto_id' => (int)$it['produto_id'],
+        'qtd'        => (int)$it['quantidade_total'],
+        'linha'      => $it['linha'],
+        'grupo'      => $it['grupo'],
+        'subgrupo'   => $it['subgrupo'],
+        'preco'      => (float)$it['preco_unit'],
+    ];
 }
+$ctxCamp = ctxCampanha($itensCamp, $pedidoCanalId);
 
-$campsAll = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto, tipo FROM campanhas")->fetchAll();
 $bonifMap = [];
 foreach (db()->query("SELECT cb.codigo_campanha, cb.quantidade, p.descricao_pt, p.codigo_produto
     FROM campanha_bonificacao cb JOIN produtos p ON p.id = cb.produto_id ORDER BY cb.id")->fetchAll() as $b) {
     $bonifMap[$b['codigo_campanha']][] = (int)$b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']);
 }
-$campsByCode = [];
-foreach ($campsAll as $c) $campsByCode[$c['codigo_campanha']][] = $c;
+
+$rotuloCriterio = fn($t) => ['linha' => 'Linha', 'grupo' => 'Grupo', 'subgrupo' => 'Subgrupo', 'produto' => 'Produto'][$t] ?? ucfirst($t);
 
 $campanhasAtingidas = [];
-foreach ($campsByCode as $code => $rows) {
-    $min = (int)$rows[0]['quantidade']; if ($min <= 0) continue;
-    $canal = $rows[0]['canal_venda_id'];
-    if ($canal && (int)$canal !== $pedidoCanalId) continue;
-    $prodIds = array_values(array_unique(array_filter(array_map(fn($r) => (int)$r['produto_id'], $rows))));
-    $trigger = 0; $alvos = [];
-    if ($prodIds) {
-        foreach ($prodIds as $pid) $trigger += $cTotProd[$pid] ?? 0;
-        $alvos[] = count($prodIds) . ' produto(s)';
-    } else {
-        foreach ($rows as $r) {
-            $cL = trim(preg_replace('/\d+/', '', $r['linha']    ?? ''));
-            $cG = trim(preg_replace('/\d+/', '', $r['grupo']    ?? ''));
-            $cS = trim(preg_replace('/\d+/', '', $r['subgrupo'] ?? ''));
-            if ($cL)     { $trigger = max($trigger, $cTotL[$cL] ?? 0); $alvos[] = 'Linha ' . $cL; }
-            elseif ($cG) { $trigger = max($trigger, $cTotG[$cG] ?? 0); $alvos[] = 'Grupo ' . $cG; }
-            elseif ($cS) { $trigger = max($trigger, $cTotS[$cS] ?? 0); $alvos[] = 'Subgrupo ' . $cS; }
-        }
+foreach (campanhasAgrupadas() as $code => $g) {
+    $rows  = $g['rows'];
+    $conds = $g['conds'];
+    $res   = avaliarCampanhaTrigger($rows, $conds, $ctxCamp);
+    if (!$res['acionada']) continue;
+
+    // Alvos legíveis a partir do que o helper considerou
+    $alvos = [];
+    foreach ($res['gruposAlvo'] as $ga) {
+        $alvos[] = $ga['tipo'] === 'produto'
+            ? 'Produto'
+            : $rotuloCriterio($ga['tipo']) . ' ' . $ga['valor'];
     }
-    if ($trigger < $min) continue; // campanha não atingida
+
+    // Detalhe do gatilho (quantidade por condição ou valor-alvo)
+    if ($conds) {
+        $partes = []; $todasQtd = true;
+        foreach ($conds as $c) {
+            $tipo = $c['criterio_tipo']; $val = trim($c['criterio_valor']);
+            $tot  = ['linha' => $ctxCamp['totaisLinha'], 'grupo' => $ctxCamp['totaisGrupo'], 'subgrupo' => $ctxCamp['totaisSubgrupo']][$tipo][$val] ?? 0;
+            $qReq = (int)$c['quantidade'];
+            $partes[] = $rotuloCriterio($tipo) . ' ' . $val . ': ' . (int)$tot . '/' . $qReq . ' un.';
+            if ($qReq <= 0 || $tot < $qReq) $todasQtd = false;
+        }
+        $valorAlvo = (float)($rows[0]['valor_alvo'] ?? 0);
+        $detalhe = ($todasQtd || $valorAlvo <= 0)
+            ? implode(' · ', $partes)
+            : 'valor ' . moedaBR($ctxCamp['valorTotal']) . ' (alvo ' . moedaBR($valorAlvo) . ')';
+    } else {
+        $min = (int)($rows[0]['quantidade'] ?? 0);
+        $detalhe = 'atingido ' . ($res['mult'] * $min) . ' un. (mín. ' . $min . ')';
+    }
+
     $campanhasAtingidas[] = [
         'codigo'   => $code,
         'tipo'     => $rows[0]['tipo'] ?? 'desconto',
         'desconto' => (float)$rows[0]['desconto'],
         'bonus'    => $bonifMap[$code] ?? [],
         'alvo'     => implode(', ', array_unique($alvos)),
-        'qtd'      => $trigger, 'min' => $min, 'mult' => intdiv($trigger, max(1, $min)),
+        'detalhe'  => $detalhe,
+        'mult'     => (int)$res['mult'],
     ];
 }
 
@@ -894,7 +915,7 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                             <span class="fw-semibold small"><?= e($ca['codigo']) ?></span>
                         </div>
                         <div class="text-muted" style="font-size:.76rem">
-                            <?= e($ca['alvo']) ?> &middot; atingido <?= (int)$ca['qtd'] ?> un. (mín. <?= (int)$ca['min'] ?>)
+                            <?php if ($ca['alvo']): ?><?= e($ca['alvo']) ?> &middot; <?php endif; ?><?= e($ca['detalhe']) ?>
                             <?php if ($ehB && $ca['bonus']): ?>
                             <br><span class="text-warning fw-semibold"><i class="bi bi-gift-fill me-1"></i>Brinde ×<?= (int)$ca['mult'] ?>: <?= e(implode(', ', $ca['bonus'])) ?></span>
                             <?php endif; ?>
