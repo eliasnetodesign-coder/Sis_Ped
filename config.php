@@ -736,3 +736,59 @@ function detectarBonificacaoSelecionavel(array $itensVenda, int $canalVendaId): 
     }
     return $out;
 }
+
+/** Percentual do bonus de exportacao sobre o valor da venda. */
+define('BONUS_EXPORTACAO_PCT', 5.0);
+
+/** Indica se o canal de venda informado e o de Exportacao (pelo nome do canal). */
+function canalEhExportacao(int $canalVendaId): bool {
+    if ($canalVendaId <= 0) return false;
+    static $cache = [];
+    if (!array_key_exists($canalVendaId, $cache)) {
+        $nome = '';
+        try {
+            $st = db()->prepare('SELECT canal FROM canal_venda WHERE id = ?');
+            $st->execute([$canalVendaId]);
+            $nome = (string)$st->fetchColumn();
+        } catch (PDOException $e) { /* sem canal */ }
+        $cache[$canalVendaId] = (stripos($nome, 'export') !== false);
+    }
+    return $cache[$canalVendaId];
+}
+
+/**
+ * Bonus de exportacao: 5% (BONUS_EXPORTACAO_PCT) do valor da venda - em BRL/Network -
+ * para o cliente escolher entre TODOS os produtos ativos. Retorna uma "campanha
+ * selecionavel" no mesmo formato de detectarBonificacaoSelecionavel(), ou [] quando
+ * o limite e zero ou nao ha produtos com preco. O valor base deve estar em BRL,
+ * pois a bonificacao usa o preco Network (sem conversao de moeda).
+ */
+function bonusExportacaoSelecionavel(float $valorBaseBRL): array {
+    $limite = round($valorBaseBRL * (BONUS_EXPORTACAO_PCT / 100), 2);
+    if ($limite <= 0) return [];
+    $rows = db()->query("SELECT p.id, p.codigo_produto, p.descricao_pt, p.multiplo,
+                                COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
+                         FROM produtos p
+                         LEFT JOIN tabela_precos t ON t.produto_id = p.id
+                         WHERE p.status = 'ativo' ORDER BY p.descricao_pt")->fetchAll();
+    $produtos = [];
+    foreach ($rows as $p) {
+        $preco = (float)$p['preco'];
+        if ($preco <= 0) continue;   // sem preco nao da para bonificar por valor
+        $produtos[] = [
+            'id'        => (int)$p['id'],
+            'codigo'    => $p['codigo_produto'],
+            'descricao' => $p['descricao_pt'],
+            'preco'     => $preco,
+            'multiplo'  => max(1.0, (float)($p['multiplo'] ?? 1)),
+        ];
+    }
+    if (!$produtos) return [];
+    return [
+        'codigo'      => 'EXPORTACAO ' . rtrim(rtrim(number_format(BONUS_EXPORTACAO_PCT, 2, ',', '.'), '0'), ',') . '%',
+        'mult'        => 1,
+        'limite_tipo' => 'valor',
+        'limite'      => $limite,
+        'produtos'    => $produtos,
+    ];
+}

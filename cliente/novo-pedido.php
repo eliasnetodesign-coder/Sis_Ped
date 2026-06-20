@@ -307,6 +307,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     // Bonificação selecionável: cliente escolhe os bônus antes do PDF
                     $selec = detectarBonificacaoSelecionavel($itensVenda, $canalVendaId);
+                    // Canal de Exportação: 5% do valor da venda para o cliente escolher
+                    // entre todos os produtos ativos (bônus selecionável por valor, em BRL)
+                    if (canalEhExportacao($canalVendaId)) {
+                        $expBonus = bonusExportacaoSelecionavel($totalPedido);
+                        if ($expBonus) $selec[] = $expBonus;
+                    }
                     if ($selec) {
                         $_SESSION['bonus_selecionavel'] = [
                             'campanhas'  => $selec,
