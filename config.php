@@ -130,6 +130,31 @@ function db() {
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN bonif_modo VARCHAR(20) NOT NULL DEFAULT 'fixo'"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN bonif_limite_tipo VARCHAR(20) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN bonif_limite_valor DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // Campanhas — reestruturação: status ativo, condição por quantidade OU valor,
+            // condição por produto, alvo explícito do desconto e pool selecionável por categoria.
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN ativo TINYINT NOT NULL DEFAULT 1"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN bonif_selec_modo VARCHAR(20) NOT NULL DEFAULT 'produtos'"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN criterio_modo VARCHAR(20) NOT NULL DEFAULT 'quantidade'"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN valor_min DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // Condição = filtro composto (linha E grupo E subgrupo E produto). Ex.: "linha X do grupo Y".
+            try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN cond_linha VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN cond_grupo VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN cond_subgrupo VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN cond_produto_id INT NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_desconto_alvo (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_campanha VARCHAR(50)  NOT NULL,
+                alvo_tipo       VARCHAR(20)  NOT NULL,
+                alvo_valor      VARCHAR(100) NOT NULL,
+                KEY idx_camp_desc_alvo (codigo_campanha)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_bonif_pool (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_campanha VARCHAR(50)  NOT NULL,
+                alvo_tipo       VARCHAR(20)  NOT NULL,
+                alvo_valor      VARCHAR(100) NOT NULL,
+                KEY idx_camp_bonif_pool (codigo_campanha)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
         } catch (PDOException $e) {
             die('Erro de conexão com o banco de dados. <a href="' . BASE_URL . '/install.php">Clique aqui para configurar.</a>');
         }
@@ -481,14 +506,31 @@ function statusBadge($s) {
  * @return array  codigo => ['rows'=>[...campanhas], 'conds'=>[...campanha_condicoes]]
  */
 function campanhasAgrupadas(): array {
-    $rows = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id,
-                                quantidade, desconto, tipo, valor_alvo, bonif_modo, bonif_limite_tipo, bonif_limite_valor
-                         FROM campanhas")->fetchAll();
+    // Só campanhas ativas participam da avaliação (ativo ausente = legado = ativo).
+    try {
+        $rows = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id,
+                                    quantidade, desconto, tipo, valor_alvo, bonif_modo, bonif_limite_tipo,
+                                    bonif_limite_valor, bonif_selec_modo
+                             FROM campanhas WHERE COALESCE(ativo,1) = 1")->fetchAll();
+    } catch (PDOException $e) {
+        $rows = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id,
+                                    quantidade, desconto, tipo, valor_alvo, bonif_modo, bonif_limite_tipo, bonif_limite_valor
+                             FROM campanhas")->fetchAll();
+    }
     $conds = [];
     try {
-        $conds = db()->query("SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade
+        $conds = db()->query("SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade, criterio_modo, valor_min,
+                                     cond_linha, cond_grupo, cond_subgrupo, cond_produto_id
                               FROM campanha_condicoes")->fetchAll();
-    } catch (PDOException $e) { $conds = []; }
+    } catch (PDOException $e) {
+        try {
+            $conds = db()->query("SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade, criterio_modo, valor_min
+                                  FROM campanha_condicoes")->fetchAll();
+        } catch (PDOException $e2) {
+            try { $conds = db()->query("SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade FROM campanha_condicoes")->fetchAll(); }
+            catch (PDOException $e3) { $conds = []; }
+        }
+    }
 
     $g = [];
     foreach ($rows as $r) $g[$r['codigo_campanha']]['rows'][] = $r;
@@ -499,35 +541,64 @@ function campanhasAgrupadas(): array {
 }
 
 /**
+ * Alvos onde o desconto da campanha incide. Usa os alvos explícitos de
+ * campanha_desconto_alvo se houver; senão, devolve os grupos do gatilho.
+ * @param array $gruposAlvo  fallback ['tipo','valor']
+ * @return array  [['tipo','valor'], ...]  (formato consumido por itemBateGruposAlvo)
+ */
+function alvosDescontoCampanha(string $codigo, array $gruposAlvo): array {
+    try {
+        $st = db()->prepare("SELECT alvo_tipo, alvo_valor FROM campanha_desconto_alvo WHERE codigo_campanha = ?");
+        $st->execute([$codigo]);
+        $alvos = array_map(fn($a) => ['tipo' => $a['alvo_tipo'], 'valor' => trim($a['alvo_valor'])], $st->fetchAll());
+        if ($alvos) return $alvos;
+    } catch (PDOException $e) { /* tabela ainda não existe */ }
+    return $gruposAlvo;
+}
+
+/**
  * Constrói o contexto de avaliação de campanhas a partir dos itens de uma venda.
  * Cada item: ['produto_id','qtd','linha','grupo','subgrupo','preco'(unit, opcional)].
  */
 function ctxCampanha(array $itensVenda, int $canalVendaId): array {
     $totL = $totG = $totS = $totProd = []; $valorTotal = 0.0;
+    $valL = $valG = $valS = $valProd = [];
+    $itens = [];
     foreach ($itensVenda as $it) {
         $q = (int)($it['qtd'] ?? 0); if ($q <= 0) continue;
+        $preco = (float)($it['preco'] ?? 0);
+        $val   = $q * $preco;
         $pid = (int)($it['produto_id'] ?? 0);
-        if ($pid) $totProd[$pid] = ($totProd[$pid] ?? 0) + $q;
-        $l = trim($it['linha']    ?? ''); if ($l) $totL[$l] = ($totL[$l] ?? 0) + $q;
-        $g = trim($it['grupo']    ?? ''); if ($g) $totG[$g] = ($totG[$g] ?? 0) + $q;
-        $s = trim($it['subgrupo'] ?? ''); if ($s) $totS[$s] = ($totS[$s] ?? 0) + $q;
-        $valorTotal += $q * (float)($it['preco'] ?? 0);
+        $l = trim($it['linha'] ?? ''); $g = trim($it['grupo'] ?? ''); $s = trim($it['subgrupo'] ?? '');
+        if ($pid) { $totProd[$pid] = ($totProd[$pid] ?? 0) + $q; $valProd[$pid] = ($valProd[$pid] ?? 0) + $val; }
+        if ($l) { $totL[$l] = ($totL[$l] ?? 0) + $q; $valL[$l] = ($valL[$l] ?? 0) + $val; }
+        if ($g) { $totG[$g] = ($totG[$g] ?? 0) + $q; $valG[$g] = ($valG[$g] ?? 0) + $val; }
+        if ($s) { $totS[$s] = ($totS[$s] ?? 0) + $q; $valS[$s] = ($valS[$s] ?? 0) + $val; }
+        $valorTotal += $val;
+        // item normalizado para avaliar condições compostas (linha E grupo E ...)
+        $itens[] = ['id' => $pid, 'qtd' => $q, 'linha' => $l, 'grupo' => $g, 'subgrupo' => $s, 'valor' => $val];
     }
     return [
         'totaisLinha'    => $totL,
         'totaisGrupo'    => $totG,
         'totaisSubgrupo' => $totS,
         'qtdPorProduto'  => $totProd,
+        'valoresLinha'    => $valL,
+        'valoresGrupo'    => $valG,
+        'valoresSubgrupo' => $valS,
+        'valorPorProduto' => $valProd,
         'valorTotal'     => $valorTotal,
+        'itens'          => $itens,
         'canalVendaId'   => $canalVendaId,
     ];
 }
 
 /**
  * Avalia o gatilho de UMA campanha contra o contexto da venda.
- * Novo modelo (tem condições): TODAS as condições de quantidade precisam ser
- * atingidas (E); OU o valor-alvo sozinho aciona a campanha. Modelo legado
- * (sem condições): produtos somados / categoria, como historicamente.
+ * Novo modelo (tem condições): TODAS as condições precisam ser atingidas (E).
+ * Cada condição pode exigir uma quantidade mínima OU um valor mínimo (somado
+ * dentro da própria categoria/produto da condição). Modelo legado (sem
+ * condições): produtos somados / categoria, como historicamente.
  *
  * @return array ['acionada'=>bool, 'mult'=>int, 'gruposAlvo'=>[['tipo','valor'],...]]
  */
@@ -537,28 +608,35 @@ function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
     $canal = (int)($rows[0]['canal_venda_id'] ?? 0);
     if ($canal && $canal !== (int)($ctx['canalVendaId'] ?? 0)) return $vazio;
 
-    // ---- Novo modelo: condições combinadas (E) + valor-alvo (OU) ----
+    // ---- Novo modelo: condições combinadas (E); cada condição é um filtro
+    //      composto (linha E grupo E subgrupo E produto) com mínimo por qtd OU valor ----
     if ($conds) {
+        $itens = $ctx['itens'] ?? [];
         $gruposAlvo = [];
         $allMet = true;
         $minMult = PHP_INT_MAX;
         foreach ($conds as $c) {
-            $tipo = $c['criterio_tipo']; $val = trim($c['criterio_valor']);
-            $gruposAlvo[] = ['tipo' => $tipo, 'valor' => $val];
-            $tot = 0;
-            if ($tipo === 'linha')    $tot = $ctx['totaisLinha'][$val]    ?? 0;
-            if ($tipo === 'grupo')    $tot = $ctx['totaisGrupo'][$val]    ?? 0;
-            if ($tipo === 'subgrupo') $tot = $ctx['totaisSubgrupo'][$val] ?? 0;
-            $q = (int)$c['quantidade'];
-            if ($q > 0 && $tot >= $q) $minMult = min($minMult, intdiv($tot, $q));
-            else $allMet = false;
+            $f = condFiltro($c);
+            if (!filtroValido($f)) { $allMet = false; continue; }
+            $gruposAlvo[] = $f;
+            // Soma qtd/valor dos itens que satisfazem TODO o filtro da condição
+            $totQ = 0; $totV = 0.0;
+            foreach ($itens as $it) {
+                if (!itemMatchFiltro($it, $f)) continue;
+                $totQ += (int)$it['qtd']; $totV += (float)$it['valor'];
+            }
+            if (($c['criterio_modo'] ?? 'quantidade') === 'valor') {
+                $alvoMin = (float)($c['valor_min'] ?? 0);
+                if ($alvoMin > 0 && $totV >= $alvoMin) $minMult = min($minMult, (int)floor($totV / $alvoMin));
+                else $allMet = false;
+            } else {
+                $q = (int)$c['quantidade'];
+                if ($q > 0 && $totQ >= $q) $minMult = min($minMult, intdiv($totQ, $q));
+                else $allMet = false;
+            }
         }
-        if ($allMet && $minMult >= 1) {
+        if ($allMet && $gruposAlvo && $minMult >= 1) {
             return ['acionada' => true, 'mult' => $minMult, 'gruposAlvo' => $gruposAlvo];
-        }
-        $valorAlvo = (float)($rows[0]['valor_alvo'] ?? 0);
-        if ($valorAlvo > 0 && (float)($ctx['valorTotal'] ?? 0) >= $valorAlvo) {
-            return ['acionada' => true, 'mult' => max(1, (int)floor($ctx['valorTotal'] / $valorAlvo)), 'gruposAlvo' => $gruposAlvo];
         }
         return ['acionada' => false, 'mult' => 0, 'gruposAlvo' => $gruposAlvo];
     }
@@ -589,17 +667,129 @@ function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
     return $vazio;
 }
 
-/** Indica se um produto (linha/grupo/subgrupo/id) bate em algum critério-alvo. */
+/**
+ * Filtro composto de uma condição: ['linha','grupo','subgrupo','produto'] (cada um
+ * opcional). Usa as colunas cond_* novas; cai para criterio_tipo/criterio_valor (legado).
+ */
+function condFiltro(array $c): array {
+    $f = [
+        'linha'    => isset($c['cond_linha'])    && trim($c['cond_linha'])    !== '' ? trim($c['cond_linha'])    : null,
+        'grupo'    => isset($c['cond_grupo'])    && trim($c['cond_grupo'])    !== '' ? trim($c['cond_grupo'])    : null,
+        'subgrupo' => isset($c['cond_subgrupo']) && trim($c['cond_subgrupo']) !== '' ? trim($c['cond_subgrupo']) : null,
+        'produto'  => !empty($c['cond_produto_id']) ? (int)$c['cond_produto_id'] : null,
+    ];
+    if (!filtroValido($f)) {  // legado (sem colunas cond_*): usa criterio único
+        $tipo = $c['criterio_tipo'] ?? ''; $val = trim($c['criterio_valor'] ?? '');
+        if ($tipo === 'produto') $f['produto'] = (int)$val;
+        elseif (in_array($tipo, ['linha', 'grupo', 'subgrupo'], true)) $f[$tipo] = $val;
+    }
+    return $f;
+}
+
+/** Normaliza um alvo {tipo,valor} (legado) OU filtro composto para o formato de filtro. */
+function alvoParaFiltro(array $a): array {
+    if (isset($a['tipo'])) {
+        $f = ['linha' => null, 'grupo' => null, 'subgrupo' => null, 'produto' => null];
+        if ($a['tipo'] === 'produto') $f['produto'] = (int)$a['valor'];
+        elseif (in_array($a['tipo'], ['linha', 'grupo', 'subgrupo'], true)) $f[$a['tipo']] = trim($a['valor']);
+        return $f;
+    }
+    return [
+        'linha'    => isset($a['linha'])    && $a['linha']    !== '' ? trim($a['linha'])    : null,
+        'grupo'    => isset($a['grupo'])    && $a['grupo']    !== '' ? trim($a['grupo'])    : null,
+        'subgrupo' => isset($a['subgrupo']) && $a['subgrupo'] !== '' ? trim($a['subgrupo']) : null,
+        'produto'  => !empty($a['produto']) ? (int)$a['produto'] : null,
+    ];
+}
+
+/** Um filtro é válido se ao menos um campo está definido. */
+function filtroValido(array $f): bool {
+    return $f['linha'] !== null || $f['grupo'] !== null || $f['subgrupo'] !== null || $f['produto'] !== null;
+}
+
+/** Item satisfaz TODOS os campos definidos do filtro (E). O id do produto pode vir como 'id' ou 'produto_id'. */
+function itemMatchFiltro(array $prod, array $f): bool {
+    if (!filtroValido($f)) return false;
+    $pid = (int)($prod['produto_id'] ?? $prod['id'] ?? 0);
+    if ($f['produto']  !== null && $pid !== $f['produto']) return false;
+    if ($f['linha']    !== null && trim($prod['linha']    ?? '') !== $f['linha'])    return false;
+    if ($f['grupo']    !== null && trim($prod['grupo']    ?? '') !== $f['grupo'])    return false;
+    if ($f['subgrupo'] !== null && trim($prod['subgrupo'] ?? '') !== $f['subgrupo']) return false;
+    return true;
+}
+
+/** Indica se um produto bate em algum alvo (filtro composto ou critério legado). */
 function itemBateGruposAlvo(array $prod, array $gruposAlvo): bool {
     foreach ($gruposAlvo as $ga) {
-        switch ($ga['tipo']) {
-            case 'linha':    if (trim($prod['linha']    ?? '') === $ga['valor']) return true; break;
-            case 'grupo':    if (trim($prod['grupo']    ?? '') === $ga['valor']) return true; break;
-            case 'subgrupo': if (trim($prod['subgrupo'] ?? '') === $ga['valor']) return true; break;
-            case 'produto':  if ((int)($prod['id'] ?? 0) === (int)$ga['valor'])  return true; break;
-        }
+        if (itemMatchFiltro($prod, alvoParaFiltro($ga))) return true;
     }
     return false;
+}
+
+/** Rótulo legível de um filtro composto (linha · grupo · subgrupo · produto). */
+function rotuloFiltro(array $f, array $prodNome = []): string {
+    $parts = [];
+    if (!empty($f['linha']))    $parts[] = 'Linha '    . $f['linha'];
+    if (!empty($f['grupo']))    $parts[] = 'Grupo '    . $f['grupo'];
+    if (!empty($f['subgrupo'])) $parts[] = 'Subgrupo ' . $f['subgrupo'];
+    if (!empty($f['produto']))  $parts[] = 'Produto '  . ($prodNome[(int)$f['produto']] ?? ('#' . $f['produto']));
+    return implode(' · ', $parts);
+}
+
+/**
+ * Resumo das campanhas ATINGIDAS por um contexto de venda (para exibição em
+ * telas de pedido — cliente e admin). Reúne desconto/bônus, alvos e detalhe do
+ * gatilho de cada campanha acionada.
+ * @return array [['codigo','tipo','desconto','bonus'=>[],'alvo','detalhe','mult'], ...]
+ */
+function campanhasAtingidasResumo(array $ctxCamp): array {
+    $prodNome = [];
+    foreach (db()->query('SELECT id, codigo_produto, descricao_pt FROM produtos')->fetchAll() as $p) {
+        $prodNome[(int)$p['id']] = $p['descricao_pt'] ?: $p['codigo_produto'];
+    }
+    $bonifMap = [];
+    foreach (db()->query("SELECT cb.codigo_campanha, cb.quantidade, p.descricao_pt, p.codigo_produto
+        FROM campanha_bonificacao cb JOIN produtos p ON p.id = cb.produto_id ORDER BY cb.id")->fetchAll() as $b) {
+        $bonifMap[$b['codigo_campanha']][] = (int)$b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']);
+    }
+
+    $itens = $ctxCamp['itens'] ?? [];
+    $out = [];
+    foreach (campanhasAgrupadas() as $code => $g) {
+        $rows = $g['rows']; $conds = $g['conds'];
+        $res  = avaliarCampanhaTrigger($rows, $conds, $ctxCamp);
+        if (!$res['acionada']) continue;
+
+        $alvos = [];
+        foreach ($res['gruposAlvo'] as $ga) $alvos[] = rotuloFiltro(alvoParaFiltro($ga), $prodNome);
+
+        if ($conds) {
+            $partes = [];
+            foreach ($conds as $c) {
+                $f = condFiltro($c);
+                $tq = 0; $tv = 0.0;
+                foreach ($itens as $it) { if (itemMatchFiltro($it, $f)) { $tq += (int)$it['qtd']; $tv += (float)$it['valor']; } }
+                $partes[] = ($c['criterio_modo'] ?? 'quantidade') === 'valor'
+                    ? rotuloFiltro($f, $prodNome) . ': ' . moedaBR($tv) . '/' . moedaBR((float)($c['valor_min'] ?? 0))
+                    : rotuloFiltro($f, $prodNome) . ': ' . $tq . '/' . (int)$c['quantidade'] . ' un.';
+            }
+            $detalhe = implode(' · E · ', $partes);
+        } else {
+            $min = (int)($rows[0]['quantidade'] ?? 0);
+            $detalhe = 'atingido ' . ($res['mult'] * $min) . ' un. (mín. ' . $min . ')';
+        }
+
+        $out[] = [
+            'codigo'   => $code,
+            'tipo'     => $rows[0]['tipo'] ?? 'desconto',
+            'desconto' => (float)$rows[0]['desconto'],
+            'bonus'    => $bonifMap[$code] ?? [],
+            'alvo'     => implode(', ', array_unique($alvos)),
+            'detalhe'  => $detalhe,
+            'mult'     => (int)$res['mult'],
+        ];
+    }
+    return $out;
 }
 
 /**
@@ -609,12 +799,15 @@ function itemBateGruposAlvo(array $prod, array $gruposAlvo): bool {
  */
 function avaliarCampanhasDescontoAvancadas(array $ctx): array {
     $out = [];
-    foreach (campanhasAgrupadas() as $g) {
+    foreach (campanhasAgrupadas() as $code => $g) {
         if (empty($g['conds'])) continue;                                  // só novo modelo
         if (($g['rows'][0]['tipo'] ?? 'desconto') !== 'desconto') continue;
         $r = avaliarCampanhaTrigger($g['rows'], $g['conds'], $ctx);
         if (!$r['acionada']) continue;
-        $out[] = ['desconto' => (float)$g['rows'][0]['desconto'], 'gruposAlvo' => $r['gruposAlvo']];
+        $out[] = [
+            'desconto'   => (float)$g['rows'][0]['desconto'],
+            'gruposAlvo' => alvosDescontoCampanha((string)$code, $r['gruposAlvo']),
+        ];
     }
     return $out;
 }
@@ -689,6 +882,59 @@ function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $sup
     return criarPedidoBonificado($clienteId, $supervisor, $dataPedido, $bonusAcc, $obs);
 }
 
+/** Formata uma linha de produto para o pool de bonificação selecionável. */
+function _bonifProdRow(array $p): array {
+    return [
+        'id'        => (int)$p['id'],
+        'codigo'    => $p['codigo_produto'],
+        'descricao' => $p['descricao_pt'],
+        'preco'     => (float)$p['preco'],
+        'multiplo'  => max(1.0, (float)($p['multiplo'] ?? 1)),
+    ];
+}
+
+/** Pool de bônus selecionável pela lista fixa (campanha_bonificacao). */
+function poolProdutosBonifLista(string $codigo): array {
+    $lp = db()->prepare("SELECT p.id, p.codigo_produto, p.descricao_pt, p.multiplo,
+                                COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
+                         FROM campanha_bonificacao cb
+                         JOIN produtos p ON p.id = cb.produto_id
+                         LEFT JOIN tabela_precos t ON t.produto_id = p.id
+                         WHERE cb.codigo_campanha = ? AND p.status = 'ativo' ORDER BY p.descricao_pt");
+    $lp->execute([$codigo]);
+    return array_map('_bonifProdRow', $lp->fetchAll());
+}
+
+/** Pool de bônus selecionável por categoria/produto (campanha_bonif_pool). */
+function poolProdutosBonifCategoria(string $codigo): array {
+    try {
+        $ap = db()->prepare("SELECT alvo_tipo, alvo_valor FROM campanha_bonif_pool WHERE codigo_campanha = ?");
+        $ap->execute([$codigo]);
+        $alvos = $ap->fetchAll();
+    } catch (PDOException $e) { return []; }
+    if (!$alvos) return [];
+
+    $cond = []; $params = [];
+    foreach ($alvos as $a) {
+        $val = trim($a['alvo_valor']);
+        switch ($a['alvo_tipo']) {
+            case 'linha':    $cond[] = 'p.linha = ?';    $params[] = $val; break;
+            case 'grupo':    $cond[] = 'p.grupo = ?';    $params[] = $val; break;
+            case 'subgrupo': $cond[] = 'p.subgrupo = ?'; $params[] = $val; break;
+            case 'produto':  $cond[] = 'p.id = ?';       $params[] = (int)$val; break;
+        }
+    }
+    if (!$cond) return [];
+    $sql = "SELECT p.id, p.codigo_produto, p.descricao_pt, p.multiplo,
+                   COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
+            FROM produtos p
+            LEFT JOIN tabela_precos t ON t.produto_id = p.id
+            WHERE p.status = 'ativo' AND (" . implode(' OR ', $cond) . ") ORDER BY p.descricao_pt";
+    $st = db()->prepare($sql);
+    $st->execute($params);
+    return array_map('_bonifProdRow', $st->fetchAll());
+}
+
 /**
  * Detecta campanhas de bonificação SELECIONÁVEL acionadas pela venda. Não cria
  * pedido: retorna a lista de campanhas para o cliente escolher os bônus no
@@ -707,20 +953,12 @@ function detectarBonificacaoSelecionavel(array $itensVenda, int $canalVendaId): 
         if (!$r['acionada']) continue;
         $mult = max(1, (int)$r['mult']);
 
-        $lp = db()->prepare("SELECT cb.produto_id, p.codigo_produto, p.descricao_pt, p.multiplo,
-                                    COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
-                             FROM campanha_bonificacao cb
-                             JOIN produtos p ON p.id = cb.produto_id
-                             LEFT JOIN tabela_precos t ON t.produto_id = p.id
-                             WHERE cb.codigo_campanha = ? AND p.status = 'ativo' ORDER BY p.descricao_pt");
-        $lp->execute([$code]);
-        $produtos = array_map(fn($p) => [
-            'id'        => (int)$p['produto_id'],
-            'codigo'    => $p['codigo_produto'],
-            'descricao' => $p['descricao_pt'],
-            'preco'     => (float)$p['preco'],
-            'multiplo'  => max(1.0, (float)($p['multiplo'] ?? 1)),
-        ], $lp->fetchAll());
+        // Pool de produtos elegíveis: por categoria (campanha_bonif_pool) ou
+        // pela lista fixa de produtos (campanha_bonificacao).
+        $selModo = ($g['rows'][0]['bonif_selec_modo'] ?? 'produtos') === 'categoria' ? 'categoria' : 'produtos';
+        $produtos = $selModo === 'categoria'
+            ? poolProdutosBonifCategoria((string)$code)
+            : poolProdutosBonifLista((string)$code);
         if (!$produtos) continue;
 
         $limiteTipo = ($g['rows'][0]['bonif_limite_tipo'] ?? 'quantidade') === 'valor' ? 'valor' : 'quantidade';

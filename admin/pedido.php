@@ -50,20 +50,18 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
     $stmt->execute([$lote_id]);
     $items = $stmt->fetchAll();
 
-    // Contexto p/ campanhas de desconto do novo modelo (condições E / valor-alvo OU)
-    $totL = $totG = $totS = []; $valorTotalLote = 0.0;
+    // Contexto p/ campanhas de desconto do novo modelo (condições E, qtd OU valor por categoria)
+    $itensVenda = [];
     foreach ($items as $it) {
         if ($it['tipo_venda'] === 'bonificacao') continue;
-        $q = (int)$it['quantidade_total'];
-        $l = trim($it['linha'] ?? ''); if ($l) $totL[$l] = ($totL[$l] ?? 0) + $q;
-        $g = trim($it['grupo'] ?? ''); if ($g) $totG[$g] = ($totG[$g] ?? 0) + $q;
-        $s = trim($it['subgrupo'] ?? ''); if ($s) $totS[$s] = ($totS[$s] ?? 0) + $q;
-        $valorTotalLote += $q * (float)($it['preco'] ?? 0);
+        $itensVenda[] = [
+            'produto_id' => (int)$it['produto_id'],
+            'qtd'        => (int)$it['quantidade_total'],
+            'linha'      => $it['linha'], 'grupo' => $it['grupo'], 'subgrupo' => $it['subgrupo'],
+            'preco'      => (float)($it['preco'] ?? 0),
+        ];
     }
-    $descAvancados = avaliarCampanhasDescontoAvancadas([
-        'totaisLinha' => $totL, 'totaisGrupo' => $totG, 'totaisSubgrupo' => $totS,
-        'qtdPorProduto' => [], 'valorTotal' => $valorTotalLote, 'canalVendaId' => $canalVendaId,
-    ]);
+    $descAvancados = avaliarCampanhasDescontoAvancadas(ctxCampanha($itensVenda, $canalVendaId));
 
     foreach ($items as $item) {
         $bestDisc = 0;
@@ -73,6 +71,7 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
         foreach ($camps as $camp) {
             // Filtro de canal: ignora campanha restrita a canal diferente do cliente
             if ($camp['canal_venda_id'] && (int)$camp['canal_venda_id'] !== $canalVendaId) continue;
+            if ((int)$camp['quantidade'] <= 0) continue; // novo modelo (condições) — tratado pelo bloco avançado
             if ($camp['produto_id'] !== null) {
                 if ((int)$camp['produto_id'] !== (int)$item['produto_id']) continue;
                 // Soma as quantidades de todos os itens do lote cujos produtos pertencem à campanha
@@ -199,6 +198,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $camps_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas')->fetchAll();
                 $campDesc  = 0;
                 foreach ($camps_all as $camp) {
+                    if ((int)$camp['quantidade'] <= 0) continue; // novo modelo (condições) — tratado pelo bloco avançado
                     if ((int)$camp['quantidade'] > 0 && $qtd < (int)$camp['quantidade']) continue;
                     if ($camp['produto_id'] && (int)$camp['produto_id'] !== $produto_id) continue;
                     if (!$camp['produto_id']) {
@@ -210,11 +210,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ((float)$camp['desconto'] > $campDesc) $campDesc = (float)$camp['desconto'];
                 }
                 // Campanhas de desconto do novo modelo (item único, sem lote)
-                foreach (avaliarCampanhasDescontoAvancadas([
-                    'totaisLinha' => [trim($prod['linha'] ?? '') => $qtd], 'totaisGrupo' => [trim($prod['grupo'] ?? '') => $qtd],
-                    'totaisSubgrupo' => [trim($prod['subgrupo'] ?? '') => $qtd], 'qtdPorProduto' => [],
-                    'valorTotal' => $qtd * (float)$prod['preco'], 'canalVendaId' => (int)($ped['canal_venda_id'] ?? 0),
-                ]) as $ac) {
+                foreach (avaliarCampanhasDescontoAvancadas(ctxCampanha([[
+                    'produto_id' => $produto_id, 'qtd' => $qtd,
+                    'linha' => $prod['linha'] ?? '', 'grupo' => $prod['grupo'] ?? '', 'subgrupo' => $prod['subgrupo'] ?? '',
+                    'preco' => (float)$prod['preco'],
+                ]], (int)($ped['canal_venda_id'] ?? 0))) as $ac) {
                     if ($ac['desconto'] > $campDesc && itemBateGruposAlvo($prod, $ac['gruposAlvo'])) $campDesc = $ac['desconto'];
                 }
                 if ($campDesc > 0) $valor_total *= (1 - $campDesc / 100);
@@ -286,6 +286,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $camps_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas')->fetchAll();
                 $campDesc  = 0;
                 foreach ($camps_all as $camp) {
+                    if ((int)$camp['quantidade'] <= 0) continue; // novo modelo (condições) — tratado pelo bloco avançado
                     if ((int)$camp['quantidade'] > 0 && $novaQtd < (int)$camp['quantidade']) continue;
                     if ($camp['produto_id'] && (int)$camp['produto_id'] !== (int)$ped['produto_id']) continue;
                     if (!$camp['produto_id']) {
@@ -297,11 +298,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ((float)$camp['desconto'] > $campDesc) $campDesc = (float)$camp['desconto'];
                 }
                 // Campanhas de desconto do novo modelo (item único, sem lote)
-                foreach (avaliarCampanhasDescontoAvancadas([
-                    'totaisLinha' => [trim($prod['linha'] ?? '') => $novaQtd], 'totaisGrupo' => [trim($prod['grupo'] ?? '') => $novaQtd],
-                    'totaisSubgrupo' => [trim($prod['subgrupo'] ?? '') => $novaQtd], 'qtdPorProduto' => [],
-                    'valorTotal' => $novaQtd * (float)$prod['preco'], 'canalVendaId' => (int)($ped['canal_venda_id'] ?? 0),
-                ]) as $ac) {
+                foreach (avaliarCampanhasDescontoAvancadas(ctxCampanha([[
+                    'produto_id' => (int)$ped['produto_id'], 'qtd' => $novaQtd,
+                    'linha' => $prod['linha'] ?? '', 'grupo' => $prod['grupo'] ?? '', 'subgrupo' => $prod['subgrupo'] ?? '',
+                    'preco' => (float)$prod['preco'],
+                ]], (int)($ped['canal_venda_id'] ?? 0))) as $ac) {
                     if ($ac['desconto'] > $campDesc && itemBateGruposAlvo($prod, $ac['gruposAlvo'])) $campDesc = $ac['desconto'];
                 }
                 $valor = $ped['tipo_venda'] === 'bonificacao' ? 0.0
@@ -488,59 +489,7 @@ foreach ($ci->fetchAll() as $it) {
     ];
 }
 $ctxCamp = ctxCampanha($itensCamp, $pedidoCanalId);
-
-$bonifMap = [];
-foreach (db()->query("SELECT cb.codigo_campanha, cb.quantidade, p.descricao_pt, p.codigo_produto
-    FROM campanha_bonificacao cb JOIN produtos p ON p.id = cb.produto_id ORDER BY cb.id")->fetchAll() as $b) {
-    $bonifMap[$b['codigo_campanha']][] = (int)$b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']);
-}
-
-$rotuloCriterio = fn($t) => ['linha' => 'Linha', 'grupo' => 'Grupo', 'subgrupo' => 'Subgrupo', 'produto' => 'Produto'][$t] ?? ucfirst($t);
-
-$campanhasAtingidas = [];
-foreach (campanhasAgrupadas() as $code => $g) {
-    $rows  = $g['rows'];
-    $conds = $g['conds'];
-    $res   = avaliarCampanhaTrigger($rows, $conds, $ctxCamp);
-    if (!$res['acionada']) continue;
-
-    // Alvos legíveis a partir do que o helper considerou
-    $alvos = [];
-    foreach ($res['gruposAlvo'] as $ga) {
-        $alvos[] = $ga['tipo'] === 'produto'
-            ? 'Produto'
-            : $rotuloCriterio($ga['tipo']) . ' ' . $ga['valor'];
-    }
-
-    // Detalhe do gatilho (quantidade por condição ou valor-alvo)
-    if ($conds) {
-        $partes = []; $todasQtd = true;
-        foreach ($conds as $c) {
-            $tipo = $c['criterio_tipo']; $val = trim($c['criterio_valor']);
-            $tot  = ['linha' => $ctxCamp['totaisLinha'], 'grupo' => $ctxCamp['totaisGrupo'], 'subgrupo' => $ctxCamp['totaisSubgrupo']][$tipo][$val] ?? 0;
-            $qReq = (int)$c['quantidade'];
-            $partes[] = $rotuloCriterio($tipo) . ' ' . $val . ': ' . (int)$tot . '/' . $qReq . ' un.';
-            if ($qReq <= 0 || $tot < $qReq) $todasQtd = false;
-        }
-        $valorAlvo = (float)($rows[0]['valor_alvo'] ?? 0);
-        $detalhe = ($todasQtd || $valorAlvo <= 0)
-            ? implode(' · ', $partes)
-            : 'valor ' . moedaBR($ctxCamp['valorTotal']) . ' (alvo ' . moedaBR($valorAlvo) . ')';
-    } else {
-        $min = (int)($rows[0]['quantidade'] ?? 0);
-        $detalhe = 'atingido ' . ($res['mult'] * $min) . ' un. (mín. ' . $min . ')';
-    }
-
-    $campanhasAtingidas[] = [
-        'codigo'   => $code,
-        'tipo'     => $rows[0]['tipo'] ?? 'desconto',
-        'desconto' => (float)$rows[0]['desconto'],
-        'bonus'    => $bonifMap[$code] ?? [],
-        'alvo'     => implode(', ', array_unique($alvos)),
-        'detalhe'  => $detalhe,
-        'mult'     => (int)$res['mult'],
-    ];
-}
+$campanhasAtingidas = campanhasAtingidasResumo($ctxCamp);
 
 $creditoUsadoAdmin = 0.0;
 if ($pedido['lote_id']) {

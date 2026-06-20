@@ -73,6 +73,29 @@ $stmtItens->execute([$loteId ?: $pedidoId]);
 $itensPedido = $stmtItens->fetchAll();
 $valorTotalGeral = array_sum(array_column($itensPedido, 'valor_total'));
 
+// Campanhas atingidas neste pedido (informativo)
+$canalCli = db()->prepare('SELECT canal_venda_id FROM clientes WHERE id = ?');
+$canalCli->execute([$u['id']]);
+$pedidoCanalId = (int)($canalCli->fetchColumn() ?: 0);
+$ciCamp = db()->prepare("SELECT p.produto_id, p.quantidade_total,
+                                COALESCE($colPreco, pr.vendas_varejo) AS preco_unit,
+                                pr.linha, pr.grupo, pr.subgrupo
+                         FROM pedidos p
+                         LEFT JOIN produtos pr ON pr.id = p.produto_id
+                         LEFT JOIN tabela_precos t ON t.produto_id = pr.id
+                         WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?'));
+$ciCamp->execute([$loteId ?: $pedidoId]);
+$itensCamp = [];
+foreach ($ciCamp->fetchAll() as $it) {
+    $itensCamp[] = [
+        'produto_id' => (int)$it['produto_id'],
+        'qtd'        => (int)$it['quantidade_total'],
+        'linha'      => $it['linha'], 'grupo' => $it['grupo'], 'subgrupo' => $it['subgrupo'],
+        'preco'      => (float)$it['preco_unit'],
+    ];
+}
+$campanhasAtingidas = campanhasAtingidasResumo(ctxCampanha($itensCamp, $pedidoCanalId));
+
 // Crédito utilizado no pedido
 $creditoUsado = 0.0;
 if ($pedido['lote_id']) {
@@ -186,6 +209,40 @@ moedaCorrente($pedido['moeda'] ?? 'BRL');
                 </div>
             </div>
         </div>
+
+        <!-- Campanhas atingidas -->
+        <?php if ($campanhasAtingidas): ?>
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white py-3">
+                <h5 class="mb-0"><i class="bi bi-megaphone me-2 text-primary"></i><?= et('Campanhas Atingidas') ?></h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2">
+                    <?php foreach ($campanhasAtingidas as $ca):
+                        $ehB = $ca['tipo'] === 'bonificacao';
+                        $pct = rtrim(rtrim(number_format($ca['desconto'], 2, ',', '.'), '0'), ',');
+                    ?>
+                    <div class="border rounded-3 px-3 py-2" style="background:#f8fffe">
+                        <div class="d-flex align-items-center gap-2">
+                            <?php if ($ehB): ?>
+                            <span class="badge bg-warning text-dark"><i class="bi bi-gift"></i> <?= et('Bonificação') ?></span>
+                            <?php else: ?>
+                            <span class="badge bg-success">−<?= $pct ?>%</span>
+                            <?php endif; ?>
+                            <span class="fw-semibold small"><?= e($ca['codigo']) ?></span>
+                        </div>
+                        <div class="text-muted" style="font-size:.76rem">
+                            <?php if ($ca['alvo']): ?><?= e($ca['alvo']) ?> &middot; <?php endif; ?><?= e($ca['detalhe']) ?>
+                            <?php if ($ehB && $ca['bonus']): ?>
+                            <br><span class="text-warning fw-semibold"><i class="bi bi-gift-fill me-1"></i><?= et('Brinde') ?> ×<?= (int)$ca['mult'] ?>: <?= e(implode(', ', $ca['bonus'])) ?></span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
 
         <!-- Itens do pedido -->
         <div class="card border-0 shadow-sm mb-4">
