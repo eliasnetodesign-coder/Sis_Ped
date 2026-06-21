@@ -165,7 +165,7 @@ moedaCorrente($pedido['moeda'] ?? 'BRL');
                     <div class="col-sm-4">
                         <div class="text-muted small"><?= et('Tipo de Venda') ?></div>
                         <div class="fw-semibold">
-                            <span class="badge bg-<?= $pedido['tipo_venda'] === 'venda' ? 'primary' : 'info' ?> fs-6">
+                            <span class="badge bg-<?= $pedido['tipo_venda'] === 'venda' ? 'primary' : 'success' ?> fs-6">
                                 <?= et(ucfirst($pedido['tipo_venda'])) ?>
                             </span>
                         </div>

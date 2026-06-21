@@ -345,8 +345,8 @@ require_once LAYOUT_PATH . '/header.php';
             <span class="badge bg-warning text-dark fs-6 fw-bold px-2"><i class="bi bi-gift"></i></span>
             <div style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
-                <div class="text-muted" style="font-size:.76rem"><?= e($c['gatilho']) ?></div>
-                <div class="text-warning fw-semibold" style="font-size:.74rem">
+                <div style="font-size:.76rem;color:var(--brand-dark)"><?= e($c['gatilho']) ?></div>
+                <div class="fw-semibold" style="font-size:.74rem;color:#c8880a">
                     <?php if ($ehSelec): ?>
                     <i class="bi bi-hand-index me-1"></i>Cliente escolhe (até <?= e($limiteTxt) ?>): <?= e(implode(', ', $bonifNomesByCode[$c['codigo_campanha']] ?? ['—'])) ?>
                     <?php else: ?>
@@ -358,7 +358,7 @@ require_once LAYOUT_PATH . '/header.php';
             <span class="badge bg-success fs-6 fw-bold px-2">−<?= $pct ?>%</span>
             <div style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
-                <div class="text-muted" style="font-size:.76rem"><?= e($c['gatilho']) ?></div>
+                <div style="font-size:.76rem;color:var(--brand-dark)"><?= e($c['gatilho']) ?></div>
             </div>
             <?php endif; ?>
         </div>
