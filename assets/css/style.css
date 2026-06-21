@@ -442,3 +442,101 @@ body { overflow-x: clip; }
     .fs-4      { font-size: 1.1rem !important; }
     h4         { font-size: 1.1rem !important; }
 }
+
+/* ── Dark mode (área admin) ───────────────────────────
+   Usa o data-bs-theme="dark" do Bootstrap 5.3 (tematiza tabelas, forms,
+   modais, dropdowns, texto) e complementa as superfícies fixas do sistema. */
+[data-bs-theme="dark"] {
+    --gray-bg:     #14171b;
+    --gray-border: #2b313a;
+    --dk-surface:  #1e242b;
+    --dk-surface2: #262d35;
+    --dk-text:     #e4e7ea;
+    --dk-muted:    #98a2ac;
+}
+[data-bs-theme="dark"] body { background-color: var(--gray-bg); color: var(--dk-text); }
+
+/* Superfícies com utilitários fixos (não tematizados pelo Bootstrap) */
+[data-bs-theme="dark"] .bg-white { background-color: var(--dk-surface) !important; color: var(--dk-text); }
+[data-bs-theme="dark"] .bg-light { background-color: var(--dk-surface2) !important; color: var(--dk-text); }
+[data-bs-theme="dark"] .card     { background-color: var(--dk-surface); border-color: var(--gray-border); color: var(--dk-text); }
+[data-bs-theme="dark"] .sidebar  { background-color: var(--dk-surface) !important; border-color: var(--gray-border) !important; }
+
+/* Tabelas — sobrescreve as variáveis do Bootstrap (as células pintam via --bs-table-bg) */
+[data-bs-theme="dark"] .table {
+    --bs-table-bg: var(--dk-surface);
+    --bs-table-color: var(--dk-text);
+    --bs-table-border-color: var(--gray-border);
+    --bs-table-striped-bg: #232a31;
+    --bs-table-striped-color: var(--dk-text);
+    --bs-table-hover-bg: #2a323a;
+    --bs-table-hover-color: var(--dk-text);
+    color: var(--dk-text);
+}
+[data-bs-theme="dark"] .table-light {
+    --bs-table-bg: var(--dk-surface2);
+    --bs-table-color: var(--dk-text);
+    --bs-table-border-color: var(--gray-border);
+}
+[data-bs-theme="dark"] #step1 .tab-content thead.table-light th {
+    background-color: var(--dk-surface2) !important;
+    box-shadow: inset 0 -1px 0 var(--gray-border);
+}
+
+/* Texto e bordas */
+[data-bs-theme="dark"] .text-muted { color: var(--dk-muted) !important; }
+[data-bs-theme="dark"] .text-dark  { color: var(--dk-text)  !important; }
+[data-bs-theme="dark"] .text-primary { color: #79b894 !important; }
+[data-bs-theme="dark"] .border,
+[data-bs-theme="dark"] .border-top,
+[data-bs-theme="dark"] .border-bottom,
+[data-bs-theme="dark"] .border-start,
+[data-bs-theme="dark"] .border-end { border-color: var(--gray-border) !important; }
+
+/* Form controls, dropdowns, modais e listas */
+[data-bs-theme="dark"] .form-control,
+[data-bs-theme="dark"] .form-select { background-color: var(--dk-surface2); border-color: var(--gray-border); color: var(--dk-text); }
+[data-bs-theme="dark"] .form-control::placeholder { color: #7c8893; }
+[data-bs-theme="dark"] .form-control:focus,
+[data-bs-theme="dark"] .form-select:focus { background-color: var(--dk-surface2); color: var(--dk-text); }
+[data-bs-theme="dark"] .modal-content,
+[data-bs-theme="dark"] .dropdown-menu,
+[data-bs-theme="dark"] .list-group-item { background-color: var(--dk-surface); color: var(--dk-text); }
+[data-bs-theme="dark"] .list-group-item-action:hover { background-color: var(--dk-surface2); }
+
+/* Caixinhas com fundo quase branco definido inline (chips de campanha, etc.) */
+[data-bs-theme="dark"] [style*="f8fffe"],
+[data-bs-theme="dark"] [style*="f8f9fa"] { background: var(--dk-surface2) !important; }
+
+/* Sidebar (offcanvas-md) — força fundo escuro e cores dos links */
+[data-bs-theme="dark"] #sidebarMenu,
+[data-bs-theme="dark"] .sidebar,
+[data-bs-theme="dark"] .offcanvas-md {
+    --bs-offcanvas-bg: var(--dk-surface);
+    background-color: var(--dk-surface) !important;
+    border-color: var(--gray-border) !important;
+}
+[data-bs-theme="dark"] .sidebar .nav-link { color: #c7ccd2; }
+[data-bs-theme="dark"] .sidebar .nav-link:hover { background-color: var(--dk-surface2); color: var(--dk-text); }
+[data-bs-theme="dark"] .sidebar .nav-link.active { background-color: rgba(86,141,102,.20); color: #9ed3b1; }
+
+/* Flyout de submenus (movido para o body no desktop) */
+[data-bs-theme="dark"] .sidebar-flyout-menu,
+[data-bs-theme="dark"] body > .sidebar-flyout-menu,
+[data-bs-theme="dark"] #sidebarMenu .sidebar-flyout-menu.show {
+    background: var(--dk-surface) !important;
+    border-color: var(--gray-border) !important;
+}
+[data-bs-theme="dark"] .sidebar-flyout-title { color: #8b939d; }
+[data-bs-theme="dark"] .sidebar-flyout-menu .nav-link { color: #c7ccd2; }
+[data-bs-theme="dark"] .sidebar-flyout-menu .nav-link:hover { background: var(--dk-surface2); color: var(--dk-text); }
+[data-bs-theme="dark"] .sidebar-flyout-menu .nav-link.active { background: rgba(86,141,102,.22); color: #9ed3b1; }
+
+/* Títulos e textos de baixo contraste no escuro */
+[data-bs-theme="dark"] h1, [data-bs-theme="dark"] h2, [data-bs-theme="dark"] h3,
+[data-bs-theme="dark"] h4, [data-bs-theme="dark"] h5, [data-bs-theme="dark"] h6 { color: var(--dk-text); }
+[data-bs-theme="dark"] .text-secondary { color: #aab2bb !important; }
+[data-bs-theme="dark"] .text-success   { color: #79b894 !important; }
+[data-bs-theme="dark"] .text-info       { color: #7fb6c9 !important; }
+[data-bs-theme="dark"] .text-body       { color: var(--dk-text) !important; }
+[data-bs-theme="dark"] a.text-decoration-none { color: inherit; }

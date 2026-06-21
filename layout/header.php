@@ -17,6 +17,9 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($_pageTitle) ?> — Sis_Ped</title>
+    <?php if ($_usuario && $_usuario['tipo'] !== 'cliente'): ?>
+    <script>(function(){try{if(localStorage.getItem('sisped-theme')==='dark')document.documentElement.setAttribute('data-bs-theme','dark');}catch(e){}})();</script>
+    <?php endif; ?>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
     <link href="<?= ASSETS_URL ?>/css/style.css" rel="stylesheet">
@@ -40,6 +43,12 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
             <i class="bi bi-list fs-3 lh-1"></i>
         </button>
         <div class="ms-auto d-flex align-items-center gap-2 gap-md-3">
+            <?php if ($_usuario['tipo'] !== 'cliente'): ?>
+            <button type="button" class="btn btn-link text-white p-1 border-0 lh-1" id="themeToggle"
+                    title="<?= et('Alternar tema claro/escuro') ?>" aria-label="<?= et('Alternar tema claro/escuro') ?>">
+                <i class="bi bi-moon-stars fs-5" id="themeIcon"></i>
+            </button>
+            <?php endif; ?>
             <?php $_temGrupo = !empty($_SESSION['grupo_opcoes']) && count($_SESSION['grupo_opcoes']) > 1; ?>
             <?php if ($_temGrupo): ?>
             <button type="button"
@@ -528,5 +537,23 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
             if (m && m.style.display === 'block' && t) showFlyout(t, m);
         });
     }, true);
+}());
+
+// Alternância de tema claro/escuro (admin) — persiste em localStorage
+(function () {
+    var btn = document.getElementById('themeToggle');
+    if (!btn) return;
+    var icon = document.getElementById('themeIcon');
+    function paint(t) {
+        document.documentElement.setAttribute('data-bs-theme', t);
+        if (icon) icon.className = 'bi fs-5 ' + (t === 'dark' ? 'bi-sun' : 'bi-moon-stars');
+    }
+    var cur = document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'dark' : 'light';
+    paint(cur);
+    btn.addEventListener('click', function () {
+        cur = cur === 'dark' ? 'light' : 'dark';
+        try { localStorage.setItem('sisped-theme', cur); } catch (e) {}
+        paint(cur);
+    });
 }());
 </script>
