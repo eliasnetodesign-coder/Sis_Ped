@@ -409,11 +409,13 @@ $campanhas  = array_filter($campanhas, fn($c) => !$c['canal_venda_id'] || (int)$
 // Produtos bonificados por campanha (para exibir nos chips de campanhas de bonificação)
 $bonifByCode = [];     // com "Nx" (modo fixo)
 $bonifNomesByCode = []; // só nomes (modo selecionável)
+$bonifRawByCode = [];   // [{qtd, nome}] (modo fixo) — para multiplicar pelo mult no aviso
 foreach (db()->query('SELECT cb.codigo_campanha, cb.quantidade, p.descricao_pt, p.codigo_produto
     FROM campanha_bonificacao cb JOIN produtos p ON p.id = cb.produto_id ORDER BY cb.id')->fetchAll() as $b) {
     $nome = $b['descricao_pt'] ?: $b['codigo_produto'];
     $bonifByCode[$b['codigo_campanha']][]      = (int)$b['quantidade'] . 'x ' . $nome;
     $bonifNomesByCode[$b['codigo_campanha']][] = $nome;
+    $bonifRawByCode[$b['codigo_campanha']][]   = ['qtd' => (int)$b['quantidade'], 'nome' => $nome];
 }
 
 // Condições combinadas (E) por código de campanha — cada uma é um filtro composto
@@ -497,6 +499,24 @@ foreach ($campGroup as $code => &$g) {
     }
 }
 unset($g);
+
+// Dados do benefício de cada campanha (para o pop-up de "campanha atingida").
+// limite/quantidades são por mult=1; o JS multiplica pelo mult atingido.
+$campInfoJs = [];
+foreach ($campGroup as $code => $c) {
+    $ehBonif = ($c['tipo'] === 'bonificacao');
+    $ehSelec = $ehBonif && (($c['bonif_modo'] ?? 'fixo') === 'selecionavel');
+    $campInfoJs[$code] = [
+        'tipo'       => $ehBonif ? 'bonificacao' : 'desconto',
+        'modo'       => $ehBonif ? ($ehSelec ? 'selecionavel' : 'fixo') : '',
+        'gatilho'    => $c['gatilho'] ?? '',
+        'pct'        => rtrim(rtrim(number_format((float)$c['desconto'], 2, ',', '.'), '0'), ','),
+        'limiteTipo' => ($c['bonif_limite_tipo'] ?? 'quantidade') === 'valor' ? 'valor' : 'quantidade',
+        'limiteBase' => (float)($c['bonif_limite_valor'] ?? 0),
+        'nomes'      => array_values($bonifNomesByCode[$code] ?? []),
+        'brindes'    => array_values($bonifRawByCode[$code] ?? []),
+    ];
+}
 
 $MA_MERGE = ['MAT APOIO ITALLIAN - BRINDE', 'MAT APOIO ITALLIAN - VENDIDO'];
 $porLinha = [];
@@ -818,8 +838,7 @@ require_once LAYOUT_PATH . '/header.php';
         <i class="bi bi-check-lg me-2"></i><?= et('Finalizar Pedido') ?>
     </button>
 <?php else: ?>
-    <button type="button" class="btn btn-primary btn-lg px-5" id="btnAvancarPagamento"
-            data-bs-toggle="modal" data-bs-target="#modalPagamento">
+    <button type="button" class="btn btn-primary btn-lg px-5" id="btnAvancarPagamento">
         <i class="bi bi-arrow-right me-2"></i><?= et('Avançar para Pagamento') ?>
     </button>
 <?php endif; ?>
@@ -942,6 +961,34 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 </div>
 
+<!-- ══ MODAL: aviso de campanha atingida ══════════════════ -->
+<?php if ($campanhas && !$modoMA): ?>
+<div class="modal fade" id="modalCampanhaAviso" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 bg-success bg-opacity-10">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-trophy-fill me-2 text-warning"></i><?= et('Campanha atingida!') ?>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3"><?= et('Seu pedido atingiu a(s) campanha(s) abaixo. Confira os benefícios a que você tem direito:') ?></p>
+                <div id="campanhaAvisoLista"></div>
+            </div>
+            <div class="modal-footer border-0">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-arrow-left me-1"></i><?= et('Voltar') ?>
+                </button>
+                <button type="button" class="btn btn-success px-4" id="btnConfirmarCampanhaAviso">
+                    <i class="bi bi-check-lg me-1"></i><?= et('Continuar') ?>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
+
 <!-- ══ OFFCANVAS: carrinho ════════════════════════════════── -->
 <div class="offcanvas offcanvas-end" tabindex="-1" id="offCarrinho"
      style="width:400px;max-width:100vw">
@@ -1001,7 +1048,13 @@ var T = {
     credSemDif:      <?= json_encode(t('Neste pedido não há diferença disponível entre o valor do pedido e o detalhamento fiscal%1, portanto não é possível aplicar crédito. O pedido seguirá sem uso de crédito.')) ?>,
     credPixConsid:   <?= json_encode(t(' (já considerando o desconto Pix)')) ?>,
     credConfirm:     <?= json_encode(t("Você tem %1 de crédito, mas neste pedido só pode usar %2 (diferença entre o valor do pedido e o detalhamento fiscal%3).\n\nDeseja usar %2 e manter %4 para outro pedido?")) ?>,
-    credJaPix:       <?= json_encode(t(', já descontado o Pix')) ?>
+    credJaPix:       <?= json_encode(t(', já descontado o Pix')) ?>,
+    descontoDe:      <?= json_encode(t('Desconto de')) ?>,
+    brinde:          <?= json_encode(t('Brinde:')) ?>,
+    escolhaEntre:    <?= json_encode(t('Escolha entre:')) ?>,
+    voceRecebe:      <?= json_encode(t('Você recebe')) ?>,
+    podeEscolherAte: <?= json_encode(t('Você pode escolher até')) ?>,
+    campAtingidaNx:  <?= json_encode(t('campanha atingida %1×')) ?>
 };
 function _tfmt(str, map) {
     Object.keys(map).forEach(function (k) { str = str.split(k).join(map[k]); });
@@ -1083,6 +1136,9 @@ var _campProdIds = {};
 _campanhas.forEach(function(c) {
     if (c.produto_id !== null) (_campProdIds[c.codigo] = _campProdIds[c.codigo] || []).push(c.produto_id);
 });
+
+// Benefício de cada campanha (código -> {tipo, beneficio, gatilho}) para o pop-up de campanha atingida
+var _campInfo = <?= json_encode($campInfoJs, JSON_UNESCAPED_UNICODE) ?>;
 
 var _simbolo = <?= json_encode(simboloMoeda($cli_data['moeda'] ?? 'BRL')) ?>;
 function fmtBRL(v) {
@@ -1557,12 +1613,142 @@ function _submeterPedido(btnSpinner) {
     document.getElementById('formPedido').submit();
 }
 
+// ── Aviso de campanha atingida ──────────────────────────────────────
+// Avalia, com as quantidades atuais, quais campanhas (desconto/bonificação) foram atingidas.
+// Espelha a lógica de recalcularTodas (legado por quantidade) e atualizarBarrasCampanha (condições E / valor-alvo).
+function campanhasAtingidas() {
+    if (_modoMA) return [];
+    var totLinha = {}, totGrupo = {}, totSub = {}, totProd = {}, itens = [], valorTotal = 0;
+    document.querySelectorAll('.produto-row').forEach(function(row) {
+        var actual = parseInt(row.querySelector('.qtd-hidden').value) || 0;
+        if (actual <= 0) return;
+        var pid = parseInt(row.dataset.pid);
+        var val = actual * (parseFloat(row.dataset.preco) || 0);
+        var l = row.dataset.linha || '', g = row.dataset.grupo || '', s = row.dataset.subgrupo || '';
+        if (l) totLinha[l] = (totLinha[l] || 0) + actual;
+        if (g) totGrupo[g] = (totGrupo[g] || 0) + actual;
+        if (s) totSub[s]   = (totSub[s]   || 0) + actual;
+        totProd[pid] = (totProd[pid] || 0) + actual;
+        valorTotal += val;
+        itens.push({ pid: pid, qtd: actual, val: val, linha: l, grupo: g, subgrupo: s });
+    });
+    var totCamp = {};
+    Object.keys(_campProdIds).forEach(function(cod) {
+        var soma = 0; _campProdIds[cod].forEach(function(pid) { soma += (totProd[pid] || 0); });
+        totCamp[cod] = soma;
+    });
+
+    var ating = {}; // código -> mult atingido (>=1)
+    function _marca(code, mult) { if (mult >= 1) ating[code] = Math.max(ating[code] || 0, mult); }
+    // Legado: campanhas por quantidade (produto/linha/grupo/subgrupo), sem barra de progresso
+    _campanhas.forEach(function(c) {
+        if (c.quantidade <= 0) return;
+        var qtdRef;
+        if (c.produto_id !== null) qtdRef = (totCamp[c.codigo] !== undefined) ? totCamp[c.codigo] : 0;
+        else if (c.linha)          qtdRef = totLinha[c.linha] || 0;
+        else if (c.grupo)          qtdRef = totGrupo[c.grupo] || 0;
+        else if (c.subgrupo)       qtdRef = totSub[c.subgrupo] || 0;
+        else                       qtdRef = 0;
+        if (qtdRef >= c.quantidade) _marca(c.codigo, Math.floor(qtdRef / c.quantidade));
+    });
+    // Condições (E) e valor-alvo (OU): usa as barras .camp-progress já renderizadas
+    document.querySelectorAll('.camp-progress').forEach(function(box) {
+        var allMet = true, minMult = Infinity, multLegado = 0;
+        box.querySelectorAll('.camp-bar').forEach(function(bar) {
+            var legadoValor = (bar.dataset.tipo === 'valor');
+            var porValor    = (bar.dataset.modo === 'valor');
+            var meta        = parseFloat(bar.dataset.meta) || 0;
+            var atual = 0;
+            if (legadoValor) {
+                atual = valorTotal;
+            } else {
+                var f = { linha: bar.dataset.linha || '', grupo: bar.dataset.grupo || '', subgrupo: bar.dataset.subgrupo || '', produto: parseInt(bar.dataset.produto) || 0 };
+                itens.forEach(function(it) { if (_matchFiltro(it, f)) atual += porValor ? it.val : it.qtd; });
+            }
+            var done = meta > 0 && atual >= meta;
+            if (legadoValor) { if (done) multLegado = Math.floor(atual / meta); }
+            else { if (!done) allMet = false; if (meta > 0) minMult = Math.min(minMult, Math.floor(atual / meta)); }
+        });
+        var mult = 0;
+        if (allMet && minMult !== Infinity && minMult >= 1) mult = minMult;
+        else if (multLegado >= 1) mult = multLegado;
+        _marca(box.dataset.codigo, mult);
+    });
+
+    var res = [];
+    Object.keys(ating).forEach(function(code) {
+        if (_campInfo[code]) res.push({ codigo: code, info: _campInfo[code], mult: ating[code] });
+    });
+    return res;
+}
+
+// Formata um valor monetário do bônus (sempre em R$/Network, como na tela de bonificação)
+function _fmtBonusBRL(v) {
+    return 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+// Monta as linhas (benefício + quanto poderá utilizar) de uma campanha atingida
+function _beneficioCampanha(c) {
+    var info = c.info, mult = c.mult || 1, linhas = [];
+    if (info.tipo !== 'bonificacao') {
+        linhas.push('<div class="small fw-semibold" style="color:#c8880a">' + T.descontoDe + ' ' + info.pct + '%</div>');
+        return linhas;
+    }
+    if (info.modo === 'selecionavel') {
+        var lim   = (parseFloat(info.limiteBase) || 0) * mult;
+        var limTxt = info.limiteTipo === 'valor' ? _fmtBonusBRL(lim) : (lim + ' ' + T.un);
+        if ((info.nomes || []).length) {
+            linhas.push('<div class="small" style="color:#c8880a">' + T.escolhaEntre + ' ' + info.nomes.join(', ') + '</div>');
+        }
+        linhas.push('<div class="small fw-bold text-success"><i class="bi bi-hand-index me-1"></i>' + T.podeEscolherAte + ' ' + limTxt + '</div>');
+    } else {
+        var totUn = 0;
+        var brindes = (info.brindes || []).map(function(b) { var q = b.qtd * mult; totUn += q; return q + 'x ' + b.nome; });
+        if (brindes.length) {
+            linhas.push('<div class="small" style="color:#c8880a">' + T.brinde + ' ' + brindes.join(', ') + '</div>');
+        }
+        linhas.push('<div class="small fw-bold text-success"><i class="bi bi-gift-fill me-1"></i>' + T.voceRecebe + ' ' + totUn + ' ' + T.un + '</div>');
+    }
+    return linhas;
+}
+
+var _campanhaAvisoOnConfirm = null;
+function mostrarAvisoCampanha(list, onConfirm) {
+    var alvo    = document.getElementById('campanhaAvisoLista');
+    var modalEl = document.getElementById('modalCampanhaAviso');
+    if (!alvo || !modalEl) { onConfirm(); return; }
+    alvo.innerHTML = list.map(function(c) {
+        var icon = c.info.tipo === 'bonificacao' ? 'bi-gift-fill text-warning' : 'bi-percent text-success';
+        var multBadge = (c.mult > 1) ? ' <span class="badge bg-success ms-1">' + _tfmt(T.campAtingidaNx, { '%1': c.mult }) + '</span>' : '';
+        return '<div class="d-flex gap-2 align-items-start py-2 border-bottom">'
+            + '<i class="bi ' + icon + ' fs-5"></i>'
+            + '<div class="flex-grow-1"><div class="fw-semibold">' + c.codigo + multBadge + '</div>'
+            + (c.info.gatilho ? '<div class="small text-muted">' + c.info.gatilho + '</div>' : '')
+            + _beneficioCampanha(c).join('') + '</div></div>';
+    }).join('');
+    _campanhaAvisoOnConfirm = onConfirm;
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+var _btnConfAviso = document.getElementById('btnConfirmarCampanhaAviso');
+if (_btnConfAviso) {
+    _btnConfAviso.addEventListener('click', function() {
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('modalCampanhaAviso')).hide();
+        var f = _campanhaAvisoOnConfirm; _campanhaAvisoOnConfirm = null;
+        if (typeof f === 'function') f();
+    });
+}
+
 if (_modoMA || _ehExportacao) {
     // Modo MA e canal de Exportação: finaliza direto, sem selecionar forma de pagamento.
     // Exportação tem condição de pagamento fixa "A Vista".
     document.getElementById('btnFinalizarDireto').addEventListener('click', function() {
-        if (_ehExportacao) document.getElementById('formaPagamento').value = 'A Vista';
-        _submeterPedido(this);
+        var btn = this;
+        var finalizar = function() {
+            if (_ehExportacao) document.getElementById('formaPagamento').value = 'A Vista';
+            _submeterPedido(btn);
+        };
+        var ating = campanhasAtingidas();
+        if (ating.length > 0) mostrarAvisoCampanha(ating, finalizar);
+        else finalizar();
     });
 } else {
     // Resumo: o Pix (5%) incide sobre o valor total do pedido; o crédito é limitado à diferença (pedido − NF) menos o Pix.
@@ -1606,6 +1792,11 @@ if (_modoMA || _ehExportacao) {
             else box.style.display = 'none';
         }
     }
+
+    // Avançar para pagamento: abre o modal de seleção de forma de pagamento
+    document.getElementById('btnAvancarPagamento').addEventListener('click', function() {
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('modalPagamento')).show();
+    });
 
     // Destaca opção selecionada no modal
     document.getElementById('opcoesPagamento').addEventListener('change', function() {
@@ -1660,8 +1851,21 @@ if (_modoMA || _ehExportacao) {
             }
             document.getElementById('creditoAplicadoInput').value = r.credito.toFixed(2);
         }
+
+        var btn = this;
+        var ating = campanhasAtingidas();
+        // Após escolher a forma de pagamento, avisa sobre a campanha atingida antes de fechar o pedido
+        if (ating.length > 0) {
+            var modalEl = document.getElementById('modalPagamento');
+            modalEl.addEventListener('hidden.bs.modal', function _h() {
+                modalEl.removeEventListener('hidden.bs.modal', _h);
+                mostrarAvisoCampanha(ating, function() { _submeterPedido(btn); });
+            });
+            bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            return;
+        }
         document.getElementById('btnFecharModalPagto').disabled = true;
-        _submeterPedido(this);
+        _submeterPedido(btn);
     });
 
     // Toggle crédito: apenas atualiza o aviso; a validação do limite ocorre ao finalizar o pedido,
