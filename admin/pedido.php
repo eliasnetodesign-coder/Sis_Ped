@@ -3,6 +3,11 @@ require_once __DIR__ . '/../config.php';
 requireAdmin();
 $u = usuario();
 
+// Tecnologia da Informação tem acesso total: atua como Comercial e Financeiro.
+$isComercial  = in_array($u['tipo'], ['comercial', 'tecnologia da informacao']);
+$isFinanceiro = in_array($u['tipo'], ['financeiro', 'tecnologia da informacao']);
+$isSupervisor = $u['tipo'] === 'supervisor';
+
 // Garante que a tabela de logs existe
 db()->exec("CREATE TABLE IF NOT EXISTS pedido_logs (
     id            INT AUTO_INCREMENT PRIMARY KEY,
@@ -121,7 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ped = db()->prepare('SELECT status, lote_id FROM pedidos WHERE id = ?');
             $ped->execute([$id]);
             $ped = $ped->fetch();
-            if (in_array($u['tipo'], ['comercial', 'supervisor']) && $ped['status'] === 'comercial') {
+            if (($isComercial || $isSupervisor) && $ped['status'] === 'comercial') {
                 if ($ped['lote_id']) {
                     db()->prepare('UPDATE pedidos SET status = "financeiro" WHERE lote_id = ?')->execute([$ped['lote_id']]);
                 } else {
@@ -129,7 +134,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 logPedido($id, $numPed, 'Aprovado → Financeiro', 'comercial', 'financeiro');
                 flash('success', 'Pedido aprovado e enviado ao Financeiro.');
-            } elseif ($u['tipo'] === 'financeiro' && $ped['status'] === 'financeiro') {
+            } elseif ($isFinanceiro && $ped['status'] === 'financeiro') {
                 if ($ped['lote_id']) {
                     db()->prepare('UPDATE pedidos SET status = "faturamento" WHERE lote_id = ?')->execute([$ped['lote_id']]);
                 } else {
@@ -137,7 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 logPedido($id, $numPed, 'Aprovado → Faturamento', 'financeiro', 'faturamento');
                 flash('success', 'Pedido aprovado e enviado ao Faturamento.');
-            } elseif (($u['tipo'] === 'financeiro' || $u['tipo'] === 'comercial') && $ped['status'] === 'faturamento') {
+            } elseif (($isFinanceiro || $isComercial) && $ped['status'] === 'faturamento') {
                 if ($ped['lote_id']) {
                     db()->prepare('UPDATE pedidos SET status = "faturado" WHERE lote_id = ?')->execute([$ped['lote_id']]);
                 } else {
@@ -154,8 +159,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ped = $ped->fetch();
             $statusAntes = $ped['status'];
             // Comercial e Supervisor cancelam na etapa Comercial; Financeiro na etapa Financeiro/Faturamento
-            $podeCancelar = (in_array($u['tipo'], ['comercial', 'supervisor']) && $statusAntes === 'comercial')
-                         || ($u['tipo'] === 'financeiro' && in_array($statusAntes, ['financeiro', 'faturamento']));
+            $podeCancelar = (($isComercial || $isSupervisor) && $statusAntes === 'comercial')
+                         || ($isFinanceiro && in_array($statusAntes, ['financeiro', 'faturamento']));
             if (!$podeCancelar) {
                 flash('warning', 'Ação não permitida para o status atual.');
             } else {
@@ -167,7 +172,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 logPedido($id, $numPed, 'Cancelado', $statusAntes, 'reprovado');
                 flash('danger', 'Pedido cancelado.');
             }
-        } elseif ($action === 'retornar' && $u['tipo'] === 'financeiro') {
+        } elseif ($action === 'retornar' && $isFinanceiro) {
             $ped = db()->prepare('SELECT lote_id FROM pedidos WHERE id = ?');
             $ped->execute([$id]);
             $ped = $ped->fetch();
@@ -178,7 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             logPedido($id, $numPed, 'Retornado ao Comercial', 'financeiro', 'comercial');
             flash('warning', 'Pedido retornado ao Comercial.');
-        } elseif ($action === 'editar' && $u['tipo'] === 'comercial') {
+        } elseif ($action === 'editar' && $isComercial) {
             $ped = db()->prepare('SELECT p.*, c.desconto_cliente, c.desconto_canal, c.canal_venda_id FROM pedidos p LEFT JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?');
             $ped->execute([$id]);
             $ped = $ped->fetch();
@@ -230,7 +235,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 flash('warning', 'Edição não permitida para o status atual.');
             }
-        } elseif ($action === 'adicionar' && $u['tipo'] === 'comercial') {
+        } elseif ($action === 'adicionar' && $isComercial) {
             $ped = db()->prepare('SELECT p.*, c.desconto_cliente, c.desconto_canal FROM pedidos p LEFT JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?');
             $ped->execute([$id]);
             $ped = $ped->fetch();
@@ -263,7 +268,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $det = "Adicionado: {$prod['descricao_pt']} | Qtd: {$qtd} | Tipo: {$tipo}";
             logPedido($id, $numPed, 'Produto adicionado', $ped['status'], $ped['status'], $det);
             flash('success', 'Produto adicionado ao pedido!');
-        } elseif ($action === 'set_qtd' && $u['tipo'] === 'comercial') {
+        } elseif ($action === 'set_qtd' && $isComercial) {
             $pacotes = max(1, (int)($_POST['qtd_total'] ?? 1));
             $ped = db()->prepare('SELECT p.*, c.desconto_cliente, c.desconto_canal, c.canal_venda_id FROM pedidos p LEFT JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?');
             $ped->execute([$id]);
@@ -312,7 +317,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             logPedido($id, $numPed, 'Quantidade alterada', $ped['status'], $ped['status'], "Qtd: {$novaQtd}");
             flash('success', 'Quantidade atualizada.');
-        } elseif ($action === 'remover_item' && $u['tipo'] === 'comercial') {
+        } elseif ($action === 'remover_item' && $isComercial) {
             $ped = db()->prepare('SELECT p.*, c.desconto_cliente, c.desconto_canal FROM pedidos p LEFT JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?');
             $ped->execute([$id]);
             $ped = $ped->fetch();
@@ -520,9 +525,7 @@ $logsStmt->execute([$pedido['numero_pedido']]);
 $pedidoLogs = $logsStmt->fetchAll();
 
 $status       = $pedido['status'];
-$isComercial  = $u['tipo'] === 'comercial';
-$isFinanceiro = $u['tipo'] === 'financeiro';
-$isSupervisor = $u['tipo'] === 'supervisor';
+// $isComercial / $isFinanceiro / $isSupervisor definidos no topo (TI atua como ambos)
 $canEdit      = $isComercial  && $status === 'comercial';
 $canAprovar   = (($isComercial || $isSupervisor) && $status === 'comercial')
              || ($isFinanceiro && $status === 'financeiro')

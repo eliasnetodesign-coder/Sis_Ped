@@ -18,7 +18,8 @@ $filtro    = $_GET['status']  ?? '';
 $busca_cli = trim($_GET['cli'] ?? '');
 $dt_inicio = isset($_GET['dt_ini']) ? $_GET['dt_ini'] : date('Y-m-01');
 $dt_fim    = isset($_GET['dt_fim']) ? $_GET['dt_fim'] : date('Y-m-t');
-$isFinanceiro = $u['tipo'] === 'financeiro';
+// Tecnologia da Informação atua como Financeiro (acesso total): vê as colunas extras do Financeiro.
+$isFinanceiro = in_array($u['tipo'], ['financeiro', 'tecnologia da informacao']);
 
 // Financeiro: ao filtrar por cliente, expande para todos os membros do mesmo grupo de empresas.
 // $cliFilterIds = null -> usa LIKE (perfis não-financeiro); array -> usa IN (pode ser vazio).
@@ -348,8 +349,8 @@ $cardDefs = [
                 <tbody>
                 <?php if ($pedidos): foreach ($pedidos as $p):
                     $s           = $p['status'];
-                    $isC         = $u['tipo'] === 'comercial';
-                    $isF         = $u['tipo'] === 'financeiro';
+                    $isC         = in_array($u['tipo'], ['comercial', 'tecnologia da informacao']);
+                    $isF         = in_array($u['tipo'], ['financeiro', 'tecnologia da informacao']);
                     $isS         = $u['tipo'] === 'supervisor';
                     $canAprovar  = (($isC || $isS) && $s === 'comercial') || ($isF && $s === 'financeiro') || (($isC || $isF) && $s === 'faturamento');
                     $canReprovar = (($isC || $isS) && $s === 'comercial') || ($isF && ($s === 'financeiro' || $s === 'faturamento'));

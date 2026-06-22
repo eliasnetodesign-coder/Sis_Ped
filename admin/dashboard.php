@@ -135,7 +135,7 @@ $cardDefs = [
                     <th>Data</th>
                     <th>Valor</th>
                     <th>Status</th>
-                    <?php if (in_array($u['tipo'], ['comercial','financeiro'])): ?>
+                    <?php if (in_array($u['tipo'], ['comercial','financeiro','tecnologia da informacao'])): ?>
                     <th>Ação</th>
                     <?php endif; ?>
                 </tr>
@@ -149,7 +149,7 @@ $cardDefs = [
                     <td><?= dataBR($p['data_pedido']) ?></td>
                     <td><?= moedaBR($p['valor_total']) ?></td>
                     <td><?= statusBadge($p['status']) ?></td>
-                    <?php if (in_array($u['tipo'], ['comercial','financeiro'])): ?>
+                    <?php if (in_array($u['tipo'], ['comercial','financeiro','tecnologia da informacao'])): ?>
                     <td>
                         <a href="<?= BASE_URL ?>/admin/pedidos.php?id=<?= $p['id'] ?>" class="btn btn-xs btn-outline-primary" style="padding:.2rem .5rem;font-size:.75rem">
                             <i class="bi bi-eye"></i>

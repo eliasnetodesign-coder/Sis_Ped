@@ -1,7 +1,7 @@
 ﻿<?php
 require_once __DIR__ . '/../../config.php';
 $u = usuario();
-if (!$u || !in_array($u['tipo'], ['comercial','financeiro'])) { header('Location: ' . BASE_URL . '/login.php'); exit; }
+if (!$u || !in_array($u['tipo'], ['comercial','financeiro','tecnologia da informacao'])) { header('Location: ' . BASE_URL . '/login.php'); exit; }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $a = $_POST['action'] ?? '';
