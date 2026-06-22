@@ -31,6 +31,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $usuarios = db()->query('SELECT * FROM usuarios ORDER BY nome')->fetchAll();
+
+// Tipos de acesso (conforme especificacao.md 3.2.13). Valor armazenado x rótulo de exibição.
+$TIPOS_ACESSO = [
+    'comercial'                => 'Comercial',
+    'financeiro'               => 'Financeiro',
+    'supervisor'               => 'Supervisor',
+    'tecnologia da informacao' => 'Tecnologia da Informação',
+    'recursos humanos'         => 'Recursos Humanos',
+    'marketing'                => 'Marketing',
+    'diretoria'                => 'Diretoria',
+    'centro tecnico'           => 'Centro Técnico',
+    'contabilidade'            => 'Contabilidade',
+    'recepcao'                 => 'Recepção',
+    'expedicao'                => 'Expedição',
+];
+
 $pageTitle = 'Cadastro de Usuários';
 require_once LAYOUT_PATH . '/header.php';
 ?>
@@ -48,8 +64,8 @@ require_once LAYOUT_PATH . '/header.php';
             <td><strong><?= e($u['nome']) ?></strong></td>
             <td><small><?= e($u['email']) ?></small></td>
             <td><?= e($u['departamento']) ?></td>
-            <?php $badgeColor = $u['tipo_acesso']==='comercial'?'primary':($u['tipo_acesso']==='supervisor'?'success':'warning'); ?>
-            <td><span class="badge bg-<?= $badgeColor ?>"><?= ucfirst($u['tipo_acesso']) ?></span></td>
+            <?php $badgeColor = $u['tipo_acesso']==='comercial'?'primary':($u['tipo_acesso']==='supervisor'?'success':($u['tipo_acesso']==='financeiro'?'warning':'secondary')); ?>
+            <td><span class="badge bg-<?= $badgeColor ?>"><?= e($TIPOS_ACESSO[$u['tipo_acesso']] ?? ucfirst($u['tipo_acesso'])) ?></span></td>
             <td><?= e($u['celular']) ?></td>
             <td><?= statusBadge($u['status']) ?></td>
             <td>
@@ -77,9 +93,9 @@ require_once LAYOUT_PATH . '/header.php';
                 <div class="col-md-4"><label class="form-label fw-semibold">Divisão de Vendas</label><input type="text" name="divisao_vendas" id="f_div" class="form-control"></div>
                 <div class="col-md-4"><label class="form-label fw-semibold">Tipo de Acesso <span class="text-danger">*</span></label>
                     <select name="tipo_acesso" id="f_tipo" class="form-select" required>
-                        <option value="comercial">Comercial</option>
-                        <option value="financeiro">Financeiro</option>
-                        <option value="supervisor">Supervisor</option>
+                        <?php foreach ($TIPOS_ACESSO as $val => $lbl): ?>
+                        <option value="<?= e($val) ?>"><?= e($lbl) ?></option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
                 <div class="col-md-4"><label class="form-label fw-semibold">Tipo de Usuário</label>
