@@ -56,7 +56,12 @@ foreach ($rows as $r): $total_geral += $r['qtd']; ?>
                 <td class="text-truncate" style="max-width:160px"><?= e($p['descricao_produto']?:'—') ?></td>
                 <td><?= e($p['supervisor'] ?? $p['vendedor'] ?? '—') ?></td>
                 <td><?= dataBR($p['data_pedido']) ?></td>
-                <td><?= moedaBR($p['valor_total']) ?></td>
+                <td>
+                    <?= moedaBR($p['valor_total'], $p['moeda'] ?? 'BRL') ?>
+                    <?php $conv = cotacaoExibicaoPedido($p['moeda'] ?? 'BRL', $p['cotacao'] ?? 0); if ($conv): ?>
+                    <div class="text-success small" title="Cotação<?= $conv['fallback'] ? ' atual de referência (pedido sem cotação gravada)' : ' do dia' ?>: R$ <?= number_format($conv['taxa'], 4, ',', '.') ?>">≈ <?= moedaBR((float)$p['valor_total'] * $conv['taxa'], 'BRL') ?><?= $conv['fallback'] ? ' *' : '' ?></div>
+                    <?php endif; ?>
+                </td>
                 <td><?= statusBadge($p['status']) ?></td>
             </tr>
         <?php endforeach; ?>

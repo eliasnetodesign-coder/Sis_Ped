@@ -343,6 +343,21 @@ function cotacaoDia($moeda) {
 }
 
 /**
+ * Cotação para EXIBIÇÃO da conversão de um pedido em moeda estrangeira.
+ * Usa a cotação gravada no pedido; se ausente (pedidos antigos criados quando a
+ * API falhou), cai para a cotação do dia / última conhecida. Retorna
+ * ['taxa'=>float, 'fallback'=>bool] ou null quando não se aplica
+ * (moeda BRL ou nenhuma taxa disponível).
+ */
+function cotacaoExibicaoPedido($moeda, $cotacaoPedido): ?array {
+    if (strtoupper((string)$moeda) === 'BRL') return null;
+    $c = (float)$cotacaoPedido;
+    if ($c > 0) return ['taxa' => $c, 'fallback' => false];
+    $fb = (float)(cotacaoDia($moeda) ?? 0);
+    return $fb > 0 ? ['taxa' => $fb, 'fallback' => true] : null;
+}
+
+/**
  * Coluna de preço da tabela_precos a usar conforme a moeda do cliente.
  * Bonificação sempre usa preco_network (independente de moeda).
  */

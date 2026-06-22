@@ -790,10 +790,10 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                         <?php if ($descontoPixAdmin > 0 || $creditoUsadoAdmin > 0): ?>
                         <div class="text-muted small text-decoration-line-through"><?= moedaBR($valorTotalGeral) ?></div>
                         <?php endif; ?>
-                        <?php if (($pedido['moeda'] ?? 'BRL') !== 'BRL' && (float)($pedido['cotacao'] ?? 0) > 0): ?>
+                        <?php $convTop = cotacaoExibicaoPedido($pedido['moeda'] ?? 'BRL', $pedido['cotacao'] ?? 0); if ($convTop): ?>
                         <div class="text-success small mt-1">
-                            <i class="bi bi-arrow-left-right me-1"></i>≈ <?= moedaBR($totalAPagarAdmin * (float)$pedido['cotacao'], 'BRL') ?>
-                            <span class="text-muted">(cotação do dia: R$ <?= number_format((float)$pedido['cotacao'], 4, ',', '.') ?>)</span>
+                            <i class="bi bi-arrow-left-right me-1"></i>≈ <?= moedaBR($totalAPagarAdmin * $convTop['taxa'], 'BRL') ?>
+                            <span class="text-muted">(<?= $convTop['fallback'] ? 'cotação atual de referência' : 'cotação do dia' ?>: R$ <?= number_format($convTop['taxa'], 4, ',', '.') ?>)</span>
                         </div>
                         <?php endif; ?>
                     </div>
@@ -989,10 +989,11 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                         <?php endif; ?>
                         <?php
                         $finalAdmin = ($descontoPixAdmin > 0 || $creditoUsadoAdmin > 0) ? $totalAPagarAdmin : $valorTotalGeral;
-                        if (($pedido['moeda'] ?? 'BRL') !== 'BRL' && (float)($pedido['cotacao'] ?? 0) > 0): ?>
+                        $convFoot = cotacaoExibicaoPedido($pedido['moeda'] ?? 'BRL', $pedido['cotacao'] ?? 0);
+                        if ($convFoot): ?>
                         <tr class="text-success">
-                            <td colspan="<?= $cols ?>" class="text-end fw-semibold pe-3"><i class="bi bi-arrow-left-right me-1"></i>Conversão em BRL (cotação do dia: R$ <?= number_format((float)$pedido['cotacao'], 4, ',', '.') ?>):</td>
-                            <td class="fw-semibold text-end pe-3">≈ <?= moedaBR($finalAdmin * (float)$pedido['cotacao'], 'BRL') ?></td>
+                            <td colspan="<?= $cols ?>" class="text-end fw-semibold pe-3"><i class="bi bi-arrow-left-right me-1"></i>Conversão em BRL (<?= $convFoot['fallback'] ? 'cotação atual de referência' : 'cotação do dia' ?>: R$ <?= number_format($convFoot['taxa'], 4, ',', '.') ?>):</td>
+                            <td class="fw-semibold text-end pe-3">≈ <?= moedaBR($finalAdmin * $convFoot['taxa'], 'BRL') ?></td>
                             <?php if ($canEdit): ?><td></td><?php endif; ?>
                         </tr>
                         <?php endif; ?>

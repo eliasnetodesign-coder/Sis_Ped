@@ -391,8 +391,8 @@ $cardDefs = [
                     </td>
                     <td class="fw-semibold">
                         <?= moedaBR($p['valor_total'], $p['moeda'] ?? 'BRL') ?>
-                        <?php if (($p['moeda'] ?? 'BRL') !== 'BRL' && (float)($p['cotacao'] ?? 0) > 0): ?>
-                        <div class="text-success small" title="Cotação do dia: R$ <?= number_format((float)$p['cotacao'], 4, ',', '.') ?>">≈ <?= moedaBR((float)$p['valor_total'] * (float)$p['cotacao'], 'BRL') ?></div>
+                        <?php $conv = cotacaoExibicaoPedido($p['moeda'] ?? 'BRL', $p['cotacao'] ?? 0); if ($conv): ?>
+                        <div class="text-success small" title="Cotação<?= $conv['fallback'] ? ' atual de referência (pedido sem cotação gravada)' : ' do dia' ?>: R$ <?= number_format($conv['taxa'], 4, ',', '.') ?>">≈ <?= moedaBR((float)$p['valor_total'] * $conv['taxa'], 'BRL') ?><?= $conv['fallback'] ? ' *' : '' ?></div>
                         <?php endif; ?>
                     </td>
                     <?php if ($isFinanceiro):
