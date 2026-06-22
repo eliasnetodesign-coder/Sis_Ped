@@ -9,6 +9,12 @@ if (!$ctx || empty($ctx['campanhas'])) {
 $camps   = $ctx['campanhas'];
 $retorno = $ctx['retorno'] ?? (BASE_URL . '/cliente/meus-pedidos.php');
 
+// Bônus de Exportação: dados do cálculo (5% da venda) para exibir o pop-up ao abrir a tela
+$expInfo = null;
+foreach ($camps as $cp) {
+    if (isset($cp['base_exib'])) { $expInfo = $cp; break; }
+}
+
 function _concluirSelecao($ctx, $retorno) {
     if (!empty($ctx['pdf_ids'])) $_SESSION['pdf_pedidos_ids'] = $ctx['pdf_ids'];
     unset($_SESSION['bonus_selecionavel']);
@@ -77,6 +83,47 @@ require_once LAYOUT_PATH . '/header.php';
 <div class="alert alert-info">
     <?= et('Seu pedido participa de campanha(s) de bonificação. Escolha os produtos bônus respeitando o limite de cada campanha.') ?>
 </div>
+
+<?php if ($expInfo):
+    $pctTxt   = rtrim(rtrim(number_format((float)$expInfo['pct'], 2, ',', '.'), '0'), ',');
+    $expSim   = simboloMoeda($expInfo['moeda'] ?? 'BRL');
+    $fmtMoeda = fn($v) => $expSim . ' ' . number_format((float)$v, 2, ',', '.');
+?>
+<!-- Pop-up do cálculo do bônus de Exportação -->
+<div class="modal fade" id="modalExpBonus" tabindex="-1" data-bs-backdrop="static" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 bg-warning bg-opacity-25">
+                <h5 class="modal-title fw-bold"><i class="bi bi-gift-fill text-warning me-2"></i><?= et('Bônus de Exportação') ?></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-3"><?= et('Seu pedido de venda foi finalizado. Veja como o seu bônus foi calculado:') ?></p>
+                <div class="d-flex justify-content-between py-2 border-bottom">
+                    <span class="text-muted"><?= et('Valor da venda') ?></span>
+                    <span class="fw-semibold"><?= e($fmtMoeda($expInfo['base_exib'])) ?></span>
+                </div>
+                <div class="d-flex justify-content-between py-2 border-bottom">
+                    <span class="text-muted"><?= et('Percentual de bônus') ?></span>
+                    <span class="fw-semibold"><?= e($pctTxt) ?>%</span>
+                </div>
+                <div class="d-flex justify-content-between py-2">
+                    <span class="fw-bold"><?= et('Bônus para escolher') ?></span>
+                    <span class="fw-bold fs-5 text-success"><?= e($fmtMoeda($expInfo['bonus_exib'])) ?></span>
+                </div>
+                <div class="alert alert-info mt-3 mb-0 small">
+                    <i class="bi bi-info-circle me-1"></i><?= et('Escolha abaixo os produtos bônus até este valor para concluir.') ?>
+                </div>
+            </div>
+            <div class="modal-footer border-0">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">
+                    <i class="bi bi-gift me-1"></i><?= et('Escolher meus bônus') ?>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
 
 <form method="POST" id="bonifForm">
     <?php foreach ($camps as $cp):
@@ -179,5 +226,12 @@ document.querySelectorAll('.bonif-qtd').forEach(function(inp) {
     inp.addEventListener('input', bonifRecalc);
 });
 bonifRecalc();
+<?php if ($expInfo): ?>
+// Exibe o pop-up do cálculo do bônus de Exportação ao abrir a tela
+document.addEventListener('DOMContentLoaded', function() {
+    var m = document.getElementById('modalExpBonus');
+    if (m) new bootstrap.Modal(m).show();
+});
+<?php endif; ?>
 </script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>

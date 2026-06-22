@@ -15,16 +15,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $formaPagamento  = trim($_POST['forma_pagamento'] ?? '');
     $creditoAplicado = $editarId > 0 ? 0.0 : max(0.0, (float)($_POST['credito_aplicado'] ?? 0));
 
+    $cli = db()->prepare('SELECT c.* FROM clientes c WHERE c.id = ?');
+    $cli->execute([$u['id']]);
+    $cli = $cli->fetch();
+
+    // Canal de Exportação: condição de pagamento fixa "A Vista" (não é perguntada ao cliente)
+    if ($tipoVenda !== 'bonificacao' && canalEhExportacao((int)($cli['canal_venda_id'] ?? 0))) {
+        $formaPagamento = 'A Vista';
+    }
+
     // Forma de pagamento obrigatória (exceto pedidos de bonificação MA)
     if ($tipoVenda !== 'bonificacao' && $formaPagamento === '') {
         flash('danger', t('Selecione uma forma de pagamento para continuar.'));
         header('Location: ' . BASE_URL . '/cliente/novo-pedido.php' . ($editarId ? '?editar=' . $editarId : ''));
         exit;
     }
-
-    $cli = db()->prepare('SELECT c.* FROM clientes c WHERE c.id = ?');
-    $cli->execute([$u['id']]);
-    $cli = $cli->fetch();
 
     // Bonificação: sem desconto de canal/cliente; demais vendas aplicam desconto
     $desconto = ($tipoVenda === 'bonificacao')
@@ -214,6 +219,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $totBrStmt->execute($ids_criados);
             $totalPedido = (float)$totBrStmt->fetchColumn();
 
+            // Total na moeda do cliente (sem conversão) — usado só para exibir o cálculo do bônus
+            $totMoStmt = db()->prepare("SELECT COALESCE(SUM(valor_total),0) FROM pedidos WHERE id IN ($phT)");
+            $totMoStmt->execute($ids_criados);
+            $totalPedidoMoeda = (float)$totMoStmt->fetchColumn();
+
             // Detalhamento fiscal (NF) = Σ qtd × preço Network × (1 + IPI/100). O crédito só pode ser usado
             // sobre a diferença (valor do pedido − NF); o excedente fica para outro pedido.
             $nfStmt = db()->prepare("SELECT COALESCE(SUM(p.quantidade_total * COALESCE(t.preco_network,0) * (1 + COALESCE(n.ipi,0)/100)),0)
@@ -308,7 +318,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // entre todos os produtos ativos (bônus selecionável por valor, em BRL)
                     if (canalEhExportacao($canalVendaId)) {
                         $expBonus = bonusExportacaoSelecionavel($totalPedido);
-                        if ($expBonus) $selec[] = $expBonus;
+                        if ($expBonus) {
+                            // Dados do cálculo para o pop-up, na mesma moeda usada no pedido
+                            $expBonus['moeda']      = $cli['moeda'] ?? 'BRL';
+                            $expBonus['pct']        = BONUS_EXPORTACAO_PCT;
+                            $expBonus['base_exib']  = $totalPedidoMoeda;
+                            $expBonus['bonus_exib'] = round($totalPedidoMoeda * (BONUS_EXPORTACAO_PCT / 100), 2);
+                            $selec[] = $expBonus;
+                        }
                     }
                     if ($selec) {
                         $_SESSION['bonus_selecionavel'] = [
@@ -339,6 +356,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $cli_data = db()->prepare('SELECT desconto_cliente, desconto_canal, canal_venda_id, idioma, moeda FROM clientes WHERE id = ?');
 $cli_data->execute([$u['id']]);
 $cli_data     = $cli_data->fetch();
+// Canal de Exportação: condição de pagamento fixa "A Vista" (não exibe o modal de pagamento)
+$ehExportacao = canalEhExportacao((int)($cli_data['canal_venda_id'] ?? 0));
 
 // Bonificação: por URL (?modo=ma_bonus) ou ao editar um pedido de bonificação
 $bonifFlag = (isset($_GET['modo']) && $_GET['modo'] === 'ma_bonus');
@@ -790,11 +809,11 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 </div>
 
-<input type="hidden" name="forma_pagamento" id="formaPagamento" value="">
+<input type="hidden" name="forma_pagamento" id="formaPagamento" value="<?= $ehExportacao ? 'A Vista' : '' ?>">
 <input type="hidden" name="credito_aplicado" id="creditoAplicadoInput" value="0">
 
 <div class="d-flex justify-content-end">
-<?php if ($modoMA): ?>
+<?php if ($modoMA || $ehExportacao): ?>
     <button type="button" class="btn btn-success btn-lg px-5" id="btnFinalizarDireto">
         <i class="bi bi-check-lg me-2"></i><?= et('Finalizar Pedido') ?>
     </button>
@@ -953,6 +972,7 @@ require_once LAYOUT_PATH . '/header.php';
 var _cartKey           = 'sis_ped_cart_<?= (int)$u['id'] ?>';
 var _maSaldo           = <?= $modoMA ? number_format($maSaldo, 2, '.', '') : 'Infinity' ?>;
 var _modoMA            = <?= $modoMA ? 'true' : 'false' ?>;
+var _ehExportacao      = <?= $ehExportacao ? 'true' : 'false' ?>;
 var _creditoDisponivel = <?= number_format($creditoDisponivel, 2, '.', '') ?>;
 
 // Traduções para os textos gerados em JavaScript (idioma do cliente)
@@ -1537,9 +1557,11 @@ function _submeterPedido(btnSpinner) {
     document.getElementById('formPedido').submit();
 }
 
-if (_modoMA) {
-    // Modo MA: finaliza direto, sem selecionar forma de pagamento
+if (_modoMA || _ehExportacao) {
+    // Modo MA e canal de Exportação: finaliza direto, sem selecionar forma de pagamento.
+    // Exportação tem condição de pagamento fixa "A Vista".
     document.getElementById('btnFinalizarDireto').addEventListener('click', function() {
+        if (_ehExportacao) document.getElementById('formaPagamento').value = 'A Vista';
         _submeterPedido(this);
     });
 } else {

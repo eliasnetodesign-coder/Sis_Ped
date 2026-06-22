@@ -197,6 +197,14 @@ return [
         'Concluir sem escolher bônus? Você não poderá selecionar depois.' => 'Finish without choosing a bonus? You will not be able to select it later.',
         'Pular'                    => 'Skip',
         'Confirmar bônus'          => 'Confirm bonus',
+        // Pop-up do bônus de Exportação
+        'Bônus de Exportação'      => 'Export Bonus',
+        'Seu pedido de venda foi finalizado. Veja como o seu bônus foi calculado:' => 'Your sales order has been completed. See how your bonus was calculated:',
+        'Valor da venda'           => 'Sale amount',
+        'Percentual de bônus'      => 'Bonus percentage',
+        'Bônus para escolher'      => 'Bonus to choose',
+        'Escolha abaixo os produtos bônus até este valor para concluir.' => 'Choose the bonus products below up to this amount to finish.',
+        'Escolher meus bônus'      => 'Choose my bonus',
 
         // PDF de confirmação
         'Outros'                   => 'Others',
@@ -473,6 +481,14 @@ return [
         'Concluir sem escolher bônus? Você não poderá selecionar depois.' => '¿Finalizar sin elegir bonificación? No podrá seleccionarla después.',
         'Pular'                    => 'Omitir',
         'Confirmar bônus'          => 'Confirmar bonificación',
+        // Pop-up del bono de Exportación
+        'Bônus de Exportação'      => 'Bono de Exportación',
+        'Seu pedido de venda foi finalizado. Veja como o seu bônus foi calculado:' => 'Su pedido de venta fue finalizado. Vea cómo se calculó su bono:',
+        'Valor da venda'           => 'Importe de la venta',
+        'Percentual de bônus'      => 'Porcentaje de bono',
+        'Bônus para escolher'      => 'Bono para elegir',
+        'Escolha abaixo os produtos bônus até este valor para concluir.' => 'Elija abajo los productos de bono hasta este importe para finalizar.',
+        'Escolher meus bônus'      => 'Elegir mis bonos',
 
         // PDF de confirmação
         'Outros'                   => 'Otros',
