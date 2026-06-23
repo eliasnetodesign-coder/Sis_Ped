@@ -43,15 +43,16 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
     foreach ($camps as $camp) {
         if ($camp['produto_id'] !== null) $campProdIds[$camp['codigo_campanha']][] = (int)$camp['produto_id'];
     }
-    $stmt  = db()->prepare('
+    $stmt  = db()->prepare("
         SELECT p.id, p.produto_id, p.quantidade_total, p.tipo_venda,
+               p.desconto_comercial, p.desconto_diretoria,
                pr.linha, pr.grupo, pr.subgrupo,
                COALESCE($colPreco, pr.vendas_varejo) AS preco
         FROM pedidos p
         JOIN produtos pr ON pr.id = p.produto_id
         LEFT JOIN tabela_precos t ON t.produto_id = pr.id
         WHERE p.lote_id = ?
-    ');
+    ");
     $stmt->execute([$lote_id]);
     $items = $stmt->fetchAll();
 
@@ -101,13 +102,64 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
             if ((int)$camp['quantidade'] > 0 && $qtdCheck < (int)$camp['quantidade']) continue;
             if ((float)$camp['desconto'] > $bestDisc) $bestDisc = (float)$camp['desconto'];
         }
+        $descGrupo = min(100, $dCliente + $dCanal
+                   + (float)($item['desconto_comercial'] ?? 0) + (float)($item['desconto_diretoria'] ?? 0));
         $valor = $item['tipo_venda'] === 'bonificacao' ? 0.0
                : (float)$item['quantidade_total'] * (float)($item['preco'] ?? 0)
-                 * (1 - ($dCliente + $dCanal) / 100)
+                 * (1 - $descGrupo / 100)
                  * (1 - $bestDisc / 100);
         db()->prepare('UPDATE pedidos SET desconto_campanha = ?, valor_total = ? WHERE id = ?')
             ->execute([$bestDisc ?: null, $valor, $item['id']]);
     }
+}
+
+// Melhor desconto de campanha (modelo legado por quantidade + modelo avançado) para um item isolado.
+function melhorCampanhaItem(array $prod, int $qtd, int $canalVendaId): float {
+    $campDesc = 0.0;
+    foreach (db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas')->fetchAll() as $camp) {
+        if ((int)$camp['quantidade'] <= 0) continue; // novo modelo (condições) — tratado pelo bloco avançado
+        if ($qtd < (int)$camp['quantidade']) continue;
+        if ($camp['produto_id'] && (int)$camp['produto_id'] !== (int)$prod['id']) continue;
+        if (!$camp['produto_id']) {
+            $l = trim($camp['linha'] ?? ''); $g = trim($camp['grupo'] ?? ''); $s = trim($camp['subgrupo'] ?? '');
+            if ($l && strtolower($l) !== strtolower(trim($prod['linha']    ?? ''))) continue;
+            if ($g && strtolower($g) !== strtolower(trim($prod['grupo']    ?? ''))) continue;
+            if ($s && strtolower($s) !== strtolower(trim($prod['subgrupo'] ?? ''))) continue;
+        }
+        if ((float)$camp['desconto'] > $campDesc) $campDesc = (float)$camp['desconto'];
+    }
+    foreach (avaliarCampanhasDescontoAvancadas(ctxCampanha([[
+        'produto_id' => (int)$prod['id'], 'qtd' => $qtd,
+        'linha' => $prod['linha'] ?? '', 'grupo' => $prod['grupo'] ?? '', 'subgrupo' => $prod['subgrupo'] ?? '',
+        'preco' => (float)$prod['preco'],
+    ]], $canalVendaId)) as $ac) {
+        if ($ac['desconto'] > $campDesc && itemBateGruposAlvo($prod, $ac['gruposAlvo'])) $campDesc = $ac['desconto'];
+    }
+    return $campDesc;
+}
+
+// Recalcula o valor_total de UM item de pedido (sem lote) somando todos os descontos
+// (cliente + canal + comercial + diretoria) e aplicando a campanha multiplicativamente.
+function recalcularValorItem(int $id): void {
+    $row = db()->prepare('SELECT p.*, c.desconto_cliente, c.desconto_canal, c.canal_venda_id
+                          FROM pedidos p LEFT JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?');
+    $row->execute([$id]);
+    $row = $row->fetch();
+    if (!$row) return;
+    $colPreco = colPrecoMoeda($row['moeda'] ?? 'BRL');
+    $prod = db()->prepare("SELECT p.*, COALESCE($colPreco, p.vendas_varejo) AS preco
+                           FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ?");
+    $prod->execute([(int)$row['produto_id']]);
+    $prod = $prod->fetch();
+    if (!$prod) return;
+    $qtd      = (int)$row['quantidade_total'];
+    $campDesc = melhorCampanhaItem($prod, $qtd, (int)($row['canal_venda_id'] ?? 0));
+    $descGrupo = min(100, (float)($row['desconto_cliente'] ?? 0) + (float)($row['desconto_canal'] ?? 0)
+               + (float)($row['desconto_comercial'] ?? 0) + (float)($row['desconto_diretoria'] ?? 0));
+    $valor = $row['tipo_venda'] === 'bonificacao' ? 0.0
+           : $qtd * (float)$prod['preco'] * (1 - $descGrupo / 100) * (1 - $campDesc / 100);
+    db()->prepare('UPDATE pedidos SET valor_total = ?, desconto_campanha = ? WHERE id = ?')
+        ->execute([$valor, $campDesc ?: null, $id]);
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -228,6 +280,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ->execute([$produto_id, $prod['descricao_pt'], $prod['codigo_barra'], $qtd, $tipo, $obs, $valor_total, $campDesc ?: null, $id]);
                 if ($ped['lote_id']) {
                     recalcularDescontosCampanha($ped['lote_id'], (float)($ped['desconto_cliente'] ?? 0), (float)($ped['desconto_canal'] ?? 0));
+                } else {
+                    recalcularValorItem($id); // reaplica descontos comercial/diretoria sobre o item editado
                 }
                 $det = "Produto: {$prod['descricao_pt']} | Qtd: {$qtd} | Tipo: {$tipo} | Valor: " . number_format($valor_total, 2, ',', '.');
                 logPedido($id, $numPed, 'Item editado', $ped['status'], $ped['status'], $det);
@@ -284,39 +338,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($ped['lote_id']) {
                 recalcularDescontosCampanha($ped['lote_id'], $dC, $dCn);
             } else {
-                $colPreco = colPrecoMoeda($ped['moeda'] ?? 'BRL');
-                $prod = db()->prepare("SELECT p.*, COALESCE($colPreco, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.id = ?");
-                $prod->execute([(int)$ped['produto_id']]);
-                $prod = $prod->fetch();
-                $camps_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas')->fetchAll();
-                $campDesc  = 0;
-                foreach ($camps_all as $camp) {
-                    if ((int)$camp['quantidade'] <= 0) continue; // novo modelo (condições) — tratado pelo bloco avançado
-                    if ((int)$camp['quantidade'] > 0 && $novaQtd < (int)$camp['quantidade']) continue;
-                    if ($camp['produto_id'] && (int)$camp['produto_id'] !== (int)$ped['produto_id']) continue;
-                    if (!$camp['produto_id']) {
-                        $l = trim($camp['linha'] ?? ''); $g = trim($camp['grupo'] ?? ''); $s = trim($camp['subgrupo'] ?? '');
-                        if ($l && strtolower($l) !== strtolower(trim($prod['linha'] ?? ''))) continue;
-                        if ($g && strtolower($g) !== strtolower(trim($prod['grupo'] ?? ''))) continue;
-                        if ($s && strtolower($s) !== strtolower(trim($prod['subgrupo'] ?? ''))) continue;
-                    }
-                    if ((float)$camp['desconto'] > $campDesc) $campDesc = (float)$camp['desconto'];
-                }
-                // Campanhas de desconto do novo modelo (item único, sem lote)
-                foreach (avaliarCampanhasDescontoAvancadas(ctxCampanha([[
-                    'produto_id' => (int)$ped['produto_id'], 'qtd' => $novaQtd,
-                    'linha' => $prod['linha'] ?? '', 'grupo' => $prod['grupo'] ?? '', 'subgrupo' => $prod['subgrupo'] ?? '',
-                    'preco' => (float)$prod['preco'],
-                ]], (int)($ped['canal_venda_id'] ?? 0))) as $ac) {
-                    if ($ac['desconto'] > $campDesc && itemBateGruposAlvo($prod, $ac['gruposAlvo'])) $campDesc = $ac['desconto'];
-                }
-                $valor = $ped['tipo_venda'] === 'bonificacao' ? 0.0
-                       : $novaQtd * (float)$prod['preco'] * (1 - ($dC + $dCn) / 100) * (1 - $campDesc / 100);
-                db()->prepare('UPDATE pedidos SET quantidade_total = ?, valor_total = ?, desconto_campanha = ? WHERE id = ?')
-                    ->execute([$novaQtd, $valor, $campDesc ?: null, $id]);
+                recalcularValorItem($id);
             }
             logPedido($id, $numPed, 'Quantidade alterada', $ped['status'], $ped['status'], "Qtd: {$novaQtd}");
             flash('success', 'Quantidade atualizada.');
+        } elseif ($action === 'set_desconto' && $isComercial) {
+            $tipoDesc  = ($_POST['tipo_desc'] ?? '') === 'diretoria' ? 'diretoria' : 'comercial';
+            $valorDesc = max(0, (float)str_replace(',', '.', $_POST['valor_desc'] ?? 0));
+            $ped = db()->prepare('SELECT p.status, p.lote_id, p.desconto_comercial, p.desconto_diretoria,
+                                         c.desconto_cliente, c.desconto_canal, cv.margem_negociacao
+                                  FROM pedidos p
+                                  LEFT JOIN clientes c     ON c.id = p.cliente_id
+                                  LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id
+                                  WHERE p.id = ?');
+            $ped->execute([$id]);
+            $ped = $ped->fetch();
+            if (!$ped || $ped['status'] !== 'comercial') throw new Exception('Edição de desconto não permitida neste status.');
+            if ($tipoDesc === 'comercial') {
+                // Respeita o limitador: Desconto Comercial não pode passar da margem de negociação do canal.
+                $limite = (float)($ped['margem_negociacao'] ?? 0);
+                $aplicado = min($valorDesc, $limite);
+                db()->prepare('UPDATE pedidos SET desconto_comercial = ? WHERE id = ?')->execute([$aplicado, $id]);
+                $label = 'Desconto Comercial';
+                $extra = $valorDesc > $limite ? " (limitado pela margem de {$limite}%)" : '';
+            } else {
+                $aplicado = $valorDesc; // Diretoria não tem limite
+                db()->prepare('UPDATE pedidos SET desconto_diretoria = ? WHERE id = ?')->execute([$aplicado, $id]);
+                $label = 'Desconto Diretoria';
+                $extra = '';
+            }
+            if ($ped['lote_id']) {
+                recalcularDescontosCampanha($ped['lote_id'], (float)($ped['desconto_cliente'] ?? 0), (float)($ped['desconto_canal'] ?? 0));
+            } else {
+                recalcularValorItem($id);
+            }
+            $pct = rtrim(rtrim(number_format($aplicado, 2, ',', '.'), '0'), ',');
+            logPedido($id, $numPed, 'Desconto alterado', $ped['status'], $ped['status'], "{$label}: {$pct}%{$extra}");
+            flash('success', $label . ' atualizado.' . ($extra ? ' Valor ajustado ao limite da margem de negociação.' : ''));
         } elseif ($action === 'remover_item' && $isComercial) {
             $ped = db()->prepare('SELECT p.*, c.desconto_cliente, c.desconto_canal FROM pedidos p LEFT JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?');
             $ped->execute([$id]);
@@ -373,7 +431,7 @@ $pedido = db()->prepare("
     SELECT p.*, c.razao_social, c.email AS cliente_email,
            c.desconto_cliente, c.desconto_canal, c.estado AS cliente_uf, c.cidade AS cliente_cidade,
            c.canal_venda_id AS cliente_canal_id,
-           cv.canal AS canal_venda,
+           cv.canal AS canal_venda, cv.margem_negociacao,
            pr.codigo_produto, pr.multiplo, pr.linha, pr.grupo, pr.subgrupo,
            COALESCE(t.preco_padrao, pr.vendas_varejo) AS preco_unit
     FROM pedidos p
@@ -403,6 +461,8 @@ $stmtItens = db()->prepare("
 $stmtItens->execute([$loteId ?: $pedidoId]);
 $itensPedido = $stmtItens->fetchAll();
 $valorTotalGeral = array_sum(array_column($itensPedido, 'valor_total'));
+// Teto do Desconto Comercial = margem de negociação do canal do cliente.
+$margemNegociacao = (float)($pedido['margem_negociacao'] ?? 0);
 
 // ===== Detalhamento fiscal (preço Network + impostos do NCM) =====
 $UF_NOME = [
@@ -844,8 +904,13 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                         <div class="fw-semibold"><?= rtrim(rtrim(number_format($descCanal, 2, ',', '.'), '0'), ',') ?>%</div>
                     </div>
                     <div class="col-6 col-md-3">
-                        <div class="text-muted small">Comercial (Cliente + Canal)</div>
+                        <div class="text-muted small">Cliente + Canal</div>
                         <div class="fw-semibold text-primary"><?= rtrim(rtrim(number_format($descCliente + $descCanal, 2, ',', '.'), '0'), ',') ?>%</div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="text-muted small">Margem de Negociação</div>
+                        <div class="fw-semibold"><?= rtrim(rtrim(number_format($margemNegociacao, 2, ',', '.'), '0'), ',') ?>%</div>
+                        <div class="text-muted" style="font-size:.72rem">Teto do Desconto Comercial por item</div>
                     </div>
                 </div>
                 <?php endif; ?>
@@ -899,6 +964,9 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                             <th class="text-center">Múltiplo</th>
                             <th class="text-center">Quantidade Total</th>
                             <th class="text-end">Preço Unit.</th>
+                            <th class="text-center">Desc. Comercial<?php if ($canEdit && $margemNegociacao > 0): ?><br><small class="fw-normal text-muted">máx <?= rtrim(rtrim(number_format($margemNegociacao, 2, ',', '.'), '0'), ',') ?>%</small><?php endif; ?></th>
+                            <th class="text-center">Desc. Diretoria</th>
+                            <th class="text-end">Valor Unit. c/ Desc.</th>
                             <th class="text-center">Desconto</th>
                             <th class="text-end pe-3">Total</th>
                             <?php if ($canEdit): ?><th></th><?php endif; ?>
@@ -906,9 +974,13 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                     </thead>
                     <tbody>
                         <?php foreach ($itensPedido as $item):
-                            $descPct   = (float)($item['desconto_campanha'] ?? 0);
-                            $qtd       = (int)$item['quantidade_total'];
-                            $precoUnit = $qtd > 0 ? (float)$item['valor_total'] / $qtd : 0;
+                            $descPct    = (float)($item['desconto_campanha'] ?? 0);
+                            $qtd        = (int)$item['quantidade_total'];
+                            $precoBruto = (float)($item['preco_unit'] ?? 0);          // preço de tabela (sem descontos)
+                            $precoUnit  = $qtd > 0 ? (float)$item['valor_total'] / $qtd : 0; // unitário já com todos os descontos
+                            $dCom       = (float)($item['desconto_comercial'] ?? 0);
+                            $dDir       = (float)($item['desconto_diretoria'] ?? 0);
+                            $ehBonifItem = ($item['tipo_venda'] ?? 'venda') === 'bonificacao';
                         ?>
                         <tr>
                             <td class="ps-3 fw-semibold"><?= e($item['descricao_produto'] ?? '—') ?></td>
@@ -929,7 +1001,52 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                             <?php endif; ?>
                             <td class="text-center text-muted small"><?= !empty($item['multiplo']) ? (int)$item['multiplo'] : '—' ?></td>
                             <td class="text-center"><?= $qtd ?></td>
-                            <td class="text-end"><?= $precoUnit > 0 ? moedaBR($precoUnit) : '—' ?></td>
+                            <td class="text-end"><?= $precoBruto > 0 ? moedaBR($precoBruto) : '—' ?></td>
+                            <!-- Desconto Comercial (limitado pela margem de negociação do canal) -->
+                            <td class="text-center">
+                                <?php if ($canEdit && !$ehBonifItem): ?>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="action"    value="set_desconto">
+                                    <input type="hidden" name="tipo_desc" value="comercial">
+                                    <input type="hidden" name="id"        value="<?= $item['id'] ?>">
+                                    <div class="input-group input-group-sm mx-auto" style="width:90px">
+                                        <input type="number" name="valor_desc" min="0" step="0.01"
+                                               <?= $margemNegociacao > 0 ? 'max="' . $margemNegociacao . '"' : '' ?>
+                                               value="<?= rtrim(rtrim(number_format($dCom, 2, '.', ''), '0'), '.') ?>"
+                                               class="form-control form-control-sm text-end"
+                                               title="<?= $margemNegociacao > 0 ? 'Máximo ' . rtrim(rtrim(number_format($margemNegociacao, 2, ',', '.'), '0'), ',') . '%' : 'Sem margem de negociação no canal' ?>"
+                                               onchange="this.closest('form').submit()">
+                                        <span class="input-group-text">%</span>
+                                    </div>
+                                </form>
+                                <?php elseif ($dCom > 0): ?>
+                                <span class="badge bg-warning text-dark">-<?= rtrim(rtrim(number_format($dCom, 2, ',', '.'), '0'), ',') ?>%</span>
+                                <?php else: ?>
+                                <span class="text-muted">—</span>
+                                <?php endif; ?>
+                            </td>
+                            <!-- Desconto Diretoria (sem limite) -->
+                            <td class="text-center">
+                                <?php if ($canEdit && !$ehBonifItem): ?>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="action"    value="set_desconto">
+                                    <input type="hidden" name="tipo_desc" value="diretoria">
+                                    <input type="hidden" name="id"        value="<?= $item['id'] ?>">
+                                    <div class="input-group input-group-sm mx-auto" style="width:90px">
+                                        <input type="number" name="valor_desc" min="0" step="0.01"
+                                               value="<?= rtrim(rtrim(number_format($dDir, 2, '.', ''), '0'), '.') ?>"
+                                               class="form-control form-control-sm text-end"
+                                               onchange="this.closest('form').submit()">
+                                        <span class="input-group-text">%</span>
+                                    </div>
+                                </form>
+                                <?php elseif ($dDir > 0): ?>
+                                <span class="badge bg-dark">-<?= rtrim(rtrim(number_format($dDir, 2, ',', '.'), '0'), ',') ?>%</span>
+                                <?php else: ?>
+                                <span class="text-muted">—</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="text-end fw-semibold text-primary"><?= $precoUnit > 0 ? moedaBR($precoUnit) : '—' ?></td>
                             <td class="text-center">
                                 <?php if ($descPct > 0): ?>
                                 <span class="badge bg-success">-<?= number_format($descPct, 2, ',', '.') ?>%</span>
@@ -954,7 +1071,7 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                         <?php endforeach; ?>
                     </tbody>
                     <tfoot class="table-light">
-                        <?php $cols = $canEdit ? 7 : 6; ?>
+                        <?php $cols = $canEdit ? 10 : 9; ?>
                         <tr>
                             <td colspan="<?= $cols ?>" class="text-end fw-semibold pe-3">Subtotal:</td>
                             <td class="fw-semibold text-end pe-3"><?= moedaBR($valorTotalGeral) ?></td>

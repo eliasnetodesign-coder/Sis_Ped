@@ -141,6 +141,11 @@ function db() {
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN cond_grupo VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN cond_subgrupo VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN cond_produto_id INT NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // Margem de negociação do canal = teto do Desconto Comercial aplicável no pedido.
+            try { $pdo->exec("ALTER TABLE canal_venda ADD COLUMN margem_negociacao DECIMAL(10,4) NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
+            // Descontos extras por item do pedido: Comercial (limitado pela margem de negociação) e Diretoria (sem limite).
+            try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN desconto_comercial DECIMAL(10,4) NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN desconto_diretoria DECIMAL(10,4) NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_desconto_alvo (
                 id              INT AUTO_INCREMENT PRIMARY KEY,
                 codigo_campanha VARCHAR(50)  NOT NULL,
