@@ -73,7 +73,7 @@ $pedidos = db()->prepare("
            pf.data_pedido, g.created_at,
            pf.tipo_venda, g.valor_total, pf.moeda, pf.cotacao,
            g.status, g.num_itens, g.lote_key,
-           g.razao_social, g.codigo_cliente, g.cliente_id, g.supervisor, pf.observacoes
+           g.razao_social, g.codigo_cliente, g.cliente_id, g.canal_venda_id, g.supervisor, pf.observacoes
     FROM (
         SELECT MIN(p.id) AS min_id,
                COALESCE(p.lote_id, CAST(p.id AS CHAR)) AS lote_key,
@@ -84,6 +84,7 @@ $pedidos = db()->prepare("
                MIN(c.razao_social) AS razao_social,
                MIN(c.codigo_cliente) AS codigo_cliente,
                MIN(p.cliente_id) AS cliente_id,
+               MIN(c.canal_venda_id) AS canal_venda_id,
                COALESCE(MIN(p.supervisor), MIN(p.vendedor)) AS supervisor
         FROM pedidos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
@@ -404,7 +405,8 @@ $cardDefs = [
                     ?>
                     <td class="text-end"><?= $credito > 0 ? moedaBR($credito) : '<span class="text-muted">—</span>' ?></td>
                     <td class="text-end"><?= moedaBR($nfTotal) ?></td>
-                    <?php if ($p['tipo_venda'] === 'bonificacao'): ?>
+                    <?php // Canal de Exportação e bonificação não têm cálculo de Accademia
+                    if ($p['tipo_venda'] === 'bonificacao' || canalEhExportacao((int)($p['canal_venda_id'] ?? 0))): ?>
                     <td class="text-end text-muted">—</td>
                     <?php else: ?>
                     <td class="text-end fw-semibold <?= $accademia < 0 ? 'text-danger' : 'text-success' ?>"><?= moedaBR($accademia) ?></td>

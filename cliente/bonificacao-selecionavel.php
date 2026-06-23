@@ -26,7 +26,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (($_POST['action'] ?? '') === 'pular') _concluirSelecao($ctx, $retorno);
 
     $sel = $_POST['sel'] ?? [];
-    $bonusAcc = [];
+    $bonusAcc    = [];
+    $precoSelById = []; // preço unitário usado na seleção (moeda da campanha) por produto
     $erros = [];
     foreach ($camps as $cp) {
         $code = $cp['codigo'];
@@ -52,7 +53,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             if ($somaQtd > (int)$cp['limite']) { $erros[] = t('Campanha %s: quantidade selecionada excede o limite.', $code); continue; }
         }
-        foreach ($itens as $pid => $q) $bonusAcc[$pid] = ($bonusAcc[$pid] ?? 0) + $q;
+        foreach ($itens as $pid => $q) {
+            $bonusAcc[$pid]     = ($bonusAcc[$pid] ?? 0) + $q;
+            $precoSelById[$pid] = $precoById[$pid]; // grava o pedido com o preço exibido na seleção
+        }
     }
 
     if ($erros) {
@@ -65,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              . (!empty($ctx['ref']) ? ' (ref. ' . $ctx['ref'] . ')' : '')
              . ' — ' . implode(', ', array_map(fn($c) => $c['codigo'], $camps));
         try {
-            $criados = criarPedidoBonificado((int)$ctx['cliente_id'], (string)$ctx['supervisor'], (string)$ctx['data'], $bonusAcc, $obs);
+            $criados = criarPedidoBonificado((int)$ctx['cliente_id'], (string)$ctx['supervisor'], (string)$ctx['data'], $bonusAcc, $obs, $precoSelById);
             if ($criados) {
                 $_SESSION['bonus_aviso'] = array_map(fn($b) => $b['quantidade'] . 'x ' . $b['descricao'], $criados);
             }
@@ -127,11 +131,13 @@ require_once LAYOUT_PATH . '/header.php';
 
 <form method="POST" id="bonifForm">
     <?php foreach ($camps as $cp):
-        $porValor = $cp['limite_tipo'] === 'valor';
-        $limiteTxt = $porValor ? moedaBR((float)$cp['limite']) : ((int)$cp['limite'] . ' ' . t('un.'));
+        $porValor  = $cp['limite_tipo'] === 'valor';
+        $cpMoeda   = $cp['moeda'] ?? 'BRL';
+        $cpSim     = simboloMoeda($cpMoeda);
+        $limiteTxt = $porValor ? ($cpSim . ' ' . number_format((float)$cp['limite'], 2, ',', '.')) : ((int)$cp['limite'] . ' ' . t('un.'));
     ?>
     <div class="card shadow-sm border-0 mb-3 camp-card"
-         data-codigo="<?= e($cp['codigo']) ?>" data-tipo="<?= e($cp['limite_tipo']) ?>" data-limite="<?= e($cp['limite']) ?>">
+         data-codigo="<?= e($cp['codigo']) ?>" data-tipo="<?= e($cp['limite_tipo']) ?>" data-limite="<?= e($cp['limite']) ?>" data-simbolo="<?= e($cpSim) ?>">
         <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div><strong><?= et('Campanha') ?> <?= e($cp['codigo']) ?></strong>
                 <span class="text-muted small ms-2"><?= et('Limite:') ?> <?= e($limiteTxt) ?></span>
@@ -155,7 +161,7 @@ require_once LAYOUT_PATH . '/header.php';
                         <tr>
                             <td class="fw-semibold"><?= e($p['codigo']) ?></td>
                             <td><?= e($p['descricao']) ?></td>
-                            <td class="text-end"><?= moedaBR((float)$p['preco']) ?></td>
+                            <td class="text-end"><?= e($cpSim) ?> <?= number_format((float)$p['preco'], 2, ',', '.') ?></td>
                             <td class="text-center">
                                 <?php if ($pMult > 1): ?>
                                 <span class="badge bg-light text-dark border"><?= number_format($pMult, 0) ?></span>
@@ -192,15 +198,16 @@ require_once LAYOUT_PATH . '/header.php';
 
 <script>
 var BONIF_UN = <?= json_encode(t('un.')) ?>;
-function bonifFmt(v, porValor) {
+function bonifFmt(v, porValor, simbolo) {
     if (!porValor) return String(v) + ' ' + BONIF_UN;
-    return 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return (simbolo || 'R$') + ' ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function bonifRecalc() {
     var ok = true;
     document.querySelectorAll('.camp-card').forEach(function(card) {
         var porValor = card.dataset.tipo === 'valor';
         var limite   = parseFloat(card.dataset.limite) || 0;
+        var simbolo  = card.dataset.simbolo || 'R$';
         var usado    = 0;
         card.querySelectorAll('.bonif-qtd').forEach(function(inp) {
             var q    = parseInt(inp.value, 10) || 0;
@@ -216,7 +223,7 @@ function bonifRecalc() {
             usado += porValor ? actual * (parseFloat(inp.dataset.preco) || 0) : actual;
         });
         var excede = usado - limite > 0.001;
-        card.querySelector('.camp-usado').textContent = bonifFmt(porValor ? Math.round(usado * 100) / 100 : usado, porValor);
+        card.querySelector('.camp-usado').textContent = bonifFmt(porValor ? Math.round(usado * 100) / 100 : usado, porValor, simbolo);
         card.querySelector('.camp-excede').classList.toggle('d-none', !excede);
         if (excede) ok = false;
     });

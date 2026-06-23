@@ -828,18 +828,22 @@ function avaliarCampanhasDescontoAvancadas(array $ctx): array {
 }
 
 /**
- * Cria um pedido bonificado (lote separado, preço Network, sem cotação).
+ * Cria um pedido bonificado (lote separado, sem cotação).
  * @param array $bonusAcc  produto_id => quantidade
+ * @param array $precoById produto_id => preço unitário usado na seleção (na moeda do
+ *                         cliente). Quando informado, grava o item com esse preço — o
+ *                         MESMO mostrado ao cliente; senão usa o preço Network (bônus
+ *                         automático/MA).
  * @return array  itens criados: ['produto_id','descricao','quantidade','pedido_id']
  */
-function criarPedidoBonificado(int $clienteId, string $supervisor, string $dataPedido, array $bonusAcc, string $obs): array {
+function criarPedidoBonificado(int $clienteId, string $supervisor, string $dataPedido, array $bonusAcc, string $obs, array $precoById = []): array {
     if (!$bonusAcc) return [];
     $lote = uniqid('LB', true);
     $num  = 'PED-' . date('Y') . '-' . str_pad(rand(1000, 9999), 4, '0', STR_PAD_LEFT);
     $moedaCli = db()->prepare('SELECT moeda FROM clientes WHERE id = ?');
     $moedaCli->execute([$clienteId]);
     $moedaCli = $moedaCli->fetchColumn() ?: 'BRL';
-    $cotacaoCli = null; // bonificação usa preço network (BRL): não converte.
+    $cotacaoCli = null; // não converte: o valor já é gravado na moeda do cliente.
     $ins  = db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,moeda,cotacao) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?)');
     $criados = [];
     foreach ($bonusAcc as $pid => $q) {
@@ -849,7 +853,9 @@ function criarPedidoBonificado(int $clienteId, string $supervisor, string $dataP
                              WHERE p.id = ? AND p.status = "ativo"');
         $pr->execute([(int)$pid]); $pr = $pr->fetch();
         if (!$pr) continue;
-        $valor = $q * (float)$pr['preco'];
+        // Usa o preço efetivamente exibido na seleção (moeda do cliente) quando informado.
+        $precoUnit = array_key_exists((int)$pid, $precoById) ? (float)$precoById[(int)$pid] : (float)$pr['preco'];
+        $valor = $q * $precoUnit;
         $ins->execute([$num, 'bonificacao', $dataPedido, $clienteId, (int)$pid, $supervisor, $pr['codigo_barra'], $pr['descricao_pt'], $q, $valor, $obs, $lote, $moedaCli, $cotacaoCli]);
         $criados[] = ['produto_id' => (int)$pid, 'descricao' => $pr['descricao_pt'], 'quantidade' => $q, 'pedido_id' => (int)db()->lastInsertId()];
     }
@@ -984,6 +990,7 @@ function detectarBonificacaoSelecionavel(array $itensVenda, int $canalVendaId): 
             'mult'        => $mult,
             'limite_tipo' => $limiteTipo,
             'limite'      => $limite,
+            'moeda'       => 'BRL', // campanhas regulares usam preço Network (BRL)
             'produtos'    => $produtos,
         ];
     }
@@ -1010,17 +1017,19 @@ function canalEhExportacao(int $canalVendaId): bool {
 }
 
 /**
- * Bonus de exportacao: 5% (BONUS_EXPORTACAO_PCT) do valor da venda - em BRL/Network -
- * para o cliente escolher entre TODOS os produtos ativos. Retorna uma "campanha
- * selecionavel" no mesmo formato de detectarBonificacaoSelecionavel(), ou [] quando
- * o limite e zero ou nao ha produtos com preco. O valor base deve estar em BRL,
- * pois a bonificacao usa o preco Network (sem conversao de moeda).
+ * Bonus de exportacao: 5% (BONUS_EXPORTACAO_PCT) do valor da venda para o cliente
+ * escolher entre TODOS os produtos ativos. Respeita a MOEDA do cliente: o valor base
+ * e os precos dos produtos sao na moeda informada (BRL/USD/EUR), usando a coluna de
+ * preco correspondente (colPrecoMoeda). Retorna uma "campanha selecionavel" no mesmo
+ * formato de detectarBonificacaoSelecionavel() (com a chave 'moeda'), ou [] quando o
+ * limite e zero ou nao ha produtos com preco.
  */
-function bonusExportacaoSelecionavel(float $valorBaseBRL): array {
-    $limite = round($valorBaseBRL * (BONUS_EXPORTACAO_PCT / 100), 2);
+function bonusExportacaoSelecionavel(float $valorBase, string $moeda = 'BRL'): array {
+    $limite = round($valorBase * (BONUS_EXPORTACAO_PCT / 100), 2);
     if ($limite <= 0) return [];
+    $col = colPrecoMoeda($moeda); // t.preco_padrao | t.preco_dolar | t.preco_euro
     $rows = db()->query("SELECT p.id, p.codigo_produto, p.descricao_pt, p.multiplo,
-                                COALESCE(t.preco_network, p.vendas_varejo, 0) AS preco
+                                COALESCE($col, t.preco_network, p.vendas_varejo, 0) AS preco
                          FROM produtos p
                          LEFT JOIN tabela_precos t ON t.produto_id = p.id
                          WHERE p.status = 'ativo' ORDER BY p.descricao_pt")->fetchAll();
@@ -1042,6 +1051,7 @@ function bonusExportacaoSelecionavel(float $valorBaseBRL): array {
         'mult'        => 1,
         'limite_tipo' => 'valor',
         'limite'      => $limite,
+        'moeda'       => strtoupper($moeda),
         'produtos'    => $produtos,
     ];
 }

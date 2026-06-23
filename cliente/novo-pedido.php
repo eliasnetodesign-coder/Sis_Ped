@@ -317,13 +317,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // Canal de Exportação: 5% do valor da venda para o cliente escolher
                     // entre todos os produtos ativos (bônus selecionável por valor, em BRL)
                     if (canalEhExportacao($canalVendaId)) {
-                        $expBonus = bonusExportacaoSelecionavel($totalPedido);
+                        // Bônus de exportação na MOEDA do cliente: base e preços na moeda do pedido
+                        $moedaCli = $cli['moeda'] ?? 'BRL';
+                        $expBonus = bonusExportacaoSelecionavel($totalPedidoMoeda, $moedaCli);
                         if ($expBonus) {
-                            // Dados do cálculo para o pop-up, na mesma moeda usada no pedido
-                            $expBonus['moeda']      = $cli['moeda'] ?? 'BRL';
+                            // Dados do cálculo para o pop-up (mesma moeda do pedido)
                             $expBonus['pct']        = BONUS_EXPORTACAO_PCT;
                             $expBonus['base_exib']  = $totalPedidoMoeda;
-                            $expBonus['bonus_exib'] = round($totalPedidoMoeda * (BONUS_EXPORTACAO_PCT / 100), 2);
+                            $expBonus['bonus_exib'] = $expBonus['limite']; // 5% já na moeda do cliente
                             $selec[] = $expBonus;
                         }
                     }
