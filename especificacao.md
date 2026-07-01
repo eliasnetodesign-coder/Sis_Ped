@@ -2,7 +2,13 @@
 
 ## 1. Visão Geral
 
-Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois portais distintos: **Admin** (equipe interna) e **Cliente** (comprador externo). Backend PHP 7.4+ com MySQL/PDO, frontend Bootstrap 5, JavaScript vanilla, SheetJS para Excel.
+Sistema web de gestão de pedidos B2B para indústria de cosméticos (Itallian Hairtech). Dois portais distintos: **Admin** (equipe interna) e **Cliente** (comprador externo). Backend PHP 7.4+ com MySQL/PDO, frontend Bootstrap 5, JavaScript vanilla, SheetJS para Excel.
+
+**Recursos transversais:**
+- **Multimoeda** — pedidos e preços operam em BRL, USD ou EUR conforme a moeda do cliente; todos os somatórios/relatórios convertem USD/EUR para BRL pela cotação do pedido (ver §5.10).
+- **Internacionalização (i18n)** — a área do cliente é traduzida para PT/EN/ES conforme `clientes.idioma` (ver §5.11).
+- **2FA por WhatsApp** — usuários internos do tipo "Externo" exigem verificação por código quando logam fora do IP autorizado (ver §2.1.2).
+- **Tema claro/escuro** — o portal admin tem alternância de tema persistida em `localStorage` (`sisped-theme`).
 
 ---
 
@@ -24,17 +30,26 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Validações: nova senha obrigatória, confirmação igual, mínimo 4 caracteres e diferente da senha padrão (`123`).
 - Atualiza `senha` e zera `senha_temporaria` na tabela correspondente (`clientes` ou `usuarios`).
 
+### 2.1.2 Verificação de Acesso — 2FA por WhatsApp (`verificar-acesso.php`)
+- Usuários internos cujo **Tipo de Usuário** (`usuarios.tipo_usuario`, texto livre) seja **"Externo"** e que logam a partir de um IP **diferente** de `IP_LIBERADO` (constante em `config.php`) precisam confirmar um **código de 6 dígitos enviado por WhatsApp** para o celular cadastrado.
+- Fluxo: `login.php` gera o código, envia via `enviarWhatsappCodigo()` e guarda em `$_SESSION['login_2fa']` (hash do código, expiração, telefone mascarado, contador de tentativas); o login **só é efetivado** após a verificação bem-sucedida em `verificar-acesso.php`.
+- Regras: validade de `WHATSAPP_CODIGO_VALIDADE` segundos (padrão 600 = 10 min); máximo de **5 tentativas**; opção de **reenviar** o código; código expirado ou tentativas excedidas voltam ao login.
+- Sem celular cadastrado, o acesso externo é bloqueado com aviso.
+- **Integração WhatsApp:** hoje o envio é registrado em `whatsapp_logs` e `logs/whatsapp.log` (modo simulação); o ponto único `enviarWhatsappCodigo()` está pronto para plugar um provedor real (WhatsApp Cloud API/Twilio). Remetente em `WHATSAPP_REMETENTE`.
+
 ### 2.2 Perfis de Usuário
 
-| Perfil | Portal | Permissões |
+| Perfil (`tipo_acesso`) | Portal | Permissões |
 |--------|--------|-----------|
-| `comercial` | Admin | Acesso total: todos os pedidos, relatórios; aprova e cancela pedidos na etapa Comercial |
-| `financeiro` | Admin | Acesso ao módulo financeiro e cadastros financeiros; aprova, cancela e retorna pedidos na etapa Financeiro |
-| `supervisor` | Admin | Visão filtrada somente aos próprios clientes e pedidos; pode criar pedidos e **aprovar pedidos na etapa Comercial** |
-| `tecnologia da informacao` | Admin | Acesso amplo aos módulos; vê campos sensíveis nos cadastros (ex.: desconto do canal em clientes) |
+| `comercial` | Admin | Todos os pedidos e relatórios; aprova e cancela pedidos na etapa Comercial; gerencia cadastros comerciais |
+| `financeiro` | Admin | Módulo financeiro e cadastros financeiros; aprova, cancela e retorna pedidos na etapa Financeiro; vê colunas fiscais/crédito nos pedidos |
+| `supervisor` | Admin | Visão filtrada somente aos próprios clientes e pedidos; pode criar pedidos e **aprovar na etapa Comercial** |
+| `tecnologia da informacao` | Admin | **Acesso total** — atua simultaneamente como Comercial **e** Financeiro (sem o escopo restrito do supervisor); vê todos os módulos, colunas sensíveis e todas as ações |
 | `cliente` | Cliente | Acesso apenas ao próprio portal: pedidos, financeiro, perfil, troca de CNPJ |
 
-> O enum de `tipo_acesso` em `usuarios` ainda inclui `recursos humanos`, `marketing`, `diretoria`, `centro tecnico`, `contabilidade`, `recepcao`, `expedicao`, sem rotas/módulos dedicados.
+> **TI = acesso total:** o gating fino inclui `tecnologia da informacao` nas duas listas de papel (`$isComercial` e `$isFinanceiro`). Ao criar nova checagem de papel, incluir TI em ambos os grupos.
+
+> O enum de `tipo_acesso` em `usuarios` também aceita `recursos humanos`, `marketing`, `diretoria`, `centro tecnico`, `contabilidade`, `recepcao`, `expedicao` (11 valores no total); esses entram como acesso admin genérico via `requireAdmin()`, sem menus/rotas dedicados.
 
 ### 2.3 Proteção de Rotas
 - `requireAdmin()` — permite `comercial`, `financeiro`, `supervisor`, `tecnologia da informacao`
@@ -114,33 +129,47 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
 - Preview de até 200 linhas; aviso quando arquivo excede 200.
 - Não é possível criar duas entradas para o mesmo produto (faz upsert).
 
+**Câmbio de segurança e preços em moeda estrangeira (multimoeda):**
+- No topo da tela há a edição do **câmbio de segurança**: `dolar_seguranca` e `euro_seguranca` (action `cambio`), armazenados na tabela `configuracoes` (chave/valor). Helpers `getConfig()`/`setConfig()` em `config.php`.
+- Colunas **calculadas** em `tabela_precos`: `preco_dolar = preco_auxiliar / dolar_seguranca` e `preco_euro = preco_auxiliar / euro_seguranca` (NULL se o auxiliar estiver vazio ou o câmbio ≤ 0). Recalculadas ao salvar/importar preço e ao salvar o câmbio.
+- **Cotação do dia (botão "Buscar cotação", `?cotacao=1`):** `buscarCotacaoAPI()` consulta a AwesomeAPI (USD-BRL / EUR-BRL via cURL) e `cotacaoDia()` cacheia o valor do dia em `configuracoes` (`cotacao_usd`, `cotacao_eur`, `cotacao_data`) — 1 chamada por dia, com fallback ao último valor. Essa cotação é gravada no pedido (`pedidos.cotacao`) na criação e usada para converter USD/EUR → BRL nas agregações.
+
 #### 3.2.4 Canal de Venda (`admin/cadastros/canal-venda.php`)
-**Campos:** Canal*, Faixa de Faturamento (texto, ex: "Acima de R$ 50.000"), Desconto Máximo %.
-- O valor de Desconto serve de teto para `desconto_canal` nos clientes.
+**Campos:** Canal*, Faixa de Faturamento (texto, ex: "Acima de R$ 50.000"), Desconto Máximo %, **Margem de Negociação %**.
+- **Desconto Máximo %** (`canal_venda.desconto`) serve de teto para `desconto_canal` nos clientes.
+- **Margem de Negociação %** (`canal_venda.margem_negociacao`) serve de teto para o **Desconto Comercial** aplicável por item no pedido (ver §3.3.3 e §5.1.2).
+- O canal cujo nome contém **"export"** é tratado como canal de **Exportação** e concede o bônus de exportação (ver §5.12).
 
 #### 3.2.5 Campanhas (`admin/cadastros/campanhas.php`)
-**Campos:** Código da Campanha*, Canal de Venda (opcional — "Todos" ou canal específico), **Tipo de Campanha** (Desconto **ou** Produtos Bonificados), Quantidade Mínima*, e o alvo (gatilho) da campanha em **um dos dois modos** abaixo.
 
-**Tipo de Campanha:**
-- **Desconto:** mantém o comportamento clássico — campo **Desconto %** aplicado ao(s) item(ns) que atingem a quantidade mínima.
-- **Produtos Bonificados:** em vez de desconto, define-se uma lista de **produtos + quantidades** que serão dados como brinde. A quantidade bonificada **multiplica** conforme o total comprado: `mult = floor(qtd_alvo / quantidade_minima)`. Armazenada na tabela `campanha_bonificacao`.
-  - *Exemplo:* alvo Grupo "Coloração", mínimo 50, bônus "2x Oxidante". Cliente compra 100 → `floor(100/50)=2` → **4 oxidantes** bonificados.
-  - Ao finalizar uma **venda** que aciona a campanha, o sistema cria um **pedido bonificado separado** (`tipo_venda=bonificacao`, lote próprio, status comercial), com **valor pelo preço Network** (fallback: venda varejo), e **notifica** o cliente/operador. Gerado apenas em vendas novas (não em edição).
+O módulo de campanhas foi **reestruturado** (jun/2026). Convivem dois modelos, decididos por: **se a campanha tem linhas em `campanha_condicoes` ⇒ modelo novo; senão ⇒ legado**. As migrações são apenas aditivas; **o PHP (`config.php`) é a fonte de verdade** da avaliação. A descrição abaixo é do **modelo novo**.
 
-**Modo Produtos:**
-- Busca de produtos por **código ou nome** (autocomplete) e botão **Adicionar**; permite **vários produtos** na mesma campanha (lista com remoção).
-- A quantidade mínima é avaliada pela **soma** das quantidades de todos os produtos da campanha no pedido; atingida, o desconto se aplica a **todos** eles.
+**Cabeçalho da campanha:** Código da Campanha*, Canal de Venda (opcional — "Todos" ou canal específico), **Ativa/Inativa** (`campanhas.ativo`; campanhas inativas são ignoradas na avaliação), **Tipo de Campanha** (Desconto **ou** Bonificação). No modelo novo o cabeçalho grava produto/linha/grupo/subgrupo = NULL e `quantidade = 0` (o gatilho fica nas condições).
 
-**Modo Categoria:**
-- **Linha, Grupo e/ou Subgrupo** podem ser **combinados** (não são mais mutuamente exclusivos entre si).
-- Cada critério preenchido é avaliado independentemente (semântica OR): o desconto vale para produtos que atendam qualquer um deles.
+**Condições (gatilho) — tabela `campanha_condicoes`:**
+- Cada condição é um **filtro composto**: **Linha + Grupo + Subgrupo + Produto** (cada um opcional, "— qualquer —"), combinados em **E** — ex.: "Linha Itallian Color · Grupo Coloração".
+- Cada condição tem um **Modo** (`criterio_modo`): **Quantidade** ou **Valor**, e um **Mínimo** (`quantidade` ou `valor_min`) somado entre os itens do pedido que satisfazem o filtro.
+- **Todas as condições são combinadas em E** — ex.: "Grupo Coloração ≥ 10 un." **E** "Grupo Oxidante ≥ 5 un.". Só dispara quando todas são atingidas.
+- Colunas: `cond_linha`, `cond_grupo`, `cond_subgrupo`, `cond_produto_id`, `criterio_modo`, `quantidade`, `valor_min` (colunas `criterio_tipo`/`criterio_valor` são fallback legado de filtro único).
 
-**Exclusividade entre modos (JS):** ao adicionar produtos, os selects de categoria são desabilitados; ao escolher uma categoria, a busca de produtos é bloqueada. Os dois modos não se combinam.
+**Tipo Desconto:**
+- Campo **Desconto %** + **alvos opcionais** (tabela `campanha_desconto_alvo`) que definem **onde** o desconto incide (por linha/grupo/subgrupo/produto). Se nenhum alvo for definido, o desconto recai sobre os itens que satisfazem as condições.
+- Aplicado de forma **multiplicativa** sobre o preço já líquido dos demais descontos (ver §5.1).
 
-**Modelo de dados:** uma campanha é um conjunto de linhas na tabela `campanhas` que compartilham o mesmo `codigo_campanha` (uma linha por produto, ou uma por critério de categoria). Salvar **substitui** todas as linhas do código; excluir remove todas elas.
+**Tipo Bonificação:**
+- **Multiplicador:** a quantidade bonificada multiplica conforme o total comprado — `mult = floor(qtd_alvo / mínimo)` (menor múltiplo entre as condições).
+- **Modo fixo (lista):** produtos + quantidades fixos como brinde (tabela `campanha_bonificacao`).
+- **Modo selecionável:** o cliente escolhe o brinde até um **limite** (`bonif_limite_tipo`/`bonif_limite_valor`, por quantidade ou valor). A origem dos produtos é (`bonif_selec_modo`): **lista** de produtos (`campanha_bonificacao`) **ou** **pool por categoria** (`campanha_bonif_pool`, filtro por linha/grupo/subgrupo/produto).
+- Ao finalizar uma **venda nova** que aciona a campanha, o sistema cria um **pedido bonificado separado** (`tipo_venda=bonificacao`, lote próprio, status comercial, `cotacao=NULL`) com valor pelo preço **Network** (`criarPedidoBonificado`/`gerarBonificacaoCampanha`). Não ocorre em edição de pedido. Bonificação **selecionável** redireciona para `cliente/bonificacao-selecionavel.php` (usado por cliente **e** admin) antes de concluir.
+
+**Formulário (modal `modal-xl`, exibição progressiva):** Código → Canal → Ativa/Inativa → Tipo. As **condições** são uma tabela com selects de Linha/Grupo/Subgrupo/Produto + Modo + Mínimo (linhas adicionáveis). Desconto: percentual + alvos. Bonificação: fixo (lista) ou selecionável (lista/pool) + limite.
+
+**Modelo de dados:** uma campanha é um conjunto de linhas em `campanhas` (compartilham `codigo_campanha`) + condições em `campanha_condicoes` + alvos/pool. Salvar **substitui** todas as linhas do código; excluir remove todas elas.
 
 - Campanha sem canal afeta todos os clientes; com canal, afeta somente clientes desse canal.
-- Listagem **agrupada por código**: mostra contagem/nomes de produtos ou critérios de categoria, canal, qtd mínima e desconto%.
+- Listagem **agrupada por código**: mostra condições, canal, tipo, desconto/bonificação e status ativo.
+
+**Helpers centrais (`config.php`):** `campanhasAgrupadas()` (filtra inativas, carrega condições), `ctxCampanha()` (monta o contexto do pedido — qtd/valor por categoria e lista de itens normalizada), `avaliarCampanhaTrigger()` (avalia o gatilho E entre condições), `avaliarCampanhasDescontoAvancadas()` (resolve alvos), `detectarBonificacaoSelecionavel()` (monta o pool selecionável).
 
 #### 3.2.6 NCM (`admin/cadastros/ncm.php`)
 **Campos:** Nome da Categoria, NCM* (código), CEST, IPI (%, 4 casas decimais).
@@ -251,7 +280,8 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos. Dois porta
   - `supervisor`: Aprovar (→ financeiro) ou Cancelar pedidos na etapa Comercial.
   - `financeiro`: Aprovar (→ faturamento), Retornar ao Comercial ou Cancelar.
 - **Descontos e Campanhas (card):** mostra os percentuais usados — Desconto Cliente, Desconto Canal e Comercial (Cliente+Canal) — e a lista de **campanhas atingidas** pelo pedido (código, alvo, quantidade atingida × mínimo, e o desconto% ou os produtos bonificados ×multiplicador). Pedidos de bonificação indicam "sem desconto comercial".
-- Recalcula descontos de campanha ao aprovar/alterar (`recalcularDescontosCampanha`).
+- **Descontos extras por item (etapa Comercial):** além de cliente/canal, cada item admite **Desconto Comercial** (`pedidos.desconto_comercial`, limitado pelo teto `canal_venda.margem_negociacao` — clamp no servidor na action `set_desconto` + `max` no input) e **Desconto Diretoria** (`pedidos.desconto_diretoria`, **sem limite**). Editável só na etapa `comercial` por quem edita itens (comercial/TI). Colunas da tabela de itens: Preço Unit.(bruto) | Desc. Comercial | Desc. Diretoria | Valor Unit. c/ Desc. | Desconto (campanha) | Total.
+- Recalcula descontos de campanha ao aprovar/alterar (`recalcularDescontosCampanha`) e o valor do item (`recalcularValorItem`/`melhorCampanhaItem`).
 - Forma de Pagamento registrável.
 - Crédito utilizado registrado no campo `credito_utilizado` do pedido.
 - Botão para gerar PDF do pedido.
@@ -325,7 +355,10 @@ Todos filtram somente pedidos com status `faturado`. Todos exibem percentual de 
 
 ### 3.5 Módulo Financeiro Admin
 
-Acesso a todas as telas: `comercial` **ou** `financeiro`.
+Acesso a todas as telas: `financeiro` **ou** `tecnologia da informacao` (o menu Financeiro aparece para esses perfis; `comercial` também acessa as rotas diretamente).
+
+#### 3.5.0 Clientes — Financeiro (`admin/financeiro/clientes.php`)
+- Visão dos clientes sob a ótica financeira (títulos, saldo devedor, limite de crédito).
 
 #### 3.5.1 Contas a Receber — Financeiro (`admin/financeiro/contas-receber.php`)
 - Cards de resumo: **Em Aberto**, **Vencido**, **Pago** (valores líquidos totais — sem filtro de período).
@@ -371,9 +404,11 @@ Acesso a todas as telas: `comercial` **ou** `financeiro`.
 - Mesmo fluxo do admin, porém o "cliente" é o próprio usuário logado.
 - Sem seleção de cliente (fixado no `cliente_id` da sessão).
 - Desconto do cliente + canal aplicado automaticamente.
-- Campanhas ativas exibidas em chips (desconto% ou 🎁 com os produtos bonificados) e aplicadas; campanhas de bonificação geram pedido bonificado separado ao finalizar.
+- Campanhas ativas exibidas em chips (desconto% ou 🎁 com os produtos bonificados) e aplicadas; campanhas de bonificação geram pedido bonificado separado ao finalizar. Bonificação selecionável passa por `cliente/bonificacao-selecionavel.php`.
+- **Moeda:** preços e totais exibidos na moeda do cliente (BRL/USD/EUR) via `colPrecoMoeda()`; símbolo por `simboloMoedaJS()`.
 - Abas por linha, carrinho offcanvas, etapa de resumo e observação.
 - **Modal de Forma de Pagamento:** Pix (com **5% de desconto**, destacado), Boleto 30 / 30-60 / 30-60-90 dias; opção de **usar crédito** (limitado à diferença `valor do pedido − detalhamento fiscal`, com confirmação quando o crédito disponível excede a diferença). Cartão selecionado em verde claro.
+- **Bônus de Exportação:** clientes do canal Exportação recebem, ao finalizar a venda, um bônus selecionável de **5% do valor da venda** na moeda do cliente, para escolher entre todos os produtos ativos (ver §5.12).
 
 ### 4.3 Meus Pedidos (`cliente/meus-pedidos.php`)
 - Lista **todos** os pedidos do cliente logado, agrupados por `lote_id`.
@@ -406,19 +441,24 @@ Acesso a todas as telas: `comercial` **ou** `financeiro`.
 
 ## 5. Regras de Negócio
 
-### 5.1 Descontos no Pedido (3 camadas)
+### 5.1 Descontos no Pedido (camadas somadas + campanha multiplicativa)
 1. **Desconto do Cliente** — `desconto_cliente` fixo no cadastro do cliente.
-2. **Desconto do Canal** — `desconto_canal` limitado ao teto do `canal_venda.desconto`; aplicado além do desconto do cliente.
-3. **Desconto de Campanha** — acionado quando a quantidade de referência ≥ mínimo da campanha.
-   - **Campanha por produto (1+ produtos):** a quantidade de referência é a **soma** das quantidades de todos os produtos da campanha presentes no pedido; atingido o mínimo, o desconto vale para **todos** esses produtos.
-   - **Campanha por categoria:** referência é o total da Linha / Grupo / Subgrupo no pedido; Linha, Grupo e Subgrupo podem coexistir (avaliados independentemente, OR).
+2. **Desconto do Canal** — `desconto_canal` limitado ao teto do `canal_venda.desconto`.
+3. **Desconto Comercial** (por item) — `pedidos.desconto_comercial`, limitado ao teto `canal_venda.margem_negociacao`. Editável na etapa Comercial.
+4. **Desconto Diretoria** (por item) — `pedidos.desconto_diretoria`, **sem limite**. Editável na etapa Comercial.
+5. **Desconto de Campanha** — acionado quando o gatilho da campanha é atingido (ver §3.2.5).
+   - **Modelo novo (condições):** cada condição é um filtro composto (linha E grupo E subgrupo E produto) com mínimo por **quantidade OU valor**; todas as condições combinam em **E**. O desconto incide sobre os alvos (`campanha_desconto_alvo`) ou, na ausência de alvo, sobre os itens das condições.
+   - **Modelo legado (por produto/categoria):** soma das quantidades dos produtos/critérios da campanha; Linha/Grupo/Subgrupo coexistem (OR). Loops legados **barram** `quantidade <= 0` para não aplicar o cabeçalho do modelo novo a todos os itens.
    - Restrição de canal: campanha com `canal_venda_id` afeta somente clientes do mesmo canal.
-   - Aplica o **maior** desconto de campanha elegível.
-   - **Campanhas tipo Bonificação:** não alteram o preço; ao acionar (mesma lógica de gatilho), geram um **pedido bonificado separado** com os produtos brinde × multiplicador (`floor(qtd_alvo / mínimo)`). Ver 3.2.5. A geração ocorre no fechamento de vendas novas (`gerarBonificacaoCampanha` em `config.php`), em `cliente/novo-pedido.php` e `admin/novo-pedido.php`.
+   - Aplica o **maior** desconto de campanha elegível por item.
+   - **Campanhas tipo Bonificação:** não alteram o preço; geram um **pedido bonificado separado** com os brindes × multiplicador (`floor(qtd_alvo / mínimo)`). Geradas no fechamento de vendas novas (`gerarBonificacaoCampanha`/`criarPedidoBonificado`), em `cliente/novo-pedido.php` e `admin/novo-pedido.php`.
 
-**Fórmula:** `valor = qtd × preco × (1 − dCliente/100 − dCanal/100) × (1 − campDesc/100)`
+**Fórmula do valor por item:**
+`valor = qtd × preço × (1 − (dCliente + dCanal + dComercial + dDiretoria)/100) × (1 − campDesc/100)`
 
-Pedidos de **bonificação** usam a tabela de preços **Network** (`valor_total = qtd × preço Network`, sem desconto de cliente/canal/campanha).
+Ou seja, cliente + canal + comercial + diretoria **somam** (cap 100%) e a campanha é **multiplicativa**. O `preço` é a coluna da moeda do cliente (ver §5.10).
+
+Pedidos de **bonificação** usam a tabela de preços **Network** (`valor_total = qtd × preço Network`, sem desconto de cliente/canal/campanha e `cotacao=NULL`).
 
 ### 5.1.1 Pagamento, Crédito e Desconto Pix
 - **Forma de pagamento:** escolhida em modal (Pix, Boleto 30, 30/60, 30/60/90 dias) ao finalizar pedidos de venda.
@@ -469,9 +509,33 @@ Pedidos de **bonificação** usam a tabela de preços **Network** (`valor_total 
 
 ### 5.9 Migrações de Schema
 - Executadas automaticamente via `try/ALTER TABLE` e `CREATE TABLE IF NOT EXISTS` na função `db()` do `config.php` a cada conexão.
-- **Colunas:** `lote_id`, `desconto_campanha`, `forma_pagamento`, `credito_utilizado`, `desconto_pagamento`, `supervisor` em `pedidos`; `email`, `senha`, `desconto_canal`, `supervisor` em `clientes`; `preco_network`, `preco_auxiliar` em `tabela_precos`; `canal_venda_id` e `tipo` em `campanhas`; `valor_utilizado` em `bonus_ma_logs` e `creditos`; ajustes de enum em `pedidos.status` e `usuarios.tipo_acesso`.
-- **Tabelas criadas:** `pedido_logs`, `grupo_empresas`, `grupo_empresas_clientes`, `webhook_logs`, `campanha_bonificacao`; coluna `tipo` em `campanhas`.
+- **Colunas em `pedidos`:** `lote_id`, `desconto_campanha`, `forma_pagamento`, `credito_utilizado`, `desconto_pagamento`, `supervisor`, `moeda`, `cotacao`, `desconto_comercial`, `desconto_diretoria`; ajuste de enum em `pedidos.status`.
+- **Colunas em `clientes`:** `email`, `senha`, `desconto_canal`, `supervisor`.
+- **Colunas em `tabela_precos`:** `preco_network`, `preco_auxiliar`, `preco_dolar`, `preco_euro`.
+- **Colunas em `campanhas`:** `canal_venda_id`, `tipo`, `valor_alvo`, `bonif_modo`, `bonif_limite_tipo`, `bonif_limite_valor`, `ativo`, `bonif_selec_modo`.
+- **Colunas em `campanha_condicoes`:** `criterio_modo`, `valor_min`, `cond_linha`, `cond_grupo`, `cond_subgrupo`, `cond_produto_id`.
+- **Colunas diversas:** `margem_negociacao` em `canal_venda`; `valor_utilizado` em `bonus_ma_logs` e `creditos`; `celular` em `usuarios` (renomeado de `telefone`); ajuste de enum em `usuarios.tipo_acesso` (11 valores).
+- **Tabelas criadas:** `pedido_logs`, `grupo_empresas`, `grupo_empresas_clientes`, `webhook_logs`, `whatsapp_logs` (renomeada de `sms_logs`), `campanha_bonificacao`, `configuracoes`, `campanha_condicoes`, `campanha_desconto_alvo`, `campanha_bonif_pool`.
 - A tabela `kit_composicao` **não** é criada no `config.php`: é criada e semeada sob demanda em `admin/cadastros/produtos.php` na primeira abertura da tela.
+
+### 5.10 Multimoeda (BRL / USD / EUR)
+- A **moeda do cliente** (`clientes.moeda`) determina em qual moeda o pedido é feito. `colPrecoMoeda($moeda, $bonificacao)` mapeia a moeda → coluna de preço: BRL → `preco_padrao`, USD → `preco_dolar`, EUR → `preco_euro`; **bonificação sempre `preco_network`**.
+- `pedidos.moeda` é gravada na criação (todos os INSERTs, inclusive bonificação). `simboloMoeda()` → R$ / US$ / €; `moedaBR()`/`moedaCorrente()` formatam por moeda.
+- **Cotação:** na criação grava-se `pedidos.cotacao` (cotação da moeda; NULL para BRL e bonificação). Áreas admin exibem a conversão `valor × cotacao` em R$.
+- **Totais em BRL:** toda agregação de `pedidos.valor_total` converte USD/EUR → BRL via `valor_total * (CASE WHEN moeda <> 'BRL' AND cotacao > 0 THEN cotacao ELSE 1 END)` — aplicada em cards de dashboard/pedidos, relatórios de faturamento, Bônus MA e Bônus Desempenho. Bonificação (`cotacao=NULL`) fica fora da conversão.
+- **Permanecem em R$ (base BR):** seção fiscal/NF (ICMS/IPI/PIS/COFINS, preço Network), saldos de crédito e o financeiro (contas a receber/pagar têm tabelas próprias).
+
+### 5.11 Internacionalização — Área do Cliente (PT/EN/ES)
+- A área do cliente é traduzida conforme `clientes.idioma` (pt|en|es); admin e telas pré-login ficam sempre em PT.
+- `idiomaAtual()` resolve o idioma do cliente logado (query cacheada); `t($pt, ...$args)` traduz usando **a própria frase PT como chave** (dicionário em `lang.php`, seções `en`/`es`, fallback para PT); `et()` = `e(t())`; `htmlLang()` define `<html lang>`.
+- Placeholders `%s` (sprintf) no PHP; em JS usa `%1..%4` + helper `_tfmt()`/objeto `T`. `statusBadge()` traduz os rótulos de status.
+- **Produtos têm tradução própria** nos cadastros (`produtos.desc_cliente_pt/_en/_es`) — não usam `t()`.
+
+### 5.12 Bônus de Exportação
+- Clientes do canal **Exportação** (`canal_venda` cujo nome contém "export", via `canalEhExportacao()`), ao finalizar uma **venda nova na área do cliente**, recebem um **bônus selecionável por valor = 5% do valor da venda** (`BONUS_EXPORTACAO_PCT`, `bonusExportacaoSelecionavel()`), para escolher entre **todos os produtos ativos**.
+- **Respeita a moeda do cliente:** limite e preços na moeda do cliente (`colPrecoMoeda`), sem conversão ≈R$ na área do cliente.
+- Reutiliza `cliente/bonificacao-selecionavel.php`; ao confirmar, `criarPedidoBonificado()` grava o pedido bonificado (status comercial) com o mesmo preço exibido na seleção (fallback `preco_network` quando não há preço na moeda); `cotacao=NULL`.
+- Escopo: apenas vendas novas do cliente (não em edição, não em pedido de bonificação/MA).
 
 ---
 
@@ -484,11 +548,17 @@ Pedidos de **bonificação** usam a tabela de preços **Network** (`valor_total 
 | Bootstrap Icons | 1.11.3 / jsdelivr | Ícones em toda a interface |
 | PDF de Pedido | Geração server-side PHP | Layout formatado com dados do pedido |
 | Webhook Pipefy | `api/webhook-pipefy.php` | Recebe POST do Pipefy (header `X-Webhook-Token`), faz upsert de clientes via `FIELD_MAP` e registra em `webhook_logs` |
+| WhatsApp (2FA) | `enviarWhatsappCodigo()` em `config.php` | Envia código de verificação de acesso; registra em `whatsapp_logs`/`logs/whatsapp.log` (modo simulação; pronto para provedor real) |
+| Cotação de câmbio | AwesomeAPI (USD-BRL / EUR-BRL) | `buscarCotacaoAPI()`/`cotacaoDia()`; cacheada 1×/dia em `configuracoes` |
 
 ### 6.1 Webhook Pipefy (`api/webhook-pipefy.php`)
 - Endpoint `POST /Sis_Ped/api/webhook-pipefy.php`, autenticado por token no header `X-Webhook-Token` (`WEBHOOK_SECRET`).
 - `FIELD_MAP` mapeia campos do card do Pipefy para colunas da tabela `clientes` (identificação, endereço, contato, supervisor).
 - Faz upsert de cliente e grava cada evento (sucesso/erro) em `webhook_logs`.
+
+### 6.2 Cotação de Câmbio (AwesomeAPI)
+- `buscarCotacaoAPI()` consulta USD-BRL e EUR-BRL via cURL; `cotacaoDia($moeda)` cacheia a cotação do dia em `configuracoes` (`cotacao_usd`, `cotacao_eur`, `cotacao_data`) — 1 chamada por dia, com fallback ao último valor.
+- Botão "Buscar cotação" em `tabela-precos.php` (`?cotacao=1`) atualiza o cache manualmente.
 
 ---
 
@@ -497,19 +567,25 @@ Pedidos de **bonificação** usam a tabela de preços **Network** (`valor_total 
 | Tabela | Descrição | Campos-chave |
 |--------|-----------|-------------|
 | `clientes` | Compradores do portal cliente | id, codigo_cliente, cnpj, cpf, razao_social, email (UNIQUE), senha, canal_venda_id (FK), desconto_cliente, desconto_canal, bonus_desempenho, material_apoio, limite_credito, idioma, moeda, status |
-| `usuarios` | Usuários internos | id, nome, email (UNIQUE), senha, tipo_acesso (comercial/financeiro), tipo_usuario, departamento, divisao_vendas, status |
-| `produtos` | Catálogo de produtos | id, codigo_produto (UNIQUE), linha, grupo, subgrupo, descricao_pt/en/es, multiplo, ncm_id (FK), status |
-| `tabela_precos` | Preços por produto | id, produto_id (FK), preco_padrao, preco_network, preco_auxiliar |
-| `ncm` | Classificação fiscal | id, nome_categoria, ncm, cest, ipi |
-| `canal_venda` | Canais de venda | id, canal, faixa_faturamento, desconto (teto para clientes) |
-| `campanhas` | Campanhas de desconto/bonificação (uma linha por produto/critério; agrupadas por `codigo_campanha`) | id, codigo_campanha, produto_id (FK opt), linha, grupo, subgrupo, canal_venda_id (FK opt), quantidade, desconto, **tipo** (desconto/bonificacao) |
-| `campanha_bonificacao` | Produtos bonificados de campanhas tipo bonificação | id, codigo_campanha, produto_id, quantidade |
+| `usuarios` | Usuários internos | id, nome, email (UNIQUE), senha, tipo_acesso (11 valores), tipo_usuario (texto; "Externo" ⇒ 2FA), departamento, divisao_vendas, celular, status |
+| `produtos` | Catálogo de produtos | id, codigo_produto (UNIQUE), linha, grupo, subgrupo, descricao_pt/en/es, desc_cliente_pt/en/es, multiplo, ncm_id (FK), status |
+| `tabela_precos` | Preços por produto | id, produto_id (FK), preco_padrao, preco_network, preco_auxiliar, preco_dolar (calc.), preco_euro (calc.) |
+| `ncm` | Classificação fiscal | id, nome_categoria, ncm, cest, ipi, pis, cofins |
+| `ncm_estados` | ICMS por UF | ncm_id (FK), uf, icms_local, icms_interestadual |
+| `canal_venda` | Canais de venda | id, canal, faixa_faturamento, desconto (teto p/ desconto_canal), margem_negociacao (teto p/ desconto_comercial) |
+| `configuracoes` | Config. chave/valor | chave (PK), valor, updated_at — `dolar_seguranca`, `euro_seguranca`, `cotacao_usd/eur/data` |
+| `campanhas` | Cabeçalho da campanha (agrupada por `codigo_campanha`) | id, codigo_campanha, produto_id (opt), linha, grupo, subgrupo, canal_venda_id (opt), quantidade, desconto, tipo (desconto/bonificacao), ativo, bonif_modo, bonif_selec_modo, bonif_limite_tipo, bonif_limite_valor, valor_alvo (legado) |
+| `campanha_condicoes` | Condições (gatilho) — filtro composto E | id, codigo_campanha, cond_linha, cond_grupo, cond_subgrupo, cond_produto_id, criterio_modo (quantidade/valor), quantidade, valor_min |
+| `campanha_desconto_alvo` | Onde o desconto da campanha incide | id, codigo_campanha, alvo_tipo, alvo_valor |
+| `campanha_bonif_pool` | Pool selecionável por categoria (bonificação) | id, codigo_campanha, alvo_tipo, alvo_valor |
+| `campanha_bonificacao` | Produtos bonificados (lista fixa) | id, codigo_campanha, produto_id, quantidade |
 | `kit_composicao` | Composição de produtos do grupo Kit | id, kit_codigo, produto_codigo, nome, qtd |
 | `grupo_empresas` | Grupos de empresas (CNPJs) | id, nome, descricao, created_at |
 | `grupo_empresas_clientes` | Vínculo grupo ↔ cliente | id, grupo_id, cliente_id (UNIQUE grupo+cliente) |
 | `webhook_logs` | Log de webhooks recebidos (Pipefy) | id, origem, evento, status, detalhe, cliente_id, created_at |
+| `whatsapp_logs` | Log de códigos de verificação 2FA enviados | id, usuario_id, destino, remetente, mensagem, ip_origem, status, created_at |
 | `metas` | Metas trimestrais por cliente | id, cliente_id (FK), trimestre, ano, meta_cliente |
-| `pedidos` | Pedidos (1 reg. por item) | id, numero_pedido (UNIQUE), tipo_venda, data_pedido, cliente_id (FK), produto_id (FK), supervisor, lote_id, quantidade_total, valor_total, desconto_campanha, forma_pagamento, credito_utilizado, desconto_pagamento, status, observacoes |
+| `pedidos` | Pedidos (1 reg. por item) | id, numero_pedido (UNIQUE), tipo_venda, data_pedido, cliente_id (FK), produto_id (FK), supervisor, lote_id, quantidade_total, valor_total, desconto_campanha, desconto_comercial, desconto_diretoria, moeda, cotacao, forma_pagamento, credito_utilizado, desconto_pagamento, status, observacoes |
 | `pedido_logs` | Histórico de ações | id, pedido_id, numero_pedido, usuario_nome, usuario_tipo, acao, status_antes, status_depois, detalhes, created_at |
 | `contas_receber` | Títulos a receber | id, numero_documento, cliente_id (FK), valor_receber, descontos, data_emissao, data_vencimento, data_pagamento, situacao |
 | `contas_pagar` | Títulos a pagar | id, numero_documento, fornecedor_id (FK), valor_pagar, descontos, juros, data_emissao, data_vencimento, data_pagamento, situacao |
@@ -525,10 +601,22 @@ Pedidos de **bonificação** usam a tabela de preços **Network** (`valor_total 
 
 ## 8. Requisitos Técnicos
 
-- **PHP:** 7.4+
+- **PHP:** 7.4+ (extensões `pdo_mysql` e `curl` para a cotação de câmbio)
 - **Banco:** MySQL 5.7+ ou MariaDB
 - **Servidor:** Apache (XAMPP recomendado para desenvolvimento)
-- **Base URL:** configurada em `config.php` → constante `BASE_URL` (ex: `/Sis_Ped`)
 - **Schema inicial:** `sis_ped.sql` (inclui dados de exemplo)
 - **Migrações:** automáticas via `db()` no `config.php` a cada conexão
-- **Senhas:** armazenadas em texto plano no schema atual (sem hash)
+- **Senhas:** armazenadas em texto plano no schema atual (sem hash); os códigos 2FA são guardados com `password_hash()` na sessão.
+
+**Constantes de configuração (`config.php`):**
+
+| Constante | Uso |
+|-----------|-----|
+| `DB_HOST` / `DB_NAME` / `DB_USER` / `DB_PASS` | Conexão MySQL/PDO |
+| `BASE_URL` | Prefixo de URL da aplicação (ex.: `/Sis_Ped`) |
+| `ASSETS_URL` / `LAYOUT_PATH` | Caminhos de assets e layout |
+| `EMPRESA_UF` | UF da empresa — decide ICMS local × interestadual no detalhamento fiscal (padrão `SP`) |
+| `IP_LIBERADO` | IP que dispensa 2FA para usuários "Externo" |
+| `WHATSAPP_REMETENTE` | Número remetente da verificação 2FA |
+| `WHATSAPP_CODIGO_VALIDADE` | Validade do código 2FA, em segundos (padrão 600) |
+| `WEBHOOK_SECRET` | Token do webhook Pipefy (header `X-Webhook-Token`) |
