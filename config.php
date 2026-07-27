@@ -1,11 +1,11 @@
 <?php
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-define('DB_HOST', 'localhost');
+define('DB_HOST', 'mariadb');
 define('DB_NAME', 'sis_ped');
-define('DB_USER', 'root');
-define('DB_PASS', '');
-define('BASE_URL', '/Sis_Ped');
+define('DB_USER', 'sis_ped_user');
+define('DB_PASS', 'WFZ9STR344a1EbRDVzZf');
+define('BASE_URL', '');
 define('EMPRESA_UF', 'SP'); // UF da empresa — define ICMS local x interestadual no detalhamento fiscal
 define('ASSETS_URL', BASE_URL . '/assets');
 define('LAYOUT_PATH', __DIR__ . '/layout');
