@@ -32,8 +32,40 @@ function db() {
             try { $pdo->exec("ALTER TABLE tabela_precos ADD COLUMN preco_network DECIMAL(10,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE tabela_precos ADD COLUMN preco_auxiliar DECIMAL(10,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN desconto_campanha DECIMAL(5,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE produtos ADD COLUMN desc_cliente_pt TEXT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE produtos ADD COLUMN desc_cliente_en TEXT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE produtos ADD COLUMN desc_cliente_es TEXT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS bonus_ma_logs (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                cliente_id      INT NOT NULL,
+                mes             TINYINT NOT NULL,
+                ano             SMALLINT NOT NULL,
+                acao            ENUM('aprovado','reprovado') NOT NULL,
+                usuario_nome    VARCHAR(100),
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_cliente_mes_ano (cliente_id, mes, ano)
+            )"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE bonus_ma_logs ADD COLUMN valor_utilizado DECIMAL(10,2) NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN forma_pagamento VARCHAR(60) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS creditos (
+                id                  INT AUTO_INCREMENT PRIMARY KEY,
+                cliente_id          INT NOT NULL,
+                descricao           VARCHAR(255) NOT NULL,
+                observacao_interna  TEXT,
+                valor               DECIMAL(12,2) NOT NULL,
+                data                DATE NOT NULL,
+                usuario_id          INT NULL,
+                created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_cliente (cliente_id)
+            )"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS creditos_logs (
+                id           INT AUTO_INCREMENT PRIMARY KEY,
+                credito_id   INT NOT NULL,
+                acao         ENUM('aprovado','reprovado') NOT NULL,
+                usuario_nome VARCHAR(100),
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_credito (credito_id)
+            )"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE creditos ADD COLUMN valor_utilizado DECIMAL(12,2) NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN credito_utilizado DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN desconto_pagamento DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
