@@ -1,8 +1,8 @@
 <?php
-define('DB_HOST', 'localhost');
-define('DB_USER', 'root');
-define('DB_PASS', '');
+define('DB_HOST', 'mariadb');
 define('DB_NAME', 'sis_ped');
+define('DB_USER', 'sis_ped_user');
+define('DB_PASS', 'WFZ9STR344a1EbRDVzZf');
 
 $msg = '';
 $error = '';
