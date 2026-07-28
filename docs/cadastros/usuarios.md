@@ -18,7 +18,7 @@
 
 ## Tipo de Acesso (11 valores)
 
-`comercial`, `financeiro`, `supervisor`, `tecnologia da informacao`, `recursos humanos`, `marketing`, `diretoria`, `centro tecnico`, `contabilidade`, `recepcao`, `expedicao`.
+`comercial`, `financeiro`, `supervisor`, `tecnologia da informacao`, `recursos humanos`, `marketing`, `diretoria`, `centro tecnico`, `contabilidade`, `recepcao`, `expedicao`, `admin`.
 
 - O valor gravado em `usuarios.tipo_acesso` (ENUM) é minúsculo/sem acento; o rótulo exibido é acentuado (array `$TIPOS_ACESSO`).
 - Apenas `comercial`, `financeiro`, `supervisor` e `tecnologia da informacao` têm comportamento de permissão definido; os demais entram como acesso admin genérico. Ver [Autenticação e Acesso](../02-autenticacao-e-acesso.md#perfis-de-usuário).
