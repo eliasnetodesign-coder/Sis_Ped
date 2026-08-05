@@ -51,25 +51,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pp   = (float)$_POST['preco_padrao'];
             $pn   = $_POST['preco_network']  !== '' ? (float)$_POST['preco_network']  : null;
             $pa   = $_POST['preco_auxiliar'] !== '' ? (float)$_POST['preco_auxiliar'] : null;
+            if ($pp < 0 || $pn < 0 || $pa < 0) throw new Exception('Preços não podem ser negativos.');
             $pd   = $calcMoeda($pa, $dolarSeg);
             $pe   = $calcMoeda($pa, $euroSeg);
-            $exists = db()->prepare('SELECT id FROM tabela_precos WHERE produto_id=?');
-            $exists->execute([$pid]);
-            if ($exists->fetchColumn()) {
-                db()->prepare('UPDATE tabela_precos SET preco_padrao=?,preco_network=?,preco_auxiliar=?,preco_dolar=?,preco_euro=? WHERE produto_id=?')
-                    ->execute([$pp, $pn, $pa, $pd, $pe, $pid]);
-            } else {
-                db()->prepare('INSERT INTO tabela_precos (produto_id,preco_padrao,preco_network,preco_auxiliar,preco_dolar,preco_euro) VALUES (?,?,?,?,?,?)')
-                    ->execute([$pid, $pp, $pn, $pa, $pd, $pe]);
-            }
+            db()->prepare('INSERT INTO tabela_precos (produto_id,preco_padrao,preco_network,preco_auxiliar,preco_dolar,preco_euro) VALUES (?,?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE preco_padrao=VALUES(preco_padrao), preco_network=VALUES(preco_network),
+                    preco_auxiliar=VALUES(preco_auxiliar), preco_dolar=VALUES(preco_dolar), preco_euro=VALUES(preco_euro)')
+                ->execute([$pid, $pp, $pn, $pa, $pd, $pe]);
             flash('success', 'Preço salvo!');
         } elseif ($a === 'editar') {
+            $pp = (float)$_POST['preco_padrao'];
             $pn = $_POST['preco_network']  !== '' ? (float)$_POST['preco_network']  : null;
             $pa = $_POST['preco_auxiliar'] !== '' ? (float)$_POST['preco_auxiliar'] : null;
+            if ($pp < 0 || $pn < 0 || $pa < 0) throw new Exception('Preços não podem ser negativos.');
             $pd = $calcMoeda($pa, $dolarSeg);
             $pe = $calcMoeda($pa, $euroSeg);
             db()->prepare('UPDATE tabela_precos SET preco_padrao=?,preco_network=?,preco_auxiliar=?,preco_dolar=?,preco_euro=? WHERE id=?')
-                ->execute([(float)$_POST['preco_padrao'], $pn, $pa, $pd, $pe, (int)$_POST['id']]);
+                ->execute([$pp, $pn, $pa, $pd, $pe, (int)$_POST['id']]);
             flash('success', 'Preço atualizado!');
         } elseif ($a === 'excluir') {
             db()->prepare('DELETE FROM tabela_precos WHERE id=?')->execute([(int)$_POST['id']]);
@@ -77,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($a === 'importar') {
             $dados = json_decode($_POST['dados'] ?? '[]', true);
             if (!is_array($dados)) throw new Exception('Dados inválidos.');
-            $ins = 0; $upd = 0; $skip = 0;
+            $ins = 0; $upd = 0; $skip = 0; $skipNeg = 0;
             foreach ($dados as $row) {
                 $cod = trim($row['codigo_produto'] ?? '');
                 if (!$cod) { $skip++; continue; }
@@ -88,6 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pp = isset($row['preco_padrao'])  && $row['preco_padrao']  !== '' ? (float)$row['preco_padrao']  : 0;
                 $pn = isset($row['preco_network']) && $row['preco_network'] !== '' ? (float)$row['preco_network'] : null;
                 $pa = isset($row['preco_auxiliar'])&& $row['preco_auxiliar']!== '' ? (float)$row['preco_auxiliar']: null;
+                if ($pp < 0 || $pn < 0 || $pa < 0) { $skipNeg++; continue; }
                 $pd = $calcMoeda($pa, $dolarSeg);
                 $pe = $calcMoeda($pa, $euroSeg);
                 $exists = db()->prepare('SELECT id FROM tabela_precos WHERE produto_id=?');
@@ -105,18 +104,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $msg = "Importação concluída: $ins inserido(s), $upd atualizado(s)";
             if ($skip > 0) $msg .= ", $skip linha(s) com código não encontrado ignorada(s)";
+            if ($skipNeg > 0) $msg .= ", $skipNeg linha(s) com preço negativo ignorada(s)";
             flash('success', $msg . '.');
         }
     } catch (Exception $e) { flash('danger', 'Erro: ' . $e->getMessage()); }
     header('Location: ' . BASE_URL . '/admin/cadastros/tabela-precos.php'); exit;
 }
 
-$busca = trim($_GET['q'] ?? '');
-$tabelaStmt = db()->prepare('SELECT t.*, p.codigo_produto, p.descricao_pt FROM tabela_precos t
+$busca  = trim($_GET['q'] ?? '');
+$filtro_status = $_GET['status'] ?? 'ativo';
+if (!in_array($filtro_status, ['ativo', 'inativo'], true)) $filtro_status = '';
+$sql = 'SELECT t.*, p.codigo_produto, p.descricao_pt FROM tabela_precos t
     JOIN produtos p ON p.id = t.produto_id
-    WHERE (:q = "" OR p.codigo_produto LIKE :qlike OR p.descricao_pt LIKE :qlike2)
-    ORDER BY p.descricao_pt');
-$tabelaStmt->execute([':q' => $busca, ':qlike' => "%$busca%", ':qlike2' => "%$busca%"]);
+    WHERE (:q = "" OR p.codigo_produto LIKE :qlike OR p.descricao_pt LIKE :qlike2)';
+$params = [':q' => $busca, ':qlike' => "%$busca%", ':qlike2' => "%$busca%"];
+if ($filtro_status) {
+    $sql .= ' AND p.status = :status';
+    $params[':status'] = $filtro_status;
+}
+$sql .= ' ORDER BY p.descricao_pt';
+$tabelaStmt = db()->prepare($sql);
+$tabelaStmt->execute($params);
 $tabela   = $tabelaStmt->fetchAll();
 $produtos = db()->query('SELECT id, codigo_produto, descricao_pt FROM produtos WHERE status="ativo" ORDER BY descricao_pt')->fetchAll();
 
@@ -211,11 +219,19 @@ require_once LAYOUT_PATH . '/header.php';
             <label class="form-label fw-semibold small mb-1">Buscar</label>
             <input type="text" name="q" class="form-control" placeholder="Código ou descrição do produto..." value="<?= e($busca) ?>" autofocus>
         </div>
+        <div class="col-md-2">
+            <label class="form-label fw-semibold small mb-1">Status</label>
+            <select name="status" class="form-select">
+                <option value="">Todos</option>
+                <option value="ativo"   <?= $filtro_status === 'ativo'   ? 'selected' : '' ?>>Ativo</option>
+                <option value="inativo" <?= $filtro_status === 'inativo' ? 'selected' : '' ?>>Inativo</option>
+            </select>
+        </div>
         <div class="col-auto d-flex gap-2">
             <button type="submit" class="btn btn-outline-primary">
                 <i class="bi bi-search me-1"></i>Filtrar
             </button>
-            <?php if ($busca !== ''): ?>
+            <?php if ($busca !== '' || $filtro_status !== 'ativo'): ?>
             <a href="?" class="btn btn-outline-secondary" title="Limpar filtro">
                 <i class="bi bi-x-lg"></i>
             </a>

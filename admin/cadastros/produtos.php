@@ -51,25 +51,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 (float)$_POST['vendas_distribuidor'], (float)$_POST['vendas_varejo'], (float)$_POST['vendas_exportacao'],
                 $_POST['ncm_id'] ?: null, $_POST['cest'], $_POST['status'],
             ];
+            if ($_POST['preco_padrao'] !== '' && (float)$_POST['preco_padrao'] < 0) throw new Exception('Preço Padrão não pode ser negativo.');
             if ($a === 'criar') {
                 db()->prepare('INSERT INTO produtos (codigo_produto,linha,grupo,subgrupo,codigo_barra,descricao_pt,descricao_en,descricao_es,desc_cliente_pt,desc_cliente_en,desc_cliente_es,nuance,multiplo,vendas_distribuidor,vendas_varejo,vendas_exportacao,ncm_id,cest,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
                 // Inserir preço padrão
                 $pid = db()->lastInsertId();
                 if ($_POST['preco_padrao']) {
-                    db()->prepare('INSERT INTO tabela_precos (produto_id, preco_padrao) VALUES (?,?)')->execute([$pid, (float)$_POST['preco_padrao']]);
+                    db()->prepare('INSERT INTO tabela_precos (produto_id, preco_padrao) VALUES (?,?)
+                        ON DUPLICATE KEY UPDATE preco_padrao=VALUES(preco_padrao)')->execute([$pid, (float)$_POST['preco_padrao']]);
                 }
                 flash('success', 'Produto criado com sucesso!');
             } else {
                 $d[] = (int)$_POST['id'];
                 db()->prepare('UPDATE produtos SET codigo_produto=?,linha=?,grupo=?,subgrupo=?,codigo_barra=?,descricao_pt=?,descricao_en=?,descricao_es=?,desc_cliente_pt=?,desc_cliente_en=?,desc_cliente_es=?,nuance=?,multiplo=?,vendas_distribuidor=?,vendas_varejo=?,vendas_exportacao=?,ncm_id=?,cest=?,status=? WHERE id=?')->execute($d);
                 if ($_POST['preco_padrao']) {
-                    $exists = db()->prepare('SELECT id FROM tabela_precos WHERE produto_id=?');
-                    $exists->execute([(int)$_POST['id']]);
-                    if ($exists->fetch()) {
-                        db()->prepare('UPDATE tabela_precos SET preco_padrao=? WHERE produto_id=?')->execute([(float)$_POST['preco_padrao'], (int)$_POST['id']]);
-                    } else {
-                        db()->prepare('INSERT INTO tabela_precos (produto_id,preco_padrao) VALUES (?,?)')->execute([(int)$_POST['id'], (float)$_POST['preco_padrao']]);
-                    }
+                    db()->prepare('INSERT INTO tabela_precos (produto_id, preco_padrao) VALUES (?,?)
+                        ON DUPLICATE KEY UPDATE preco_padrao=VALUES(preco_padrao)')->execute([(int)$_POST['id'], (float)$_POST['preco_padrao']]);
                 }
                 flash('success', 'Produto atualizado com sucesso!');
             }

@@ -11991,6 +11991,7 @@ ALTER TABLE `produtos`
 --
 ALTER TABLE `tabela_precos`
   ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `produto_id_unique` (`produto_id`),
   ADD KEY `produto_id` (`produto_id`);
 
 --
