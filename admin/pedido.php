@@ -584,6 +584,94 @@ $logsStmt = db()->prepare('SELECT * FROM pedido_logs WHERE numero_pedido = ? ORD
 $logsStmt->execute([$pedido['numero_pedido']]);
 $pedidoLogs = $logsStmt->fetchAll();
 
+// ===== Impostos por Empresa (waterfall: preço padrão → descontos → impostos por empresa → custo MP → custos fixos) =====
+$impSql = "SELECT p.id, p.descricao_produto, pr.codigo_produto,
+                  p.desconto_comercial, p.desconto_diretoria, p.desconto_campanha,
+                  COALESCE(t.preco_padrao, 0) AS preco_padrao,
+                  n.ipi, n.pis, n.cofins
+           FROM pedidos p
+           LEFT JOIN produtos pr     ON pr.id = p.produto_id
+           LEFT JOIN tabela_precos t ON t.produto_id = pr.id
+           LEFT JOIN ncm n           ON n.id = pr.ncm_id
+           WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?') . " ORDER BY p.id";
+$impQ = db()->prepare($impSql);
+$impQ->execute([$loteId ?: $pedidoId]);
+$impRaw = $impQ->fetchAll();
+$impEmpresas = db()->query('SELECT nome, irpj, csll, iss FROM impostos_empresas ORDER BY nome')->fetchAll();
+
+// Empresa "Network" (recebe os impostos do NCM do produto + seus próprios IRPJ/CSLL/ISS);
+// as demais empresas cadastradas entram em blocos subsequentes, só com seus próprios impostos.
+$empNet = null;
+foreach ($impEmpresas as $ie) { if (stripos($ie['nome'], 'net') !== false) { $empNet = $ie; break; } }
+$outrasEmpresas = array_values(array_filter($impEmpresas, function ($ie) use ($empNet) {
+    return !$empNet || $ie['nome'] !== $empNet['nome'];
+}));
+if (!$empNet && $impEmpresas) { $empNet = $impEmpresas[0]; $outrasEmpresas = array_slice($impEmpresas, 1); }
+
+$impItens = [];
+foreach ($impRaw as $r) {
+    $precoPadrao = (float)$r['preco_padrao'];
+
+    // Descontos (base = valor por produto): canal, cliente e pedido (comercial + diretoria); campanha é multiplicativa.
+    $vCanal   = $precoPadrao * $descCanal / 100;
+    $vCliente = $precoPadrao * $descCliente / 100;
+    $descPedidoPct = (float)$r['desconto_comercial'] + (float)$r['desconto_diretoria'];
+    $vPedido  = $precoPadrao * $descPedidoPct / 100;
+    $resDescAditivo = $precoPadrao - $vCanal - $vCliente - $vPedido;
+    $descCampanhaPct = (float)($r['desconto_campanha'] ?? 0);
+    $vCampanha = $descCampanhaPct > 0 ? $resDescAditivo * $descCampanhaPct / 100 : 0;
+    $resAposDescontos = $resDescAditivo - $vCampanha;
+
+    // Bloco da empresa Network: impostos do NCM do produto + impostos próprios da empresa
+    $netTaxes = [];
+    $netBase  = $resAposDescontos;
+    if ($empNet) {
+        $netTaxes[] = ['label' => 'IPI',    'pct' => (float)($r['ipi'] ?? 0),      'val' => $netBase * (float)($r['ipi'] ?? 0) / 100];
+        $netTaxes[] = ['label' => 'PIS',    'pct' => (float)($r['pis'] ?? 0),      'val' => $netBase * (float)($r['pis'] ?? 0) / 100];
+        $netTaxes[] = ['label' => 'COFINS', 'pct' => (float)($r['cofins'] ?? 0),   'val' => $netBase * (float)($r['cofins'] ?? 0) / 100];
+        $netTaxes[] = ['label' => 'IRPJ',   'pct' => (float)$empNet['irpj'],       'val' => $netBase * (float)$empNet['irpj'] / 100];
+        $netTaxes[] = ['label' => 'CSLL',   'pct' => (float)$empNet['csll'],       'val' => $netBase * (float)$empNet['csll'] / 100];
+        $netTaxes[] = ['label' => 'ISS',    'pct' => (float)$empNet['iss'],        'val' => $netBase * (float)$empNet['iss'] / 100];
+    }
+    $netTotal   = array_sum(array_column($netTaxes, 'val'));
+    $resAposNet = $netBase - $netTotal;
+
+    // Blocos das demais empresas (em sequência): impostos próprios + PIS/COFINS do NCM do produto (sem IPI)
+    $blocosOutros = [];
+    $baseAtual = $resAposNet;
+    foreach ($outrasEmpresas as $oe) {
+        $taxes = [
+            ['label' => 'PIS',    'pct' => (float)($r['pis'] ?? 0),    'val' => $baseAtual * (float)($r['pis'] ?? 0) / 100],
+            ['label' => 'COFINS', 'pct' => (float)($r['cofins'] ?? 0), 'val' => $baseAtual * (float)($r['cofins'] ?? 0) / 100],
+            ['label' => 'IRPJ',   'pct' => (float)$oe['irpj'],         'val' => $baseAtual * (float)$oe['irpj'] / 100],
+            ['label' => 'CSLL',   'pct' => (float)$oe['csll'],         'val' => $baseAtual * (float)$oe['csll'] / 100],
+            ['label' => 'ISS',    'pct' => (float)$oe['iss'],          'val' => $baseAtual * (float)$oe['iss'] / 100],
+        ];
+        $t = array_sum(array_column($taxes, 'val'));
+        $blocosOutros[] = ['nome' => $oe['nome'], 'taxes' => $taxes, 'total' => $t];
+        $baseAtual -= $t;
+    }
+    $resAposImpostos = $baseAtual;
+
+    // Base para Custos Fixos = valor por produto - desconto canal - desconto cliente (sem o desconto do pedido)
+    $baseCF = $precoPadrao - $vCanal - $vCliente;
+
+    $impItens[] = [
+        'codigo' => $r['codigo_produto'], 'descricao' => $r['descricao_produto'],
+        'precoPadrao' => $precoPadrao,
+        'descCanalPct' => $descCanal, 'vCanal' => $vCanal,
+        'descClientePct' => $descCliente, 'vCliente' => $vCliente,
+        'descPedidoPct' => $descPedidoPct, 'vPedido' => $vPedido,
+        'descCampanhaPct' => $descCampanhaPct, 'vCampanha' => $vCampanha,
+        'resAposDescontos' => $resAposDescontos,
+        'netNome' => $empNet['nome'] ?? null, 'netTaxes' => $netTaxes, 'netTotal' => $netTotal,
+        'resAposNet' => $resAposNet,
+        'blocosOutros' => $blocosOutros,
+        'resAposImpostos' => $resAposImpostos,
+        'baseCF' => $baseCF,
+    ];
+}
+
 $status       = $pedido['status'];
 // $isComercial / $isFinanceiro / $isSupervisor definidos no topo (TI atua como ambos)
 $canEdit      = $isComercial  && $status === 'comercial';
@@ -612,6 +700,9 @@ require_once LAYOUT_PATH . '/header.php';
         </button>
         <button type="button" class="btn btn-outline-success" data-bs-toggle="modal" data-bs-target="#modalFiscal">
             <i class="bi bi-receipt me-1"></i>Detalhamento Fiscal
+        </button>
+        <button type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#modalImpostos">
+            <i class="bi bi-bank me-1"></i>Impostos
         </button>
         <a href="<?= BASE_URL ?>/admin/pedido-pdf.php?id=<?= $pedidoId ?>" target="_blank"
            class="btn btn-outline-secondary">
@@ -722,6 +813,161 @@ require_once LAYOUT_PATH . '/header.php';
         </div>
     </div>
 </div>
+
+<!-- Modal Impostos -->
+<div class="modal fade" id="modalImpostos" tabindex="-1">
+    <div class="modal-dialog modal-fullscreen-lg-down modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header border-bottom">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-bank me-2"></i>Impostos — <?= e($pedido['numero_pedido']) ?>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+            <?php if (!$impItens): ?>
+                <div class="text-center text-muted py-5">Nenhum item para detalhar.</div>
+            <?php else: $pctFmt = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%'; ?>
+                <?php foreach ($impItens as $idx => $it): ?>
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-header bg-light py-2">
+                        <strong><?= e($it['codigo']) ?></strong> — <?= e($it['descricao']) ?>
+                    </div>
+                    <div class="card-body p-0">
+                        <table class="table table-sm mb-0" style="font-size:.85rem">
+                            <tbody>
+                                <tr class="fw-semibold">
+                                    <td>Valor por Produto</td>
+                                    <td class="text-end" colspan="2"><?= moedaBR($it['precoPadrao']) ?></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-4 text-muted">(-) Desconto Canal (<?= $pctFmt($it['descCanalPct']) ?>)</td>
+                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($it['vCanal']) ?></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-4 text-muted">(-) Desconto Cliente (<?= $pctFmt($it['descClientePct']) ?>)</td>
+                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($it['vCliente']) ?></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-4 text-muted">(-) Desconto Pedido (<?= $pctFmt($it['descPedidoPct']) ?>)</td>
+                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($it['vPedido']) ?></td>
+                                </tr>
+                                <?php if ($it['descCampanhaPct'] > 0): ?>
+                                <tr>
+                                    <td class="ps-4 text-muted">(-) Desconto Campanha (<?= $pctFmt($it['descCampanhaPct']) ?>)</td>
+                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($it['vCampanha']) ?></td>
+                                </tr>
+                                <?php endif; ?>
+                                <tr class="table-light fw-semibold">
+                                    <td>Resultado após Descontos</td>
+                                    <td class="text-end" colspan="2"><?= moedaBR($it['resAposDescontos']) ?></td>
+                                </tr>
+
+                                <?php if ($it['netNome']): ?>
+                                <tr><td colspan="3" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Imposto <?= e($it['netNome']) ?></td></tr>
+                                <?php foreach ($it['netTaxes'] as $tx): ?>
+                                <tr>
+                                    <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td>
+                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($tx['val']) ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <tr class="table-light fw-semibold">
+                                    <td>Resultado após <?= e($it['netNome']) ?></td>
+                                    <td class="text-end" colspan="2"><?= moedaBR($it['resAposNet']) ?></td>
+                                </tr>
+                                <?php endif; ?>
+
+                                <?php foreach ($it['blocosOutros'] as $bl): ?>
+                                <tr><td colspan="3" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Impostos <?= e($bl['nome']) ?></td></tr>
+                                <?php foreach ($bl['taxes'] as $tx): ?>
+                                <tr>
+                                    <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td>
+                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($tx['val']) ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php endforeach; ?>
+                                <tr class="table-light fw-semibold">
+                                    <td>Resultado após Impostos</td>
+                                    <td class="text-end" colspan="2"><?= moedaBR($it['resAposImpostos']) ?></td>
+                                </tr>
+
+                                <tr>
+                                    <td class="text-muted align-middle">
+                                        (-) Custo MP
+                                        <div class="text-muted" style="font-size:.68rem">ainda não cadastrado no sistema — informe manualmente</div>
+                                    </td>
+                                    <td class="text-end" colspan="2" style="width:140px">
+                                        <input type="number" step="0.01" min="0" value="0"
+                                               class="form-control form-control-sm text-end imp-mp"
+                                               data-idx="<?= $idx ?>" style="max-width:120px;margin-left:auto">
+                                    </td>
+                                </tr>
+                                <tr class="table-light fw-semibold">
+                                    <td>Resultado após Custo MP</td>
+                                    <td class="text-end" colspan="2"><span class="imp-res-mp" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span></td>
+                                </tr>
+
+                                <tr>
+                                    <td class="text-muted align-middle">
+                                        (-) Custos Fixos
+                                        <div class="text-muted" style="font-size:.68rem">% sobre Produto − Desc. Canal − Desc. Cliente (<?= moedaBR($it['baseCF']) ?>)</div>
+                                    </td>
+                                    <td style="width:110px">
+                                        <div class="input-group input-group-sm" style="max-width:110px;margin-left:auto">
+                                            <input type="number" step="0.01" min="0" value="0"
+                                                   class="form-control text-end imp-pctcf" data-idx="<?= $idx ?>">
+                                            <span class="input-group-text">%</span>
+                                        </div>
+                                    </td>
+                                    <td class="text-end text-danger" style="width:110px">-<span class="imp-vcf" data-idx="<?= $idx ?>">R$ 0,00</span></td>
+                                </tr>
+                                <tr class="table-success fw-bold" style="font-size:.95rem">
+                                    <td>Resultado Final</td>
+                                    <td class="text-end" colspan="2"><span class="imp-final" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <span class="d-none imp-base" data-idx="<?= $idx ?>"
+                      data-res-impostos="<?= number_format($it['resAposImpostos'], 4, '.', '') ?>"
+                      data-base-cf="<?= number_format($it['baseCF'], 4, '.', '') ?>"></span>
+                <?php endforeach; ?>
+            <?php endif; ?>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+(function() {
+    function fmtBRL(v) {
+        var sign = v < 0 ? '-' : '';
+        return sign + 'R$ ' + Math.abs(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+    function recalc(idx) {
+        var baseEl = document.querySelector('.imp-base[data-idx="' + idx + '"]');
+        if (!baseEl) return;
+        var resImpostos = parseFloat(baseEl.dataset.resImpostos) || 0;
+        var baseCF = parseFloat(baseEl.dataset.baseCf) || 0;
+        var mp  = parseFloat(document.querySelector('.imp-mp[data-idx="' + idx + '"]').value) || 0;
+        var pct = parseFloat(document.querySelector('.imp-pctcf[data-idx="' + idx + '"]').value) || 0;
+        var resAposMP = resImpostos - mp;
+        var vCF   = baseCF * pct / 100;
+        var final = resAposMP - vCF;
+        document.querySelector('.imp-res-mp[data-idx="' + idx + '"]').textContent = fmtBRL(resAposMP);
+        document.querySelector('.imp-vcf[data-idx="' + idx + '"]').textContent   = fmtBRL(vCF).replace('-', '');
+        document.querySelector('.imp-final[data-idx="' + idx + '"]').textContent = fmtBRL(final);
+    }
+    document.addEventListener('input', function(e) {
+        if (e.target.classList.contains('imp-mp') || e.target.classList.contains('imp-pctcf')) {
+            recalc(e.target.dataset.idx);
+        }
+    });
+})();
+</script>
 
 <?php /* A partir daqui, valores do pedido usam o símbolo da moeda do cliente (a seção fiscal acima permanece em R$). */
 moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>

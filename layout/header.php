@@ -264,6 +264,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 ['slug'=>'bonus-desempenho',  'label'=>'Bônus Desempenho',    'icon'=>'bi-trophy'],
                 ['slug'=>'bonus-ma',          'label'=>'Bônus Mat. Apoio',    'icon'=>'bi-gift'],
                 ['slug'=>'concessao-creditos','label'=>'Concess. Créditos',   'icon'=>'bi-coin'],
+                ['slug'=>'impostos',          'label'=>'Impostos',            'icon'=>'bi-percent'],
             ];
             $relLinks = [
                 ['slug'=>'status-pedidos',       'label'=>'Status dos Pedidos',  'icon'=>'bi-kanban'],

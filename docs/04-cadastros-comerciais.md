@@ -17,11 +17,12 @@ Módulo `admin/cadastros/*`. Acesso: `comercial`, `supervisor` ou `tecnologia da
 | **Bônus de Desempenho** | `bonus-desempenho.php` | [cadastros/bonus-desempenho.md](cadastros/bonus-desempenho.md) |
 | **Bônus de Material de Apoio** | `bonus-ma.php` | [cadastros/bonus-material-apoio.md](cadastros/bonus-material-apoio.md) |
 | **Concessão de Créditos** | `concessao-creditos.php` | [cadastros/concessao-creditos.md](cadastros/concessao-creditos.md) |
+| **Impostos** | `impostos.php` | [cadastros/impostos.md](cadastros/impostos.md) |
 | **Contas a Receber / Pagar (Comercial)** | `contas-receber.php` · `contas-pagar.php` | [cadastros/contas-comercial.md](cadastros/contas-comercial.md) |
 | **Usuários** | `usuarios.php` | [cadastros/usuarios.md](cadastros/usuarios.md) |
 
 ## Agrupamento no menu
 
-Na sidebar do admin, o flyout **Comercial → Cadastros** reúne: Produtos, Clientes, Grupo de Empresas, Tabela de Preços, Campanhas, Canal de Venda, NCM, Metas, Bônus Desempenho, Bônus Mat. Apoio e Concessão de Créditos. **Usuários** fica no flyout **Administração**. Ver [Portal Administrativo](03-portal-admin.md#navegação-sidebar).
+Na sidebar do admin, o flyout **Comercial → Cadastros** reúne: Produtos, Clientes, Grupo de Empresas, Tabela de Preços, Campanhas, Canal de Venda, NCM, Metas, Bônus Desempenho, Bônus Mat. Apoio, Concessão de Créditos e Impostos. **Usuários** fica no flyout **Administração**. Ver [Portal Administrativo](03-portal-admin.md#navegação-sidebar).
 
 Relacionado: [Campanhas](05-campanhas.md), [Pedidos](06-pedidos.md), [Módulo Financeiro](08-modulo-financeiro.md), [Regras de Negócio](10-regras-de-negocio.md).

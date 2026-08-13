@@ -38,6 +38,14 @@ Acesso: `requireComercial()` (`comercial`, `supervisor`, `tecnologia da informac
 
 - Exibe todos os itens do lote e o **log de ações** (`pedido_logs`).
 - **Ações** conforme perfil e status (Aprovar / Cancelar / Retornar / Faturar).
+- **Botão Impostos:** por item do pedido, mostra o "waterfall" de preço até o resultado final:
+  1. **Valor por Produto** — `tabela_precos.preco_padrao`.
+  2. **Descontos** (Canal, Cliente, Pedido = Comercial + Diretoria; Campanha só aparece se houver) — cada um calculado sobre o Valor por Produto.
+  3. **Imposto da empresa "Network"** (identificada pelo nome no cadastro de [Impostos](cadastros/impostos.md)) — IPI/PIS/COFINS do NCM do produto + IRPJ/CSLL/ISS da própria empresa, sobre o resultado após descontos.
+  4. **Impostos das demais empresas cadastradas** (ex.: Accademia) — apenas IRPJ/CSLL/ISS próprios (sem NCM), em cascata sobre o resultado da etapa anterior.
+  5. **Custo MP** — campo manual editável (ainda sem cadastro no sistema), recalcula ao vivo via JS.
+  6. **Custos Fixos** — percentual manual editável, aplicado sobre `Valor por Produto − Desconto Canal − Desconto Cliente`.
+  7. **Resultado Final** por produto.
 - **Descontos e Campanhas (card):** percentuais usados (Cliente, Canal, Comercial) + campanhas atingidas (código, alvo, qtd × mínimo, desconto% ou brindes × multiplicador).
 - **Descontos extras por item (etapa Comercial):**
   - **Desconto Comercial** (`pedidos.desconto_comercial`) — limitado por `canal_venda.margem_negociacao` (clamp no servidor + `max` no input).

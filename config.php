@@ -91,6 +91,15 @@ function db() {
                 cliente_id INT NOT NULL,
                 UNIQUE KEY uq_grupo_cliente (grupo_id, cliente_id)
             )"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS impostos_empresas (
+                id         INT AUTO_INCREMENT PRIMARY KEY,
+                nome       VARCHAR(120) NOT NULL,
+                cnpj       VARCHAR(20)  NOT NULL,
+                irpj       DECIMAL(5,2) NOT NULL DEFAULT 0,
+                csll       DECIMAL(5,2) NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE impostos_empresas ADD COLUMN iss DECIMAL(5,2) NOT NULL DEFAULT 0 AFTER csll"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS webhook_logs (
                 id         INT AUTO_INCREMENT PRIMARY KEY,
                 origem     VARCHAR(50)  NOT NULL,
