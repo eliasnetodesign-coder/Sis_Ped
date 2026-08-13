@@ -6,8 +6,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $a = $_POST['action'] ?? '';
     try {
         $d = [(int)$_POST['cliente_id'], (int)$_POST['trimestre'], (int)$_POST['ano'], (float)$_POST['meta_cliente']];
+        if (($a === 'criar' || $a === 'editar') && $d[3] < 0) {
+            throw new Exception('Meta não pode ser negativa.');
+        }
         if ($a === 'criar') {
-            db()->prepare('INSERT INTO metas (cliente_id,trimestre,ano,meta_cliente) VALUES (?,?,?,?)')->execute($d);
+            db()->prepare('INSERT INTO metas (cliente_id,trimestre,ano,meta_cliente) VALUES (?,?,?,?)
+                ON DUPLICATE KEY UPDATE meta_cliente=VALUES(meta_cliente)')->execute($d);
             flash('success', 'Meta criada!');
         } elseif ($a === 'editar') {
             $d[] = (int)$_POST['id'];
@@ -86,7 +90,7 @@ require_once LAYOUT_PATH . '/header.php';
                     </select>
                 </div>
                 <div class="col-md-4"><label class="form-label fw-semibold">Ano</label><input type="number" name="ano" id="f_ano" class="form-control" value="<?= date('Y') ?>"></div>
-                <div class="col-md-4"><label class="form-label fw-semibold">Meta (R$)</label><input type="number" step="0.01" name="meta_cliente" id="f_meta" class="form-control" value="0"></div>
+                <div class="col-md-4"><label class="form-label fw-semibold">Meta (R$)</label><input type="number" step="0.01" min="0" name="meta_cliente" id="f_meta" class="form-control" value="0"></div>
             </div>
         </div>
         <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button><button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i>Salvar</button></div>

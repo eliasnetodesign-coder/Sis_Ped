@@ -192,6 +192,7 @@ function db() {
                 alvo_valor      VARCHAR(100) NOT NULL,
                 KEY idx_camp_bonif_pool (codigo_campanha)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE metas ADD UNIQUE KEY cliente_trimestre_ano_unique (cliente_id, trimestre, ano)"); } catch (PDOException $e) {}
         } catch (PDOException $e) {
             die('Erro de conexão com o banco de dados. <a href="' . BASE_URL . '/install.php">Clique aqui para configurar.</a>');
         }
