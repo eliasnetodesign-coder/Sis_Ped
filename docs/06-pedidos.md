@@ -38,11 +38,11 @@ Acesso: `requireComercial()` (`comercial`, `supervisor`, `tecnologia da informac
 
 - Exibe todos os itens do lote e o **log de ações** (`pedido_logs`).
 - **Ações** conforme perfil e status (Aprovar / Cancelar / Retornar / Faturar).
-- **Botão Impostos:** por item do pedido, mostra o "waterfall" de preço até o resultado final:
+- **Botão Margem:** por item do pedido, mostra o "waterfall" de preço até o resultado final, com colunas de **Valor Unitário** e **Valor Total (Pedido)** (unitário × quantidade do item, exibida no cabeçalho do card):
   1. **Valor por Produto** — `tabela_precos.preco_padrao`.
   2. **Descontos** (Canal, Cliente, Pedido = Comercial + Diretoria; Campanha só aparece se houver) — cada um calculado sobre o Valor por Produto.
-  3. **Imposto da empresa "Network"** (identificada pelo nome no cadastro de [Impostos](cadastros/impostos.md)) — ICMS (por NCM + UF do cliente, local ou interestadual conforme `EMPRESA_UF`) + IPI/PIS/COFINS do NCM do produto (`ncm.ipi/pis/cofins`) + IRPJ/CSLL/ISS da própria empresa, sobre o resultado após descontos.
-  4. **Impostos das demais empresas cadastradas** (ex.: Accademia) — PIS/COFINS do NCM específicos dessa empresa (`ncm.pis_accademia/cofins_accademia`, sem IPI) + IRPJ/CSLL/ISS próprios, em cascata sobre o resultado da etapa anterior.
+  3. **Imposto da empresa "Network"** (identificada pelo nome no cadastro de [Impostos](cadastros/impostos.md)) — ICMS (por NCM + UF do cliente, local ou interestadual conforme `EMPRESA_UF`) + IPI/PIS/COFINS do NCM do produto (`ncm.ipi/pis/cofins`) + IRPJ/CSLL/ISS da própria empresa. Os percentuais incidem sobre o **Preço Network** (`tabela_precos.preco_network`, independente dos descontos do pedido); o valor em R$ resultante é que reduz o resultado corrente do waterfall (que segue baseado no Valor por Produto − Descontos).
+  4. **Impostos das demais empresas cadastradas** (ex.: Accademia) — PIS/COFINS do NCM específicos dessa empresa (`ncm.pis_accademia/cofins_accademia`, sem IPI) + IRPJ/CSLL/ISS próprios. Percentuais incidem sobre `Resultado após Descontos − Preço Network − IPI Network`; se essa base for negativa, o cálculo é desconsiderado (base tratada como zero). O valor em R$ resultante reduz o resultado corrente do waterfall.
   5. **Custo MP** — campo manual editável (ainda sem cadastro no sistema), recalcula ao vivo via JS.
   6. **Custos Fixos** — percentual manual editável, aplicado sobre `Valor por Produto − Desconto Canal − Desconto Cliente`.
   7. **Resultado Final** por produto.

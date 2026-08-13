@@ -39,13 +39,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             if (!$condClean) throw new Exception('Adicione ao menos uma condição (com categoria/produto e mínimo).');
 
-            // Alvos do desconto (opcional): cada linha = [tipo, valor]
+            // Alvos do desconto (opcional): filtro composto (linha E grupo E subgrupo E produto)
             $alvoClean = [];
             if ($tipo === 'desconto') {
                 foreach (($_POST['alvo'] ?? []) as $al) {
-                    $t = $al['tipo'] ?? '';
-                    $v = trim($al['valor'] ?? '');
-                    if (in_array($t, ['produto', 'linha', 'grupo', 'subgrupo'], true) && $v !== '') $alvoClean[] = [$t, $v];
+                    $fl = trim($al['linha']    ?? '');
+                    $fg = trim($al['grupo']    ?? '');
+                    $fs = trim($al['subgrupo'] ?? '');
+                    $fp = (int)($al['produto']  ?? 0);
+                    if ($fl === '' && $fg === '' && $fs === '' && $fp <= 0) continue;
+                    $alvoClean[] = [$fl, $fg, $fs, $fp];
                 }
             }
 
@@ -111,10 +114,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $insC->execute([$cod, 'composto', '', $c[1], $c[0], $c[2], $c[3] ?: null, $c[4] ?: null, $c[5] ?: null, $c[6] ?: null]);
             }
 
-            // Alvos do desconto
+            // Alvos do desconto — filtro composto (linha, grupo, subgrupo, produto)
             if ($tipo === 'desconto' && $alvoClean) {
-                $insA = db()->prepare('INSERT INTO campanha_desconto_alvo (codigo_campanha,alvo_tipo,alvo_valor) VALUES (?,?,?)');
-                foreach ($alvoClean as $al) $insA->execute([$cod, $al[0], $al[1]]);
+                $insA = db()->prepare('INSERT INTO campanha_desconto_alvo
+                    (codigo_campanha,alvo_tipo,alvo_valor,alvo_linha,alvo_grupo,alvo_subgrupo,alvo_produto_id)
+                    VALUES (?,?,?,?,?,?,?)');
+                foreach ($alvoClean as $al) $insA->execute([$cod, 'composto', '', $al[0] ?: null, $al[1] ?: null, $al[2] ?: null, $al[3] ?: null]);
             }
 
             // Bonificação: lista de produtos ou pool por categoria
@@ -216,16 +221,26 @@ foreach ($condRows as $cc) {
     ];
 }
 
-// Alvos de desconto e pool de bonificação por campanha
-foreach (['campanha_desconto_alvo' => 'desconto_alvos', 'campanha_bonif_pool' => 'bonif_pool'] as $tbl => $key) {
-    try {
-        foreach (db()->query("SELECT codigo_campanha, alvo_tipo, alvo_valor FROM $tbl ORDER BY id")->fetchAll() as $a) {
-            if (isset($campanhas[$a['codigo_campanha']])) {
-                $campanhas[$a['codigo_campanha']][$key][] = ['tipo' => $a['alvo_tipo'], 'valor' => $a['alvo_valor']];
-            }
-        }
-    } catch (PDOException $e) { /* tabela ainda não existe */ }
+// Alvos de desconto por campanha — filtro composto (linha, grupo, subgrupo, produto)
+try {
+    $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id
+        FROM campanha_desconto_alvo ORDER BY id')->fetchAll();
+} catch (PDOException $e) {
+    try { $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor FROM campanha_desconto_alvo ORDER BY id')->fetchAll(); }
+    catch (PDOException $e2) { $alvoRows = []; }
 }
+foreach ($alvoRows as $a) {
+    if (isset($campanhas[$a['codigo_campanha']])) $campanhas[$a['codigo_campanha']]['desconto_alvos'][] = alvoFiltro($a);
+}
+
+// Pool de bonificação por campanha (critério único: tipo + valor)
+try {
+    foreach (db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor FROM campanha_bonif_pool ORDER BY id')->fetchAll() as $a) {
+        if (isset($campanhas[$a['codigo_campanha']])) {
+            $campanhas[$a['codigo_campanha']]['bonif_pool'][] = ['tipo' => $a['alvo_tipo'], 'valor' => $a['alvo_valor']];
+        }
+    }
+} catch (PDOException $e) { /* tabela ainda não existe */ }
 
 // Campanhas legadas (sem condições): sintetiza condições compostas a partir de
 // produtos/categoria para que apareçam no novo bloco de condições ao editar.
@@ -438,7 +453,13 @@ require_once LAYOUT_PATH . '/header.php';
                             <div class="table-responsive d-none" id="alvoTableWrap">
                                 <table class="table table-sm table-bordered align-middle mb-2">
                                     <thead class="table-light">
-                                        <tr><th style="width:120px">Tipo</th><th>Categoria / Produto</th><th style="width:50px" class="text-center">—</th></tr>
+                                        <tr>
+                                            <th style="min-width:140px">Linha</th>
+                                            <th style="min-width:140px">Grupo</th>
+                                            <th style="min-width:140px">Subgrupo</th>
+                                            <th style="min-width:160px">Produto</th>
+                                            <th style="width:46px" class="text-center">—</th>
+                                        </tr>
                                     </thead>
                                     <tbody id="alvoBody"></tbody>
                                 </table>
@@ -650,8 +671,25 @@ function alvoLikeRemove(btn, bodyId, wrapId) {
     btn.closest('tr').remove();
     document.getElementById(wrapId).classList.toggle('d-none', document.querySelectorAll('#' + bodyId + ' tr').length === 0);
 }
-function alvoAddRow(tipo, valor) { alvoLikeAddRow('alvo', 'alvoBody', 'alvoTableWrap', tipo, valor); }
 function poolAddRow(tipo, valor) { alvoLikeAddRow('pool', 'poolBody', 'poolTableWrap', tipo, valor); }
+
+// ---- Alvo do desconto — filtro composto (linha + grupo + subgrupo + produto), igual às condições ----
+function alvoAddRow(linha, grupo, subgrupo, produto) {
+    var i = _critSeq++;
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td>' + catSelect('alvo[' + i + '][linha]',    'linha',    linha)    + '</td>' +
+        '<td>' + catSelect('alvo[' + i + '][grupo]',    'grupo',    grupo)    + '</td>' +
+        '<td>' + catSelect('alvo[' + i + '][subgrupo]', 'subgrupo', subgrupo) + '</td>' +
+        '<td>' + prodSelect('alvo[' + i + '][produto]', produto) + '</td>' +
+        '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" onclick="alvoRemove(this)"><i class="bi bi-x-lg"></i></button></td>';
+    document.getElementById('alvoBody').appendChild(tr);
+    document.getElementById('alvoTableWrap').classList.remove('d-none');
+}
+function alvoRemove(btn) {
+    btn.closest('tr').remove();
+    document.getElementById('alvoTableWrap').classList.toggle('d-none', document.querySelectorAll('#alvoBody tr').length === 0);
+}
 
 // ---- Alterna Desconto x Bonificação ----
 function campSetTipo(tipo) {
@@ -800,7 +838,7 @@ function editarReg(d) {
     document.getElementById('f_tipo').value     = d.tipo || 'desconto';
     campLimpar();
     (d.condicoes || []).forEach(function(c) { condAddRow(c.linha, c.grupo, c.subgrupo, c.produto, c.modo, c.qtd, c.valor_min); });
-    (d.desconto_alvos || []).forEach(function(a) { alvoAddRow(a.tipo, a.valor); });
+    (d.desconto_alvos || []).forEach(function(a) { alvoAddRow(a.linha, a.grupo, a.subgrupo, a.produto); });
     (d.bonif_pool || []).forEach(function(a) { poolAddRow(a.tipo, a.valor); });
     document.getElementById('f_bonif_modo').value       = d.bonif_modo || 'fixo';
     document.getElementById('f_bonif_selec_modo').value = d.bonif_selec_modo || 'produtos';

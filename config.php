@@ -196,6 +196,11 @@ function db() {
                 alvo_valor      VARCHAR(100) NOT NULL,
                 KEY idx_camp_desc_alvo (codigo_campanha)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Alvo do desconto = filtro composto (linha E grupo E subgrupo E produto), igual às condições.
+            try { $pdo->exec("ALTER TABLE campanha_desconto_alvo ADD COLUMN alvo_linha VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanha_desconto_alvo ADD COLUMN alvo_grupo VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanha_desconto_alvo ADD COLUMN alvo_subgrupo VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanha_desconto_alvo ADD COLUMN alvo_produto_id INT NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_bonif_pool (
                 id              INT AUTO_INCREMENT PRIMARY KEY,
                 codigo_campanha VARCHAR(50)  NOT NULL,
@@ -612,11 +617,19 @@ function campanhasAgrupadas(): array {
  */
 function alvosDescontoCampanha(string $codigo, array $gruposAlvo): array {
     try {
-        $st = db()->prepare("SELECT alvo_tipo, alvo_valor FROM campanha_desconto_alvo WHERE codigo_campanha = ?");
+        $st = db()->prepare("SELECT alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id
+                              FROM campanha_desconto_alvo WHERE codigo_campanha = ?");
         $st->execute([$codigo]);
-        $alvos = array_map(fn($a) => ['tipo' => $a['alvo_tipo'], 'valor' => trim($a['alvo_valor'])], $st->fetchAll());
+        $alvos = array_map(fn($a) => alvoFiltro($a), $st->fetchAll());
         if ($alvos) return $alvos;
-    } catch (PDOException $e) { /* tabela ainda não existe */ }
+    } catch (PDOException $e) {
+        try {
+            $st = db()->prepare("SELECT alvo_tipo, alvo_valor FROM campanha_desconto_alvo WHERE codigo_campanha = ?");
+            $st->execute([$codigo]);
+            $alvos = array_map(fn($a) => ['tipo' => $a['alvo_tipo'], 'valor' => trim($a['alvo_valor'])], $st->fetchAll());
+            if ($alvos) return $alvos;
+        } catch (PDOException $e2) { /* tabela ainda não existe */ }
+    }
     return $gruposAlvo;
 }
 
@@ -744,6 +757,25 @@ function condFiltro(array $c): array {
     ];
     if (!filtroValido($f)) {  // legado (sem colunas cond_*): usa criterio único
         $tipo = $c['criterio_tipo'] ?? ''; $val = trim($c['criterio_valor'] ?? '');
+        if ($tipo === 'produto') $f['produto'] = (int)$val;
+        elseif (in_array($tipo, ['linha', 'grupo', 'subgrupo'], true)) $f[$tipo] = $val;
+    }
+    return $f;
+}
+
+/**
+ * Filtro composto de um alvo de desconto: ['linha','grupo','subgrupo','produto'] (cada um
+ * opcional). Usa as colunas alvo_* novas; cai para alvo_tipo/alvo_valor (legado, critério único).
+ */
+function alvoFiltro(array $a): array {
+    $f = [
+        'linha'    => isset($a['alvo_linha'])    && trim($a['alvo_linha'])    !== '' ? trim($a['alvo_linha'])    : null,
+        'grupo'    => isset($a['alvo_grupo'])    && trim($a['alvo_grupo'])    !== '' ? trim($a['alvo_grupo'])    : null,
+        'subgrupo' => isset($a['alvo_subgrupo']) && trim($a['alvo_subgrupo']) !== '' ? trim($a['alvo_subgrupo']) : null,
+        'produto'  => !empty($a['alvo_produto_id']) ? (int)$a['alvo_produto_id'] : null,
+    ];
+    if (!filtroValido($f)) {  // legado (sem colunas alvo_*): usa tipo/valor único
+        $tipo = $a['alvo_tipo'] ?? ''; $val = trim($a['alvo_valor'] ?? '');
         if ($tipo === 'produto') $f['produto'] = (int)$val;
         elseif (in_array($tipo, ['linha', 'grupo', 'subgrupo'], true)) $f[$tipo] = $val;
     }

@@ -442,10 +442,13 @@ foreach ($condRows as $cc) {
 // Alvos explícitos do desconto por código de campanha
 $alvoByCode = [];
 try {
-    foreach (db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor FROM campanha_desconto_alvo ORDER BY id')->fetchAll() as $al) {
-        $alvoByCode[$al['codigo_campanha']][] = ['tipo' => $al['alvo_tipo'], 'valor' => trim($al['alvo_valor'])];
-    }
-} catch (PDOException $e) { /* tabela ainda não existe */ }
+    $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id
+        FROM campanha_desconto_alvo ORDER BY id')->fetchAll();
+} catch (PDOException $e) {
+    try { $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor FROM campanha_desconto_alvo ORDER BY id')->fetchAll(); }
+    catch (PDOException $e2) { $alvoRows = []; }
+}
+foreach ($alvoRows as $al) $alvoByCode[$al['codigo_campanha']][] = alvoFiltro($al);
 
 // Nome legível de produtos referenciados em condições/alvos
 $prodNomeById = [];
@@ -1128,7 +1131,9 @@ var _campCondicoes = <?= json_encode(array_values(array_filter(array_map(functio
             'qtd'      => (int)$c['quantidade'],
             'valorMin' => (float)($c['valor_min'] ?? 0),
         ], $conds),
-        'alvos'    => array_map(fn($a) => ['tipo' => $a['tipo'], 'valor' => $a['valor']], $alvoByCode[$code] ?? []),
+        'alvos'    => array_map(fn($a) => [
+            'linha' => $a['linha'], 'grupo' => $a['grupo'], 'subgrupo' => $a['subgrupo'], 'produto' => (int)($a['produto'] ?: 0),
+        ], $alvoByCode[$code] ?? []),
     ];
 }, array_keys($campGroup), array_values($campGroup))))) ?>;
 

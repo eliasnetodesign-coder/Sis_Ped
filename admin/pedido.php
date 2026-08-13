@@ -585,9 +585,10 @@ $logsStmt->execute([$pedido['numero_pedido']]);
 $pedidoLogs = $logsStmt->fetchAll();
 
 // ===== Impostos por Empresa (waterfall: preço padrão → descontos → impostos por empresa → custo MP → custos fixos) =====
-$impSql = "SELECT p.id, p.descricao_produto, pr.codigo_produto, pr.ncm_id,
+$impSql = "SELECT p.id, p.descricao_produto, p.quantidade_total, pr.codigo_produto, pr.ncm_id,
                   p.desconto_comercial, p.desconto_diretoria, p.desconto_campanha,
                   COALESCE(t.preco_padrao, 0) AS preco_padrao,
+                  COALESCE(t.preco_network, 0) AS preco_network,
                   n.ipi, n.pis, n.cofins, n.pis_accademia, n.cofins_accademia
            FROM pedidos p
            LEFT JOIN produtos pr     ON pr.id = p.produto_id
@@ -611,6 +612,7 @@ if (!$empNet && $impEmpresas) { $empNet = $impEmpresas[0]; $outrasEmpresas = arr
 $impItens = [];
 foreach ($impRaw as $r) {
     $precoPadrao = (float)$r['preco_padrao'];
+    $qtd = (int)($r['quantidade_total'] ?? 0);
 
     // Descontos (base = valor por produto): canal, cliente e pedido (comercial + diretoria); campanha é multiplicativa.
     $vCanal   = $precoPadrao * $descCanal / 100;
@@ -622,14 +624,18 @@ foreach ($impRaw as $r) {
     $vCampanha = $descCampanhaPct > 0 ? $resDescAditivo * $descCampanhaPct / 100 : 0;
     $resAposDescontos = $resDescAditivo - $vCampanha;
 
-    // Bloco da empresa Network: ICMS (por NCM + UF do cliente) + impostos do NCM do produto + impostos próprios da empresa
+    // Bloco da empresa Network: ICMS (por NCM + UF do cliente) + impostos do NCM do produto + impostos próprios da empresa.
+    // Percentuais sempre sobre o "Preço Network" da tabela de preços (independente dos descontos do pedido);
+    // o valor resultante é que é descontado do resultado corrente (waterfall).
     $icmsRow = $icmsByNcm[$r['ncm_id']] ?? null;
     $icmsPct = $icmsRow ? (float)($ehLocal ? $icmsRow['icms_local'] : $icmsRow['icms_interestadual']) : 0;
-    $netTaxes = [];
-    $netBase  = $resAposDescontos;
+    $netTaxes  = [];
+    $netBase   = (float)($r['preco_network'] ?? 0);
+    $ipiNetPct = (float)($r['ipi'] ?? 0);
+    $ipiNetVal = $netBase * $ipiNetPct / 100;
     if ($empNet) {
         $netTaxes[] = ['label' => 'ICMS ' . ($clienteUF ?: '—') . ' ' . ($ehLocal ? 'Local' : 'Interestadual'), 'pct' => $icmsPct, 'val' => $netBase * $icmsPct / 100];
-        $netTaxes[] = ['label' => 'IPI',    'pct' => (float)($r['ipi'] ?? 0),      'val' => $netBase * (float)($r['ipi'] ?? 0) / 100];
+        $netTaxes[] = ['label' => 'IPI',    'pct' => $ipiNetPct,                   'val' => $ipiNetVal];
         $netTaxes[] = ['label' => 'PIS',    'pct' => (float)($r['pis'] ?? 0),      'val' => $netBase * (float)($r['pis'] ?? 0) / 100];
         $netTaxes[] = ['label' => 'COFINS', 'pct' => (float)($r['cofins'] ?? 0),   'val' => $netBase * (float)($r['cofins'] ?? 0) / 100];
         $netTaxes[] = ['label' => 'IRPJ',   'pct' => (float)$empNet['irpj'],       'val' => $netBase * (float)$empNet['irpj'] / 100];
@@ -637,7 +643,12 @@ foreach ($impRaw as $r) {
         $netTaxes[] = ['label' => 'ISS',    'pct' => (float)$empNet['iss'],        'val' => $netBase * (float)$empNet['iss'] / 100];
     }
     $netTotal   = array_sum(array_column($netTaxes, 'val'));
-    $resAposNet = $netBase - $netTotal;
+    $resAposNet = $resAposDescontos - $netTotal;
+
+    // Base de cálculo das demais empresas (ex.: Accademia) = Resultado após Descontos - Preço Network - IPI Network.
+    // Se o resultado for negativo, desconsidera o cálculo (base = 0, sem impostos nesse bloco).
+    $baseOutras = $resAposDescontos - $netBase - $ipiNetVal;
+    if ($baseOutras < 0) $baseOutras = 0;
 
     // Blocos das demais empresas (em sequência): impostos próprios + PIS/COFINS específicos da empresa (cadastrados no NCM)
     $blocosOutros = [];
@@ -648,11 +659,11 @@ foreach ($impRaw as $r) {
         $pisPct  = (float)($r['pis_accademia'] ?? 0);
         $cofPct  = (float)($r['cofins_accademia'] ?? 0);
         $taxes = [
-            ['label' => 'PIS',    'pct' => $pisPct,             'val' => $baseAtual * $pisPct / 100],
-            ['label' => 'COFINS', 'pct' => $cofPct,             'val' => $baseAtual * $cofPct / 100],
-            ['label' => 'IRPJ',   'pct' => (float)$oe['irpj'],  'val' => $baseAtual * (float)$oe['irpj'] / 100],
-            ['label' => 'CSLL',   'pct' => (float)$oe['csll'],  'val' => $baseAtual * (float)$oe['csll'] / 100],
-            ['label' => 'ISS',    'pct' => (float)$oe['iss'],   'val' => $baseAtual * (float)$oe['iss'] / 100],
+            ['label' => 'PIS',    'pct' => $pisPct,             'val' => $baseOutras * $pisPct / 100],
+            ['label' => 'COFINS', 'pct' => $cofPct,             'val' => $baseOutras * $cofPct / 100],
+            ['label' => 'IRPJ',   'pct' => (float)$oe['irpj'],  'val' => $baseOutras * (float)$oe['irpj'] / 100],
+            ['label' => 'CSLL',   'pct' => (float)$oe['csll'],  'val' => $baseOutras * (float)$oe['csll'] / 100],
+            ['label' => 'ISS',    'pct' => (float)$oe['iss'],   'val' => $baseOutras * (float)$oe['iss'] / 100],
         ];
         $t = array_sum(array_column($taxes, 'val'));
         $blocosOutros[] = ['nome' => $oe['nome'], 'taxes' => $taxes, 'total' => $t];
@@ -665,14 +676,17 @@ foreach ($impRaw as $r) {
 
     $impItens[] = [
         'codigo' => $r['codigo_produto'], 'descricao' => $r['descricao_produto'],
+        'qtd' => $qtd,
         'precoPadrao' => $precoPadrao,
         'descCanalPct' => $descCanal, 'vCanal' => $vCanal,
         'descClientePct' => $descCliente, 'vCliente' => $vCliente,
         'descPedidoPct' => $descPedidoPct, 'vPedido' => $vPedido,
         'descCampanhaPct' => $descCampanhaPct, 'vCampanha' => $vCampanha,
         'resAposDescontos' => $resAposDescontos,
+        'precoNetwork' => $netBase,
         'netNome' => $empNet['nome'] ?? null, 'netTaxes' => $netTaxes, 'netTotal' => $netTotal,
         'resAposNet' => $resAposNet,
+        'baseOutras' => $baseOutras,
         'blocosOutros' => $blocosOutros,
         'resAposImpostos' => $resAposImpostos,
         'baseCF' => $baseCF,
@@ -709,7 +723,7 @@ require_once LAYOUT_PATH . '/header.php';
             <i class="bi bi-receipt me-1"></i>Detalhamento Fiscal
         </button>
         <button type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#modalImpostos">
-            <i class="bi bi-bank me-1"></i>Impostos
+            <i class="bi bi-bank me-1"></i>Margem
         </button>
         <a href="<?= BASE_URL ?>/admin/pedido-pdf.php?id=<?= $pedidoId ?>" target="_blank"
            class="btn btn-outline-secondary">
@@ -827,7 +841,7 @@ require_once LAYOUT_PATH . '/header.php';
         <div class="modal-content">
             <div class="modal-header border-bottom">
                 <h5 class="modal-title fw-bold">
-                    <i class="bi bi-bank me-2"></i>Impostos — <?= e($pedido['numero_pedido']) ?>
+                    <i class="bi bi-bank me-2"></i>Margem — <?= e($pedido['numero_pedido']) ?>
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
@@ -837,81 +851,102 @@ require_once LAYOUT_PATH . '/header.php';
             <?php else: $pctFmt = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%'; ?>
                 <?php foreach ($impItens as $idx => $it): ?>
                 <div class="card border-0 shadow-sm mb-3">
-                    <div class="card-header bg-light py-2">
-                        <strong><?= e($it['codigo']) ?></strong> — <?= e($it['descricao']) ?>
+                    <div class="card-header bg-light py-2 d-flex justify-content-between align-items-center flex-wrap gap-1">
+                        <span><strong><?= e($it['codigo']) ?></strong> — <?= e($it['descricao']) ?></span>
+                        <span class="badge bg-secondary">Qtd: <?= (int)$it['qtd'] ?></span>
                     </div>
                     <div class="card-body p-0">
                         <table class="table table-sm mb-0" style="font-size:.85rem">
+                            <thead>
+                                <tr class="text-muted small">
+                                    <th></th><th></th>
+                                    <th class="text-end fw-normal">Valor Unitário</th>
+                                    <th class="text-end fw-normal">Valor Total (Pedido)</th>
+                                </tr>
+                            </thead>
                             <tbody>
                                 <tr class="fw-semibold">
-                                    <td>Valor por Produto</td>
-                                    <td class="text-end" colspan="2"><?= moedaBR($it['precoPadrao']) ?></td>
+                                    <td>Valor por Produto</td><td></td>
+                                    <td class="text-end"><?= moedaBR($it['precoPadrao']) ?></td>
+                                    <td class="text-end text-muted"><?= moedaBR($it['precoPadrao'] * $it['qtd']) ?></td>
                                 </tr>
                                 <tr>
-                                    <td class="ps-4 text-muted">(-) Desconto Canal (<?= $pctFmt($it['descCanalPct']) ?>)</td>
-                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($it['vCanal']) ?></td>
+                                    <td class="ps-4 text-muted">(-) Desconto Canal (<?= $pctFmt($it['descCanalPct']) ?>)</td><td></td>
+                                    <td class="text-end text-danger">-<?= moedaBR($it['vCanal']) ?></td>
+                                    <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vCanal'] * $it['qtd']) ?></td>
                                 </tr>
                                 <tr>
-                                    <td class="ps-4 text-muted">(-) Desconto Cliente (<?= $pctFmt($it['descClientePct']) ?>)</td>
-                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($it['vCliente']) ?></td>
+                                    <td class="ps-4 text-muted">(-) Desconto Cliente (<?= $pctFmt($it['descClientePct']) ?>)</td><td></td>
+                                    <td class="text-end text-danger">-<?= moedaBR($it['vCliente']) ?></td>
+                                    <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vCliente'] * $it['qtd']) ?></td>
                                 </tr>
                                 <tr>
-                                    <td class="ps-4 text-muted">(-) Desconto Pedido (<?= $pctFmt($it['descPedidoPct']) ?>)</td>
-                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($it['vPedido']) ?></td>
+                                    <td class="ps-4 text-muted">(-) Desconto Pedido (<?= $pctFmt($it['descPedidoPct']) ?>)</td><td></td>
+                                    <td class="text-end text-danger">-<?= moedaBR($it['vPedido']) ?></td>
+                                    <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vPedido'] * $it['qtd']) ?></td>
                                 </tr>
                                 <?php if ($it['descCampanhaPct'] > 0): ?>
                                 <tr>
-                                    <td class="ps-4 text-muted">(-) Desconto Campanha (<?= $pctFmt($it['descCampanhaPct']) ?>)</td>
-                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($it['vCampanha']) ?></td>
+                                    <td class="ps-4 text-muted">(-) Desconto Campanha (<?= $pctFmt($it['descCampanhaPct']) ?>)</td><td></td>
+                                    <td class="text-end text-danger">-<?= moedaBR($it['vCampanha']) ?></td>
+                                    <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vCampanha'] * $it['qtd']) ?></td>
                                 </tr>
                                 <?php endif; ?>
                                 <tr class="table-light fw-semibold">
-                                    <td>Resultado após Descontos</td>
-                                    <td class="text-end" colspan="2"><?= moedaBR($it['resAposDescontos']) ?></td>
+                                    <td>Resultado após Descontos</td><td></td>
+                                    <td class="text-end"><?= moedaBR($it['resAposDescontos']) ?></td>
+                                    <td class="text-end text-muted"><?= moedaBR($it['resAposDescontos'] * $it['qtd']) ?></td>
                                 </tr>
 
                                 <?php if ($it['netNome']): ?>
-                                <tr><td colspan="3" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Imposto <?= e($it['netNome']) ?></td></tr>
+                                <tr><td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: Preço Network <?= moedaBR($it['precoNetwork']) ?></span></td></tr>
                                 <?php foreach ($it['netTaxes'] as $tx): ?>
                                 <tr>
-                                    <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td>
-                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($tx['val']) ?></td>
+                                    <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td><td></td>
+                                    <td class="text-end text-danger">-<?= moedaBR($tx['val']) ?></td>
+                                    <td class="text-end text-danger text-opacity-75">-<?= moedaBR($tx['val'] * $it['qtd']) ?></td>
                                 </tr>
                                 <?php endforeach; ?>
                                 <tr class="table-light fw-semibold">
-                                    <td>Resultado após <?= e($it['netNome']) ?></td>
-                                    <td class="text-end" colspan="2"><?= moedaBR($it['resAposNet']) ?></td>
+                                    <td>Resultado após <?= e($it['netNome']) ?></td><td></td>
+                                    <td class="text-end"><?= moedaBR($it['resAposNet']) ?></td>
+                                    <td class="text-end text-muted"><?= moedaBR($it['resAposNet'] * $it['qtd']) ?></td>
                                 </tr>
                                 <?php endif; ?>
 
                                 <?php foreach ($it['blocosOutros'] as $bl): ?>
-                                <tr><td colspan="3" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Impostos <?= e($bl['nome']) ?></td></tr>
+                                <tr><td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Impostos <?= e($bl['nome']) ?> <span class="text-muted text-lowercase fw-normal">— base: Result. após Descontos − Preço Network − IPI Network = <?= moedaBR($it['baseOutras']) ?></span></td></tr>
                                 <?php foreach ($bl['taxes'] as $tx): ?>
                                 <tr>
-                                    <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td>
-                                    <td class="text-end text-danger" colspan="2">-<?= moedaBR($tx['val']) ?></td>
+                                    <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td><td></td>
+                                    <td class="text-end text-danger">-<?= moedaBR($tx['val']) ?></td>
+                                    <td class="text-end text-danger text-opacity-75">-<?= moedaBR($tx['val'] * $it['qtd']) ?></td>
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php endforeach; ?>
                                 <tr class="table-light fw-semibold">
-                                    <td>Resultado após Impostos</td>
-                                    <td class="text-end" colspan="2"><?= moedaBR($it['resAposImpostos']) ?></td>
+                                    <td>Resultado após Impostos</td><td></td>
+                                    <td class="text-end"><?= moedaBR($it['resAposImpostos']) ?></td>
+                                    <td class="text-end text-muted"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></td>
                                 </tr>
 
                                 <tr>
                                     <td class="text-muted align-middle">
                                         (-) Custo MP
-                                        <div class="text-muted" style="font-size:.68rem">ainda não cadastrado no sistema — informe manualmente</div>
+                                        <div class="text-muted" style="font-size:.68rem">ainda não cadastrado no sistema — informe manualmente (por unidade)</div>
                                     </td>
-                                    <td class="text-end" colspan="2" style="width:140px">
+                                    <td style="width:140px">
                                         <input type="number" step="0.01" min="0" value="0"
                                                class="form-control form-control-sm text-end imp-mp"
                                                data-idx="<?= $idx ?>" style="max-width:120px;margin-left:auto">
                                     </td>
+                                    <td class="text-end text-muted">—</td>
+                                    <td class="text-end text-danger text-opacity-75">-<span class="imp-mp-total" data-idx="<?= $idx ?>">R$ 0,00</span></td>
                                 </tr>
                                 <tr class="table-light fw-semibold">
-                                    <td>Resultado após Custo MP</td>
-                                    <td class="text-end" colspan="2"><span class="imp-res-mp" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span></td>
+                                    <td>Resultado após Custo MP</td><td></td>
+                                    <td class="text-end"><span class="imp-res-mp" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span></td>
+                                    <td class="text-end text-muted"><span class="imp-res-mp-total" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></span></td>
                                 </tr>
 
                                 <tr>
@@ -926,14 +961,16 @@ require_once LAYOUT_PATH . '/header.php';
                                             <span class="input-group-text">%</span>
                                         </div>
                                     </td>
-                                    <td class="text-end text-danger" style="width:110px">-<span class="imp-vcf" data-idx="<?= $idx ?>">R$ 0,00</span></td>
+                                    <td class="text-end text-danger">-<span class="imp-vcf" data-idx="<?= $idx ?>">R$ 0,00</span></td>
+                                    <td class="text-end text-danger text-opacity-75">-<span class="imp-vcf-total" data-idx="<?= $idx ?>">R$ 0,00</span></td>
                                 </tr>
                                 <tr class="table-success fw-bold" style="font-size:.95rem">
-                                    <td>Resultado Final</td>
-                                    <td class="text-end" colspan="2">
+                                    <td>Resultado Final</td><td></td>
+                                    <td class="text-end">
                                         <span class="imp-final" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span>
-                                        <span class="text-muted small fw-normal">(<span class="imp-margem" data-idx="<?= $idx ?>"><?= $pctFmt($it['precoPadrao'] > 0 ? $it['resAposImpostos'] / $it['precoPadrao'] * 100 : 0) ?></span> margem)</span>
+                                        <span class="text-muted small fw-normal d-block">(<span class="imp-margem" data-idx="<?= $idx ?>"><?= $pctFmt($it['precoPadrao'] > 0 ? $it['resAposImpostos'] / $it['precoPadrao'] * 100 : 0) ?></span> margem)</span>
                                     </td>
+                                    <td class="text-end"><span class="imp-final-total" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></span></td>
                                 </tr>
                             </tbody>
                         </table>
@@ -942,7 +979,8 @@ require_once LAYOUT_PATH . '/header.php';
                 <span class="d-none imp-base" data-idx="<?= $idx ?>"
                       data-res-impostos="<?= number_format($it['resAposImpostos'], 4, '.', '') ?>"
                       data-base-cf="<?= number_format($it['baseCF'], 4, '.', '') ?>"
-                      data-preco-padrao="<?= number_format($it['precoPadrao'], 4, '.', '') ?>"></span>
+                      data-preco-padrao="<?= number_format($it['precoPadrao'], 4, '.', '') ?>"
+                      data-qtd="<?= (int)$it['qtd'] ?>"></span>
                 <?php endforeach; ?>
             <?php endif; ?>
             </div>
@@ -969,16 +1007,21 @@ require_once LAYOUT_PATH . '/header.php';
         var resImpostos = parseFloat(baseEl.dataset.resImpostos) || 0;
         var baseCF = parseFloat(baseEl.dataset.baseCf) || 0;
         var precoPadrao = parseFloat(baseEl.dataset.precoPadrao) || 0;
+        var qtd = parseFloat(baseEl.dataset.qtd) || 0;
         var mp  = parseFloat(document.querySelector('.imp-mp[data-idx="' + idx + '"]').value) || 0;
         var pct = parseFloat(document.querySelector('.imp-pctcf[data-idx="' + idx + '"]').value) || 0;
         var resAposMP = resImpostos - mp;
         var vCF   = baseCF * pct / 100;
         var final = resAposMP - vCF;
         var margem = precoPadrao > 0 ? (final / precoPadrao * 100) : 0;
-        document.querySelector('.imp-res-mp[data-idx="' + idx + '"]').textContent = fmtBRL(resAposMP);
-        document.querySelector('.imp-vcf[data-idx="' + idx + '"]').textContent   = fmtBRL(vCF).replace('-', '');
-        document.querySelector('.imp-final[data-idx="' + idx + '"]').textContent = fmtBRL(final);
-        document.querySelector('.imp-margem[data-idx="' + idx + '"]').textContent = fmtPct(margem);
+        document.querySelector('.imp-mp-total[data-idx="' + idx + '"]').textContent     = fmtBRL(mp * qtd).replace('-', '');
+        document.querySelector('.imp-res-mp[data-idx="' + idx + '"]').textContent       = fmtBRL(resAposMP);
+        document.querySelector('.imp-res-mp-total[data-idx="' + idx + '"]').textContent = fmtBRL(resAposMP * qtd);
+        document.querySelector('.imp-vcf[data-idx="' + idx + '"]').textContent          = fmtBRL(vCF).replace('-', '');
+        document.querySelector('.imp-vcf-total[data-idx="' + idx + '"]').textContent    = fmtBRL(vCF * qtd).replace('-', '');
+        document.querySelector('.imp-final[data-idx="' + idx + '"]').textContent        = fmtBRL(final);
+        document.querySelector('.imp-final-total[data-idx="' + idx + '"]').textContent  = fmtBRL(final * qtd);
+        document.querySelector('.imp-margem[data-idx="' + idx + '"]').textContent       = fmtPct(margem);
     }
     document.addEventListener('input', function(e) {
         if (e.target.classList.contains('imp-mp') || e.target.classList.contains('imp-pctcf')) {
