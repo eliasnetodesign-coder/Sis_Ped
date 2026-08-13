@@ -585,10 +585,10 @@ $logsStmt->execute([$pedido['numero_pedido']]);
 $pedidoLogs = $logsStmt->fetchAll();
 
 // ===== Impostos por Empresa (waterfall: preço padrão → descontos → impostos por empresa → custo MP → custos fixos) =====
-$impSql = "SELECT p.id, p.descricao_produto, pr.codigo_produto,
+$impSql = "SELECT p.id, p.descricao_produto, pr.codigo_produto, pr.ncm_id,
                   p.desconto_comercial, p.desconto_diretoria, p.desconto_campanha,
                   COALESCE(t.preco_padrao, 0) AS preco_padrao,
-                  n.ipi, n.pis, n.cofins
+                  n.ipi, n.pis, n.cofins, n.pis_accademia, n.cofins_accademia
            FROM pedidos p
            LEFT JOIN produtos pr     ON pr.id = p.produto_id
            LEFT JOIN tabela_precos t ON t.produto_id = pr.id
@@ -622,10 +622,13 @@ foreach ($impRaw as $r) {
     $vCampanha = $descCampanhaPct > 0 ? $resDescAditivo * $descCampanhaPct / 100 : 0;
     $resAposDescontos = $resDescAditivo - $vCampanha;
 
-    // Bloco da empresa Network: impostos do NCM do produto + impostos próprios da empresa
+    // Bloco da empresa Network: ICMS (por NCM + UF do cliente) + impostos do NCM do produto + impostos próprios da empresa
+    $icmsRow = $icmsByNcm[$r['ncm_id']] ?? null;
+    $icmsPct = $icmsRow ? (float)($ehLocal ? $icmsRow['icms_local'] : $icmsRow['icms_interestadual']) : 0;
     $netTaxes = [];
     $netBase  = $resAposDescontos;
     if ($empNet) {
+        $netTaxes[] = ['label' => 'ICMS ' . ($clienteUF ?: '—') . ' ' . ($ehLocal ? 'Local' : 'Interestadual'), 'pct' => $icmsPct, 'val' => $netBase * $icmsPct / 100];
         $netTaxes[] = ['label' => 'IPI',    'pct' => (float)($r['ipi'] ?? 0),      'val' => $netBase * (float)($r['ipi'] ?? 0) / 100];
         $netTaxes[] = ['label' => 'PIS',    'pct' => (float)($r['pis'] ?? 0),      'val' => $netBase * (float)($r['pis'] ?? 0) / 100];
         $netTaxes[] = ['label' => 'COFINS', 'pct' => (float)($r['cofins'] ?? 0),   'val' => $netBase * (float)($r['cofins'] ?? 0) / 100];
@@ -636,16 +639,20 @@ foreach ($impRaw as $r) {
     $netTotal   = array_sum(array_column($netTaxes, 'val'));
     $resAposNet = $netBase - $netTotal;
 
-    // Blocos das demais empresas (em sequência): impostos próprios + PIS/COFINS do NCM do produto (sem IPI)
+    // Blocos das demais empresas (em sequência): impostos próprios + PIS/COFINS específicos da empresa (cadastrados no NCM)
     $blocosOutros = [];
     $baseAtual = $resAposNet;
     foreach ($outrasEmpresas as $oe) {
+        // PIS/COFINS por empresa: Network usa n.pis/n.cofins; as demais usam n.pis_accademia/n.cofins_accademia
+        // (únicos campos de PIS/COFINS cadastrados no NCM além dos da Network).
+        $pisPct  = (float)($r['pis_accademia'] ?? 0);
+        $cofPct  = (float)($r['cofins_accademia'] ?? 0);
         $taxes = [
-            ['label' => 'PIS',    'pct' => (float)($r['pis'] ?? 0),    'val' => $baseAtual * (float)($r['pis'] ?? 0) / 100],
-            ['label' => 'COFINS', 'pct' => (float)($r['cofins'] ?? 0), 'val' => $baseAtual * (float)($r['cofins'] ?? 0) / 100],
-            ['label' => 'IRPJ',   'pct' => (float)$oe['irpj'],         'val' => $baseAtual * (float)$oe['irpj'] / 100],
-            ['label' => 'CSLL',   'pct' => (float)$oe['csll'],         'val' => $baseAtual * (float)$oe['csll'] / 100],
-            ['label' => 'ISS',    'pct' => (float)$oe['iss'],          'val' => $baseAtual * (float)$oe['iss'] / 100],
+            ['label' => 'PIS',    'pct' => $pisPct,             'val' => $baseAtual * $pisPct / 100],
+            ['label' => 'COFINS', 'pct' => $cofPct,             'val' => $baseAtual * $cofPct / 100],
+            ['label' => 'IRPJ',   'pct' => (float)$oe['irpj'],  'val' => $baseAtual * (float)$oe['irpj'] / 100],
+            ['label' => 'CSLL',   'pct' => (float)$oe['csll'],  'val' => $baseAtual * (float)$oe['csll'] / 100],
+            ['label' => 'ISS',    'pct' => (float)$oe['iss'],   'val' => $baseAtual * (float)$oe['iss'] / 100],
         ];
         $t = array_sum(array_column($taxes, 'val'));
         $blocosOutros[] = ['nome' => $oe['nome'], 'taxes' => $taxes, 'total' => $t];
@@ -923,7 +930,10 @@ require_once LAYOUT_PATH . '/header.php';
                                 </tr>
                                 <tr class="table-success fw-bold" style="font-size:.95rem">
                                     <td>Resultado Final</td>
-                                    <td class="text-end" colspan="2"><span class="imp-final" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span></td>
+                                    <td class="text-end" colspan="2">
+                                        <span class="imp-final" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span>
+                                        <span class="text-muted small fw-normal">(<span class="imp-margem" data-idx="<?= $idx ?>"><?= $pctFmt($it['precoPadrao'] > 0 ? $it['resAposImpostos'] / $it['precoPadrao'] * 100 : 0) ?></span> margem)</span>
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -931,7 +941,8 @@ require_once LAYOUT_PATH . '/header.php';
                 </div>
                 <span class="d-none imp-base" data-idx="<?= $idx ?>"
                       data-res-impostos="<?= number_format($it['resAposImpostos'], 4, '.', '') ?>"
-                      data-base-cf="<?= number_format($it['baseCF'], 4, '.', '') ?>"></span>
+                      data-base-cf="<?= number_format($it['baseCF'], 4, '.', '') ?>"
+                      data-preco-padrao="<?= number_format($it['precoPadrao'], 4, '.', '') ?>"></span>
                 <?php endforeach; ?>
             <?php endif; ?>
             </div>
@@ -947,19 +958,27 @@ require_once LAYOUT_PATH . '/header.php';
         var sign = v < 0 ? '-' : '';
         return sign + 'R$ ' + Math.abs(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     }
+    function fmtPct(v) {
+        var s = v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        if (s.indexOf(',') !== -1) s = s.replace(/0+$/, '').replace(/,$/, '');
+        return s + '%';
+    }
     function recalc(idx) {
         var baseEl = document.querySelector('.imp-base[data-idx="' + idx + '"]');
         if (!baseEl) return;
         var resImpostos = parseFloat(baseEl.dataset.resImpostos) || 0;
         var baseCF = parseFloat(baseEl.dataset.baseCf) || 0;
+        var precoPadrao = parseFloat(baseEl.dataset.precoPadrao) || 0;
         var mp  = parseFloat(document.querySelector('.imp-mp[data-idx="' + idx + '"]').value) || 0;
         var pct = parseFloat(document.querySelector('.imp-pctcf[data-idx="' + idx + '"]').value) || 0;
         var resAposMP = resImpostos - mp;
         var vCF   = baseCF * pct / 100;
         var final = resAposMP - vCF;
+        var margem = precoPadrao > 0 ? (final / precoPadrao * 100) : 0;
         document.querySelector('.imp-res-mp[data-idx="' + idx + '"]').textContent = fmtBRL(resAposMP);
         document.querySelector('.imp-vcf[data-idx="' + idx + '"]').textContent   = fmtBRL(vCF).replace('-', '');
         document.querySelector('.imp-final[data-idx="' + idx + '"]').textContent = fmtBRL(final);
+        document.querySelector('.imp-margem[data-idx="' + idx + '"]').textContent = fmtPct(margem);
     }
     document.addEventListener('input', function(e) {
         if (e.target.classList.contains('imp-mp') || e.target.classList.contains('imp-pctcf')) {

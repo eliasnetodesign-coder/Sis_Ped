@@ -27,15 +27,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 nv($_POST['ipi'] ?? ''),
                 nv($_POST['pis'] ?? ''),
                 nv($_POST['cofins'] ?? ''),
+                nv($_POST['pis_accademia'] ?? ''),
+                nv($_POST['cofins_accademia'] ?? ''),
             ];
             db()->beginTransaction();
             if ($a === 'criar') {
-                db()->prepare('INSERT INTO ncm (nome_categoria,ncm,cest,ii,ipi,pis,cofins) VALUES (?,?,?,?,?,?,?)')->execute($dados);
+                db()->prepare('INSERT INTO ncm (nome_categoria,ncm,cest,ii,ipi,pis,cofins,pis_accademia,cofins_accademia) VALUES (?,?,?,?,?,?,?,?,?)')->execute($dados);
                 $ncmId = (int)db()->lastInsertId();
             } else {
                 $ncmId = (int)$_POST['id'];
                 $dados[] = $ncmId;
-                db()->prepare('UPDATE ncm SET nome_categoria=?,ncm=?,cest=?,ii=?,ipi=?,pis=?,cofins=? WHERE id=?')->execute($dados);
+                db()->prepare('UPDATE ncm SET nome_categoria=?,ncm=?,cest=?,ii=?,ipi=?,pis=?,cofins=?,pis_accademia=?,cofins_accademia=? WHERE id=?')->execute($dados);
                 db()->prepare('DELETE FROM ncm_estados WHERE ncm_id=?')->execute([$ncmId]);
             }
             $insE = db()->prepare('INSERT INTO ncm_estados (ncm_id,estado,indice_lp,red_base_lp,indice_sp_ls,red_base_sp,fecep,icms_local,icms_interestadual) VALUES (?,?,?,?,?,?,?,?,?)');
@@ -105,7 +107,7 @@ require_once LAYOUT_PATH . '/header.php';
                     <span class="badge bg-secondary">NCM <?= e($n['ncm']) ?></span>
                     <?php if ($n['cest']): ?><span class="badge bg-light text-dark border">CEST <?= e($n['cest']) ?></span><?php endif; ?>
                     <span class="ms-auto small text-muted d-none d-md-inline">
-                        II <?= pct($n['ii']) ?> &nbsp;·&nbsp; IPI <?= pct($n['ipi']) ?> &nbsp;·&nbsp; PIS <?= pct($n['pis']) ?> &nbsp;·&nbsp; COFINS <?= pct($n['cofins']) ?>
+                        II <?= pct($n['ii']) ?> &nbsp;·&nbsp; IPI <?= pct($n['ipi']) ?> &nbsp;·&nbsp; PIS Net <?= pct($n['pis']) ?> &nbsp;·&nbsp; COFINS Net <?= pct($n['cofins']) ?> &nbsp;·&nbsp; PIS Acad <?= pct($n['pis_accademia']) ?> &nbsp;·&nbsp; COFINS Acad <?= pct($n['cofins_accademia']) ?>
                     </span>
                 </div>
             </button>
@@ -116,8 +118,10 @@ require_once LAYOUT_PATH . '/header.php';
                 <div class="row g-2 mb-3">
                     <div class="col-6 col-md-3"><div class="border rounded p-2 text-center"><div class="small text-muted">II</div><div class="fw-semibold"><?= pct($n['ii']) ?></div></div></div>
                     <div class="col-6 col-md-3"><div class="border rounded p-2 text-center"><div class="small text-muted">IPI</div><div class="fw-semibold"><?= pct($n['ipi']) ?></div></div></div>
-                    <div class="col-6 col-md-3"><div class="border rounded p-2 text-center"><div class="small text-muted">PIS</div><div class="fw-semibold"><?= pct($n['pis']) ?></div></div></div>
-                    <div class="col-6 col-md-3"><div class="border rounded p-2 text-center"><div class="small text-muted">COFINS</div><div class="fw-semibold"><?= pct($n['cofins']) ?></div></div></div>
+                    <div class="col-6 col-md-3"><div class="border rounded p-2 text-center"><div class="small text-muted">PIS (Network)</div><div class="fw-semibold"><?= pct($n['pis']) ?></div></div></div>
+                    <div class="col-6 col-md-3"><div class="border rounded p-2 text-center"><div class="small text-muted">COFINS (Network)</div><div class="fw-semibold"><?= pct($n['cofins']) ?></div></div></div>
+                    <div class="col-6 col-md-3"><div class="border rounded p-2 text-center"><div class="small text-muted">PIS (Accademia)</div><div class="fw-semibold"><?= pct($n['pis_accademia']) ?></div></div></div>
+                    <div class="col-6 col-md-3"><div class="border rounded p-2 text-center"><div class="small text-muted">COFINS (Accademia)</div><div class="fw-semibold"><?= pct($n['cofins_accademia']) ?></div></div></div>
                 </div>
                 <!-- Tabela de estados -->
                 <div class="table-responsive">
@@ -192,8 +196,10 @@ require_once LAYOUT_PATH . '/header.php';
             <div class="row g-3 mb-3">
                 <div class="col-6 col-md-3"><label class="form-label fw-semibold">II (%)</label><input type="number" step="0.0001" name="ii" id="f_ii" class="form-control"></div>
                 <div class="col-6 col-md-3"><label class="form-label fw-semibold">IPI (%)</label><input type="number" step="0.0001" name="ipi" id="f_ipi" class="form-control"></div>
-                <div class="col-6 col-md-3"><label class="form-label fw-semibold">PIS (%)</label><input type="number" step="0.0001" name="pis" id="f_pis" class="form-control"></div>
-                <div class="col-6 col-md-3"><label class="form-label fw-semibold">COFINS (%)</label><input type="number" step="0.0001" name="cofins" id="f_cofins" class="form-control"></div>
+                <div class="col-6 col-md-3"><label class="form-label fw-semibold">PIS Network (%)</label><input type="number" step="0.0001" name="pis" id="f_pis" class="form-control"></div>
+                <div class="col-6 col-md-3"><label class="form-label fw-semibold">COFINS Network (%)</label><input type="number" step="0.0001" name="cofins" id="f_cofins" class="form-control"></div>
+                <div class="col-6 col-md-3"><label class="form-label fw-semibold">PIS Accademia (%)</label><input type="number" step="0.0001" name="pis_accademia" id="f_pis_accademia" class="form-control"></div>
+                <div class="col-6 col-md-3"><label class="form-label fw-semibold">COFINS Accademia (%)</label><input type="number" step="0.0001" name="cofins_accademia" id="f_cofins_accademia" class="form-control"></div>
             </div>
 
             <h6 class="fw-bold border-top pt-3"><i class="bi bi-geo-alt me-1"></i>ICMS por Estado <small class="text-muted fw-normal">(valores em %)</small></h6>
@@ -246,7 +252,7 @@ function novoReg(){
     document.getElementById('mt').textContent='Novo NCM';
     document.getElementById('fa').value='criar';
     document.getElementById('fi').value='';
-    ['cat','ncm','cest','ii','ipi','pis','cofins'].forEach(function(f){ document.getElementById('f_'+f).value=''; });
+    ['cat','ncm','cest','ii','ipi','pis','cofins','pis_accademia','cofins_accademia'].forEach(function(f){ document.getElementById('f_'+f).value=''; });
     limparEstados();
     getModal().show();
 }
@@ -262,6 +268,8 @@ function editarReg(d){
     document.getElementById('f_ipi').value=(d.ipi!=null?d.ipi:'');
     document.getElementById('f_pis').value=(d.pis!=null?d.pis:'');
     document.getElementById('f_cofins').value=(d.cofins!=null?d.cofins:'');
+    document.getElementById('f_pis_accademia').value=(d.pis_accademia!=null?d.pis_accademia:'');
+    document.getElementById('f_cofins_accademia').value=(d.cofins_accademia!=null?d.cofins_accademia:'');
     limparEstados();
     var vals = _estadosMap[d.id] || {};
     document.querySelectorAll('#statesTbody tr').forEach(function(tr){

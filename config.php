@@ -100,6 +100,8 @@ function db() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE impostos_empresas ADD COLUMN iss DECIMAL(5,2) NOT NULL DEFAULT 0 AFTER csll"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE ncm ADD COLUMN pis_accademia DECIMAL(10,4) NULL DEFAULT 0 AFTER cofins"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE ncm ADD COLUMN cofins_accademia DECIMAL(10,4) NULL DEFAULT 0 AFTER pis_accademia"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS webhook_logs (
                 id         INT AUTO_INCREMENT PRIMARY KEY,
                 origem     VARCHAR(50)  NOT NULL,

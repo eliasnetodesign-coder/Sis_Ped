@@ -30,5 +30,8 @@ $_SESSION['usuario']['cnpj'] = $cli['cnpj'] ?? '';
 
 // Redireciona de volta à página anterior (ou dashboard)
 $voltar = filter_var($voltar, FILTER_SANITIZE_URL);
-if (strpos($voltar, BASE_URL) !== 0) $voltar = BASE_URL . '/cliente/dashboard.php';
+$ehLocal = $voltar !== '' && $voltar[0] === '/' && (!isset($voltar[1]) || $voltar[1] !== '/');
+if (!$ehLocal || (BASE_URL !== '' && strpos($voltar, BASE_URL) !== 0)) {
+    $voltar = BASE_URL . '/cliente/dashboard.php';
+}
 header('Location: ' . $voltar); exit;
