@@ -39,6 +39,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($a === 'excluir') {
             db()->prepare('DELETE FROM custos_produtos WHERE id=?')->execute([(int)$_POST['id']]);
             flash('success', 'Custo removido!');
+        } elseif ($a === 'salvarFixo') {
+            $comp = competenciaValida($_POST['competencia_fixo'] ?? '');
+            $pct  = (float)str_replace(',', '.', $_POST['percentual'] ?? '0');
+            if (!$comp) throw new Exception('Competência inválida.');
+            if ($pct < 0) throw new Exception('Percentual não pode ser negativo.');
+            db()->prepare('INSERT INTO custos_fixos (competencia,percentual) VALUES (?,?)
+                ON DUPLICATE KEY UPDATE percentual=VALUES(percentual)')
+                ->execute([$comp, $pct]);
+            flash('success', 'Custo fixo salvo!');
+        } elseif ($a === 'excluirFixo') {
+            db()->prepare('DELETE FROM custos_fixos WHERE id=?')->execute([(int)$_POST['id']]);
+            flash('success', 'Custo fixo removido!');
         } elseif ($a === 'importar') {
             $comp = competenciaValida($_POST['competencia'] ?? '');
             if (!$comp) throw new Exception('Selecione a competência (mês/ano) da importação.');
@@ -74,6 +86,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } catch (Exception $e) { flash('danger', 'Erro: ' . $e->getMessage()); }
     header('Location: ' . BASE_URL . '/admin/cadastros/custos-produtos.php'); exit;
 }
+
+$custosFixos = db()->query('SELECT * FROM custos_fixos ORDER BY competencia DESC')->fetchAll();
 
 $competencias = db()->query('SELECT DISTINCT competencia FROM custos_produtos ORDER BY competencia DESC')->fetchAll(PDO::FETCH_COLUMN);
 $competencia = $_GET['competencia'] ?? ($competencias[0] ?? date('Y-m-01'));
@@ -115,6 +129,46 @@ require_once LAYOUT_PATH . '/header.php';
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modal" onclick="novoReg()">
             <i class="bi bi-plus-lg me-1"></i>Adicionar Custo
         </button>
+    </div>
+</div>
+
+<div class="card shadow-sm border-0 mb-4">
+    <div class="card-header bg-light d-flex justify-content-between align-items-center">
+        <span class="fw-bold"><i class="bi bi-percent me-2"></i>Custo Fixo</span>
+        <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#modalFixo" onclick="novoFixo()">
+            <i class="bi bi-plus-lg me-1"></i>Adicionar/Editar
+        </button>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th class="ps-3">Competência</th>
+                    <th class="text-end">Custo Fixo (%)</th>
+                    <th class="text-end pe-3">Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php if ($custosFixos): foreach ($custosFixos as $cf): ?>
+                <tr>
+                    <td class="ps-3"><?= e(fmtCompetencia($cf['competencia'], $mesesPt)) ?></td>
+                    <td class="text-end fw-semibold"><?= rtrim(rtrim(number_format((float)$cf['percentual'], 2, ',', '.'), '0'), ',') ?>%</td>
+                    <td class="text-end pe-3">
+                        <button class="btn btn-sm btn-outline-primary" onclick="editarFixo(<?= htmlspecialchars(json_encode($cf), ENT_QUOTES) ?>)"><i class="bi bi-pencil"></i></button>
+                        <form method="POST" class="d-inline" onsubmit="return confirm('Remover custo fixo desta competência?')">
+                            <input type="hidden" name="action" value="excluirFixo">
+                            <input type="hidden" name="id" value="<?= $cf['id'] ?>">
+                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; else: ?>
+                <tr><td colspan="3" class="text-center text-muted py-4">Nenhum custo fixo cadastrado.</td></tr>
+            <?php endif; ?>
+            </tbody>
+        </table>
+        </div>
     </div>
 </div>
 
@@ -195,6 +249,40 @@ require_once LAYOUT_PATH . '/header.php';
         <?= count($custos) ?> produto(s) com custo cadastrado em <?= e(fmtCompetencia($competencia, $mesesPt)) ?>.
     </div>
     <?php endif; ?>
+</div>
+
+<!-- Modal Adicionar/Editar Custo Fixo -->
+<div class="modal fade" id="modalFixo" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST">
+                <input type="hidden" name="action" value="salvarFixo">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold" id="mtFixo">Adicionar Custo Fixo</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Competência <span class="text-danger">*</span></label>
+                            <input type="month" name="competencia_fixo" id="f_competencia_fixo" class="form-control" required value="<?= e(date('Y-m')) ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Custo Fixo <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <input type="number" step="0.01" min="0" name="percentual" id="f_percentual" class="form-control" required value="0">
+                                <span class="input-group-text">%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i>Salvar</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 
 <!-- Modal Adicionar/Editar -->
@@ -489,6 +577,17 @@ function resetImport() {
 </script>
 
 <script>
+function novoFixo() {
+    document.getElementById('mtFixo').textContent = 'Adicionar Custo Fixo';
+    document.getElementById('f_competencia_fixo').value = '<?= e(date('Y-m')) ?>';
+    document.getElementById('f_percentual').value = '0';
+}
+function editarFixo(d) {
+    document.getElementById('mtFixo').textContent = 'Editar Custo Fixo';
+    document.getElementById('f_competencia_fixo').value = d.competencia.substring(0, 7);
+    document.getElementById('f_percentual').value = d.percentual || '0';
+    new bootstrap.Modal(document.getElementById('modalFixo')).show();
+}
 function novoReg() {
     document.getElementById('mt').textContent = 'Adicionar Custo';
     document.getElementById('fa').value = 'criar';

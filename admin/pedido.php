@@ -652,6 +652,11 @@ if ($produtoIdsImp) {
     foreach ($cmpStmt->fetchAll() as $cm) $custosMP[(int)$cm['produto_id']] = (float)$cm['custo'];
 }
 
+// Custo Fixo (%): cadastrado no módulo "Custos dos Produtos" pela competência (mês/ano) da criação do pedido.
+$cfStmt = db()->prepare('SELECT percentual FROM custos_fixos WHERE competencia = ?');
+$cfStmt->execute([$competenciaPedido]);
+$custoFixoPct = (float)($cfStmt->fetchColumn() ?: 0);
+
 // Empresa "Network" (recebe os impostos do NCM do produto + seus próprios IRPJ/CSLL/ISS);
 // as demais empresas cadastradas entram em blocos subsequentes, só com seus próprios impostos.
 $empNet = null;
@@ -732,12 +737,16 @@ foreach ($impRaw as $r) {
     $custoMPAchado = isset($custosMP[(int)($r['produto_id'] ?? 0)]);
     $custoMP       = $custosMP[(int)($r['produto_id'] ?? 0)] ?? 0.0;
     $resAposMP     = $resAposImpostos - $custoMP;
-    $resultadoIni  = $resAposMP; // custos fixos ainda não preenchidos (% inicial = 0)
+
+    // Custos Fixos (%) = percentual cadastrado no módulo "Custos dos Produtos" aplicado sobre a baseCF.
+    $vCF          = $baseCF * $custoFixoPct / 100;
+    $resultadoIni = $resAposMP - $vCF;
 
     $impItens[] = [
         'codigo' => $r['codigo_produto'], 'descricao' => $r['descricao_produto'],
         'qtd' => $qtd,
         'custoMP' => $custoMP, 'custoMPAchado' => $custoMPAchado, 'resAposMP' => $resAposMP, 'resultadoIni' => $resultadoIni,
+        'custoFixoPct' => $custoFixoPct, 'vCF' => $vCF,
         'precoPadrao' => $precoPadrao,
         'descCanalPct' => $descCanal, 'vCanal' => $vCanal,
         'descClientePct' => $descCliente, 'vCliente' => $vCliente,
@@ -926,9 +935,9 @@ require_once LAYOUT_PATH . '/header.php';
                                 <span class="badge bg-secondary ms-1">Qtd: <?= (int)$it['qtd'] ?></span>
                             </div>
                             <div class="text-end small">
-                                <span class="fw-bold text-success imp-final-hdr" data-idx="<?= $idx ?>"><?= moedaBR($it['resultadoIni']) ?></span>
-                                <span class="text-muted">(<span class="imp-margem-hdr" data-idx="<?= $idx ?>"><?= $itMargem ?></span> margem)</span>
-                                <span class="text-muted">· Total <span class="imp-final-total-hdr" data-idx="<?= $idx ?>"><?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></span></span>
+                                <span class="fw-bold text-success"><?= moedaBR($it['resultadoIni']) ?></span>
+                                <span class="text-muted">(<?= $itMargem ?> margem)</span>
+                                <span class="text-muted">· Total <?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></span>
                             </div>
                         </div>
                     </div>
@@ -1025,44 +1034,35 @@ require_once LAYOUT_PATH . '/header.php';
                                 </tr>
                                 <tr class="table-light fw-semibold">
                                     <td>Resultado após Custo MP</td><td></td>
-                                    <td class="text-end"><span class="imp-res-mp" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposMP']) ?></span></td>
-                                    <td class="text-end text-muted"><span class="imp-res-mp-total" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposMP'] * $it['qtd']) ?></span></td>
+                                    <td class="text-end"><?= moedaBR($it['resAposMP']) ?></td>
+                                    <td class="text-end text-muted"><?= moedaBR($it['resAposMP'] * $it['qtd']) ?></td>
                                 </tr>
 
                                 <tr>
                                     <td class="text-muted align-middle">
-                                        (-) Custos Fixos
-                                        <div class="text-muted" style="font-size:.68rem">% sobre Produto − Desc. Canal − Desc. Cliente (<?= moedaBR($it['baseCF']) ?>)</div>
-                                    </td>
-                                    <td style="width:110px">
-                                        <div class="input-group input-group-sm" style="max-width:110px;margin-left:auto">
-                                            <input type="number" step="0.01" min="0" value="0"
-                                                   class="form-control text-end imp-pctcf" data-idx="<?= $idx ?>">
-                                            <span class="input-group-text">%</span>
+                                        (-) Custos Fixos (<?= $pctFmt($it['custoFixoPct']) ?>)
+                                        <div class="text-muted" style="font-size:.68rem">
+                                        % sobre Produto − Desc. Canal − Desc. Cliente (<?= moedaBR($it['baseCF']) ?>) —
+                                        módulo Custos dos Produtos, competência <?= e(date('m/Y', strtotime($competenciaPedido))) ?>
                                         </div>
                                     </td>
-                                    <td class="text-end text-danger">-<span class="imp-vcf" data-idx="<?= $idx ?>">R$ 0,00</span></td>
-                                    <td class="text-end text-danger text-opacity-75">-<span class="imp-vcf-total" data-idx="<?= $idx ?>">R$ 0,00</span></td>
+                                    <td></td>
+                                    <td class="text-end text-danger"><?= $it['vCF'] > 0 ? '-' . moedaBR($it['vCF']) : '—' ?></td>
+                                    <td class="text-end text-danger text-opacity-75"><?= $it['vCF'] > 0 ? '-' . moedaBR($it['vCF'] * $it['qtd']) : '—' ?></td>
                                 </tr>
                                 <tr class="table-success fw-bold" style="font-size:.95rem">
                                     <td>Resultado Final</td><td></td>
                                     <td class="text-end">
-                                        <span class="imp-final" data-idx="<?= $idx ?>"><?= moedaBR($it['resultadoIni']) ?></span>
-                                        <span class="text-muted small fw-normal d-block">(<span class="imp-margem" data-idx="<?= $idx ?>"><?= $pctFmt($it['precoPadrao'] > 0 ? $it['resultadoIni'] / $it['precoPadrao'] * 100 : 0) ?></span> margem)</span>
+                                        <?= moedaBR($it['resultadoIni']) ?>
+                                        <span class="text-muted small fw-normal d-block">(<?= $itMargem ?> margem)</span>
                                     </td>
-                                    <td class="text-end"><span class="imp-final-total" data-idx="<?= $idx ?>"><?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></span></td>
+                                    <td class="text-end"><?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                     </div>
                 </div>
-                <span class="d-none imp-base" data-idx="<?= $idx ?>"
-                      data-res-impostos="<?= number_format($it['resAposImpostos'], 4, '.', '') ?>"
-                      data-custo-mp="<?= number_format($it['custoMP'], 4, '.', '') ?>"
-                      data-base-cf="<?= number_format($it['baseCF'], 4, '.', '') ?>"
-                      data-preco-padrao="<?= number_format($it['precoPadrao'], 4, '.', '') ?>"
-                      data-qtd="<?= (int)$it['qtd'] ?>"></span>
                 <?php endforeach; ?>
                 <div class="d-flex justify-content-end mt-3">
                     <div class="border rounded p-3 bg-light" style="min-width:300px">
@@ -1087,70 +1087,6 @@ require_once LAYOUT_PATH . '/header.php';
     .imp-chevron { display: inline-block; transition: transform .2s; }
     .imp-toggle:not(.collapsed) .imp-chevron { transform: rotate(90deg); }
 </style>
-<script>
-(function() {
-    function fmtBRL(v) {
-        var sign = v < 0 ? '-' : '';
-        return sign + 'R$ ' + Math.abs(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    }
-    function fmtPct(v) {
-        var s = v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-        if (s.indexOf(',') !== -1) s = s.replace(/0+$/, '').replace(/,$/, '');
-        return s + '%';
-    }
-    function computeFinal(idx) {
-        var baseEl = document.querySelector('.imp-base[data-idx="' + idx + '"]');
-        var resImpostos = parseFloat(baseEl.dataset.resImpostos) || 0;
-        var baseCF = parseFloat(baseEl.dataset.baseCf) || 0;
-        var precoPadrao = parseFloat(baseEl.dataset.precoPadrao) || 0;
-        var qtd = parseFloat(baseEl.dataset.qtd) || 0;
-        var mp  = parseFloat(baseEl.dataset.custoMp) || 0;
-        var pct = parseFloat(document.querySelector('.imp-pctcf[data-idx="' + idx + '"]').value) || 0;
-        var resAposMP = resImpostos - mp;
-        var vCF   = baseCF * pct / 100;
-        var final = resAposMP - vCF;
-        return {resAposMP: resAposMP, vCF: vCF, final: final, mp: mp, qtd: qtd, precoPadrao: precoPadrao};
-    }
-    function recalc(idx) {
-        var baseEl = document.querySelector('.imp-base[data-idx="' + idx + '"]');
-        if (!baseEl) return;
-        var r = computeFinal(idx);
-        var margem = r.precoPadrao > 0 ? (r.final / r.precoPadrao * 100) : 0;
-        document.querySelector('.imp-res-mp[data-idx="' + idx + '"]').textContent       = fmtBRL(r.resAposMP);
-        document.querySelector('.imp-res-mp-total[data-idx="' + idx + '"]').textContent = fmtBRL(r.resAposMP * r.qtd);
-        document.querySelector('.imp-vcf[data-idx="' + idx + '"]').textContent          = fmtBRL(r.vCF).replace('-', '');
-        document.querySelector('.imp-vcf-total[data-idx="' + idx + '"]').textContent    = fmtBRL(r.vCF * r.qtd).replace('-', '');
-        document.querySelector('.imp-final[data-idx="' + idx + '"]').textContent        = fmtBRL(r.final);
-        document.querySelector('.imp-final-total[data-idx="' + idx + '"]').textContent  = fmtBRL(r.final * r.qtd);
-        document.querySelector('.imp-margem[data-idx="' + idx + '"]').textContent       = fmtPct(margem);
-        document.querySelector('.imp-final-hdr[data-idx="' + idx + '"]').textContent       = fmtBRL(r.final);
-        document.querySelector('.imp-final-total-hdr[data-idx="' + idx + '"]').textContent = fmtBRL(r.final * r.qtd);
-        document.querySelector('.imp-margem-hdr[data-idx="' + idx + '"]').textContent      = fmtPct(margem);
-    }
-    function recalcTotal() {
-        var elTotal  = document.getElementById('impTotalGeral');
-        var elMargem = document.getElementById('impMargemGeral');
-        if (!elTotal) return;
-        var totalFinal = 0, totalBase = 0;
-        document.querySelectorAll('.imp-base').forEach(function(baseEl) {
-            var r = computeFinal(baseEl.dataset.idx);
-            totalFinal += r.final * r.qtd;
-            totalBase  += r.precoPadrao * r.qtd;
-        });
-        var margem = totalBase > 0 ? (totalFinal / totalBase * 100) : 0;
-        elTotal.textContent  = fmtBRL(totalFinal);
-        elTotal.classList.toggle('text-success', totalFinal >= 0);
-        elTotal.classList.toggle('text-danger', totalFinal < 0);
-        elMargem.textContent = fmtPct(margem);
-    }
-    document.addEventListener('input', function(e) {
-        if (e.target.classList.contains('imp-pctcf')) {
-            recalc(e.target.dataset.idx);
-            recalcTotal();
-        }
-    });
-})();
-</script>
 
 <?php /* A partir daqui, valores do pedido usam o símbolo da moeda do cliente (a seção fiscal acima permanece em R$). */
 moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
