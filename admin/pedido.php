@@ -626,7 +626,7 @@ $logsStmt->execute([$pedido['numero_pedido']]);
 $pedidoLogs = $logsStmt->fetchAll();
 
 // ===== Impostos por Empresa (waterfall: preço padrão → descontos → impostos por empresa → custo MP → custos fixos) =====
-$impSql = "SELECT p.id, p.descricao_produto, p.quantidade_total, pr.codigo_produto, pr.ncm_id,
+$impSql = "SELECT p.id, p.produto_id, p.descricao_produto, p.quantidade_total, pr.codigo_produto, pr.ncm_id,
                   p.desconto_comercial, p.desconto_diretoria, p.desconto_campanha,
                   COALESCE(t.preco_padrao, 0) AS preco_padrao,
                   COALESCE(t.preco_network, 0) AS preco_network,
@@ -640,6 +640,17 @@ $impQ = db()->prepare($impSql);
 $impQ->execute([$loteId ?: $pedidoId]);
 $impRaw = $impQ->fetchAll();
 $impEmpresas = db()->query('SELECT nome, irpj, csll, iss FROM impostos_empresas ORDER BY nome')->fetchAll();
+
+// Custo MP: busca no módulo "Custos dos Produtos" pela competência (mês/ano) da criação do pedido.
+$competenciaPedido = date('Y-m-01', strtotime($pedido['data_pedido']));
+$custosMP = [];
+$produtoIdsImp = array_values(array_unique(array_filter(array_column($impRaw, 'produto_id'))));
+if ($produtoIdsImp) {
+    $ph = implode(',', array_fill(0, count($produtoIdsImp), '?'));
+    $cmpStmt = db()->prepare("SELECT produto_id, custo FROM custos_produtos WHERE competencia = ? AND produto_id IN ($ph)");
+    $cmpStmt->execute(array_merge([$competenciaPedido], $produtoIdsImp));
+    foreach ($cmpStmt->fetchAll() as $cm) $custosMP[(int)$cm['produto_id']] = (float)$cm['custo'];
+}
 
 // Empresa "Network" (recebe os impostos do NCM do produto + seus próprios IRPJ/CSLL/ISS);
 // as demais empresas cadastradas entram em blocos subsequentes, só com seus próprios impostos.
@@ -717,9 +728,16 @@ foreach ($impRaw as $r) {
     // Base para Custos Fixos = valor por produto - desconto canal - desconto cliente (sem o desconto do pedido)
     $baseCF = $precoPadrao - $vCanal - $vCliente;
 
+    // Custo MP (matéria-prima) = custo cadastrado no módulo "Custos dos Produtos" para a competência do pedido.
+    $custoMPAchado = isset($custosMP[(int)($r['produto_id'] ?? 0)]);
+    $custoMP       = $custosMP[(int)($r['produto_id'] ?? 0)] ?? 0.0;
+    $resAposMP     = $resAposImpostos - $custoMP;
+    $resultadoIni  = $resAposMP; // custos fixos ainda não preenchidos (% inicial = 0)
+
     $impItens[] = [
         'codigo' => $r['codigo_produto'], 'descricao' => $r['descricao_produto'],
         'qtd' => $qtd,
+        'custoMP' => $custoMP, 'custoMPAchado' => $custoMPAchado, 'resAposMP' => $resAposMP, 'resultadoIni' => $resultadoIni,
         'precoPadrao' => $precoPadrao,
         'descCanalPct' => $descCanal, 'vCanal' => $vCanal,
         'descClientePct' => $descCliente, 'vCliente' => $vCliente,
@@ -735,7 +753,7 @@ foreach ($impRaw as $r) {
         'baseCF' => $baseCF,
     ];
 }
-$impTotalFinal = array_sum(array_map(fn($it) => $it['resAposImpostos'] * $it['qtd'], $impItens));
+$impTotalFinal = array_sum(array_map(fn($it) => $it['resultadoIni'] * $it['qtd'], $impItens));
 $impTotalBase  = array_sum(array_map(fn($it) => $it['precoPadrao']    * $it['qtd'], $impItens));
 
 $status       = $pedido['status'];
@@ -895,7 +913,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <div class="text-center text-muted py-5">Nenhum item para detalhar.</div>
             <?php else: $pctFmt = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%'; ?>
                 <?php foreach ($impItens as $idx => $it):
-                    $itMargem = $pctFmt($it['precoPadrao'] > 0 ? $it['resAposImpostos'] / $it['precoPadrao'] * 100 : 0);
+                    $itMargem = $pctFmt($it['precoPadrao'] > 0 ? $it['resultadoIni'] / $it['precoPadrao'] * 100 : 0);
                 ?>
                 <div class="card border-0 shadow-sm mb-3">
                     <div class="card-header bg-light py-2 imp-toggle collapsed" role="button" style="cursor:pointer"
@@ -908,9 +926,9 @@ require_once LAYOUT_PATH . '/header.php';
                                 <span class="badge bg-secondary ms-1">Qtd: <?= (int)$it['qtd'] ?></span>
                             </div>
                             <div class="text-end small">
-                                <span class="fw-bold text-success imp-final-hdr" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span>
+                                <span class="fw-bold text-success imp-final-hdr" data-idx="<?= $idx ?>"><?= moedaBR($it['resultadoIni']) ?></span>
                                 <span class="text-muted">(<span class="imp-margem-hdr" data-idx="<?= $idx ?>"><?= $itMargem ?></span> margem)</span>
-                                <span class="text-muted">· Total <span class="imp-final-total-hdr" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></span></span>
+                                <span class="text-muted">· Total <span class="imp-final-total-hdr" data-idx="<?= $idx ?>"><?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></span></span>
                             </div>
                         </div>
                     </div>
@@ -993,20 +1011,22 @@ require_once LAYOUT_PATH . '/header.php';
                                 <tr>
                                     <td class="text-muted align-middle">
                                         (-) Custo MP
-                                        <div class="text-muted" style="font-size:.68rem">ainda não cadastrado no sistema — informe manualmente (por unidade)</div>
+                                        <div class="text-muted" style="font-size:.68rem">
+                                        <?php if ($it['custoMPAchado']): ?>
+                                            módulo Custos dos Produtos — competência <?= e(date('m/Y', strtotime($competenciaPedido))) ?> (por unidade)
+                                        <?php else: ?>
+                                            sem custo cadastrado para <?= e(date('m/Y', strtotime($competenciaPedido))) ?> (por unidade)
+                                        <?php endif; ?>
+                                        </div>
                                     </td>
-                                    <td style="width:140px">
-                                        <input type="number" step="0.01" min="0" value="0"
-                                               class="form-control form-control-sm text-end imp-mp"
-                                               data-idx="<?= $idx ?>" style="max-width:120px;margin-left:auto">
-                                    </td>
-                                    <td class="text-end text-muted">—</td>
-                                    <td class="text-end text-danger text-opacity-75">-<span class="imp-mp-total" data-idx="<?= $idx ?>">R$ 0,00</span></td>
+                                    <td></td>
+                                    <td class="text-end text-danger"><?= $it['custoMP'] > 0 ? '-' . moedaBR($it['custoMP']) : '—' ?></td>
+                                    <td class="text-end text-danger text-opacity-75"><?= $it['custoMP'] > 0 ? '-' . moedaBR($it['custoMP'] * $it['qtd']) : '—' ?></td>
                                 </tr>
                                 <tr class="table-light fw-semibold">
                                     <td>Resultado após Custo MP</td><td></td>
-                                    <td class="text-end"><span class="imp-res-mp" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span></td>
-                                    <td class="text-end text-muted"><span class="imp-res-mp-total" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></span></td>
+                                    <td class="text-end"><span class="imp-res-mp" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposMP']) ?></span></td>
+                                    <td class="text-end text-muted"><span class="imp-res-mp-total" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposMP'] * $it['qtd']) ?></span></td>
                                 </tr>
 
                                 <tr>
@@ -1027,10 +1047,10 @@ require_once LAYOUT_PATH . '/header.php';
                                 <tr class="table-success fw-bold" style="font-size:.95rem">
                                     <td>Resultado Final</td><td></td>
                                     <td class="text-end">
-                                        <span class="imp-final" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span>
-                                        <span class="text-muted small fw-normal d-block">(<span class="imp-margem" data-idx="<?= $idx ?>"><?= $pctFmt($it['precoPadrao'] > 0 ? $it['resAposImpostos'] / $it['precoPadrao'] * 100 : 0) ?></span> margem)</span>
+                                        <span class="imp-final" data-idx="<?= $idx ?>"><?= moedaBR($it['resultadoIni']) ?></span>
+                                        <span class="text-muted small fw-normal d-block">(<span class="imp-margem" data-idx="<?= $idx ?>"><?= $pctFmt($it['precoPadrao'] > 0 ? $it['resultadoIni'] / $it['precoPadrao'] * 100 : 0) ?></span> margem)</span>
                                     </td>
-                                    <td class="text-end"><span class="imp-final-total" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></span></td>
+                                    <td class="text-end"><span class="imp-final-total" data-idx="<?= $idx ?>"><?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></span></td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1039,6 +1059,7 @@ require_once LAYOUT_PATH . '/header.php';
                 </div>
                 <span class="d-none imp-base" data-idx="<?= $idx ?>"
                       data-res-impostos="<?= number_format($it['resAposImpostos'], 4, '.', '') ?>"
+                      data-custo-mp="<?= number_format($it['custoMP'], 4, '.', '') ?>"
                       data-base-cf="<?= number_format($it['baseCF'], 4, '.', '') ?>"
                       data-preco-padrao="<?= number_format($it['precoPadrao'], 4, '.', '') ?>"
                       data-qtd="<?= (int)$it['qtd'] ?>"></span>
@@ -1083,7 +1104,7 @@ require_once LAYOUT_PATH . '/header.php';
         var baseCF = parseFloat(baseEl.dataset.baseCf) || 0;
         var precoPadrao = parseFloat(baseEl.dataset.precoPadrao) || 0;
         var qtd = parseFloat(baseEl.dataset.qtd) || 0;
-        var mp  = parseFloat(document.querySelector('.imp-mp[data-idx="' + idx + '"]').value) || 0;
+        var mp  = parseFloat(baseEl.dataset.custoMp) || 0;
         var pct = parseFloat(document.querySelector('.imp-pctcf[data-idx="' + idx + '"]').value) || 0;
         var resAposMP = resImpostos - mp;
         var vCF   = baseCF * pct / 100;
@@ -1095,7 +1116,6 @@ require_once LAYOUT_PATH . '/header.php';
         if (!baseEl) return;
         var r = computeFinal(idx);
         var margem = r.precoPadrao > 0 ? (r.final / r.precoPadrao * 100) : 0;
-        document.querySelector('.imp-mp-total[data-idx="' + idx + '"]').textContent     = fmtBRL(r.mp * r.qtd).replace('-', '');
         document.querySelector('.imp-res-mp[data-idx="' + idx + '"]').textContent       = fmtBRL(r.resAposMP);
         document.querySelector('.imp-res-mp-total[data-idx="' + idx + '"]').textContent = fmtBRL(r.resAposMP * r.qtd);
         document.querySelector('.imp-vcf[data-idx="' + idx + '"]').textContent          = fmtBRL(r.vCF).replace('-', '');
@@ -1124,7 +1144,7 @@ require_once LAYOUT_PATH . '/header.php';
         elMargem.textContent = fmtPct(margem);
     }
     document.addEventListener('input', function(e) {
-        if (e.target.classList.contains('imp-mp') || e.target.classList.contains('imp-pctcf')) {
+        if (e.target.classList.contains('imp-pctcf')) {
             recalc(e.target.dataset.idx);
             recalcTotal();
         }

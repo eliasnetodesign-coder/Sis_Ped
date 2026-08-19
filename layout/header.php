@@ -257,6 +257,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 ['slug'=>'clientes',        'label'=>'Clientes',            'icon'=>'bi-people'],
                 ['slug'=>'grupo-empresas',  'label'=>'Grupo de Empresas',   'icon'=>'bi-diagram-2'],
                 ['slug'=>'tabela-precos',   'label'=>'Tabela de Preços',    'icon'=>'bi-tags'],
+                ['slug'=>'custos-produtos', 'label'=>'Custos dos Produtos', 'icon'=>'bi-cash-coin'],
                 ['slug'=>'campanhas',       'label'=>'Campanhas',           'icon'=>'bi-megaphone'],
                 ['slug'=>'canal-venda',     'label'=>'Canal de Venda',      'icon'=>'bi-diagram-3'],
 ['slug'=>'ncm',             'label'=>'NCM',                 'icon'=>'bi-upc-scan'],
