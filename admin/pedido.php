@@ -102,11 +102,12 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
             if ((int)$camp['quantidade'] > 0 && $qtdCheck < (int)$camp['quantidade']) continue;
             if ((float)$camp['desconto'] > $bestDisc) $bestDisc = (float)$camp['desconto'];
         }
-        $descGrupo = min(100, $dCliente + $dCanal
-                   + (float)($item['desconto_comercial'] ?? 0) + (float)($item['desconto_diretoria'] ?? 0));
+        $descCliCanal = min(100, $dCliente + $dCanal);
+        $descComDir   = min(100, (float)($item['desconto_comercial'] ?? 0) + (float)($item['desconto_diretoria'] ?? 0));
         $valor = $item['tipo_venda'] === 'bonificacao' ? 0.0
                : (float)$item['quantidade_total'] * (float)($item['preco'] ?? 0)
-                 * (1 - $descGrupo / 100)
+                 * (1 - $descCliCanal / 100)
+                 * (1 - $descComDir / 100)
                  * (1 - $bestDisc / 100);
         db()->prepare('UPDATE pedidos SET desconto_campanha = ?, valor_total = ? WHERE id = ?')
             ->execute([$bestDisc ?: null, $valor, $item['id']]);
@@ -138,8 +139,9 @@ function melhorCampanhaItem(array $prod, int $qtd, int $canalVendaId): float {
     return $campDesc;
 }
 
-// Recalcula o valor_total de UM item de pedido (sem lote) somando todos os descontos
-// (cliente + canal + comercial + diretoria) e aplicando a campanha multiplicativamente.
+// Recalcula o valor_total de UM item de pedido (sem lote) aplicando os descontos em cascata:
+// (cliente + canal) sobre o preço de tabela, depois (comercial + diretoria) sobre esse resultado,
+// e por fim a campanha multiplicativamente.
 function recalcularValorItem(int $id): void {
     $row = db()->prepare('SELECT p.*, c.desconto_cliente, c.desconto_canal, c.canal_venda_id
                           FROM pedidos p LEFT JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?');
@@ -153,13 +155,47 @@ function recalcularValorItem(int $id): void {
     $prod = $prod->fetch();
     if (!$prod) return;
     $qtd      = (int)$row['quantidade_total'];
-    $campDesc = melhorCampanhaItem($prod, $qtd, (int)($row['canal_venda_id'] ?? 0));
-    $descGrupo = min(100, (float)($row['desconto_cliente'] ?? 0) + (float)($row['desconto_canal'] ?? 0)
-               + (float)($row['desconto_comercial'] ?? 0) + (float)($row['desconto_diretoria'] ?? 0));
+    $campDesc     = melhorCampanhaItem($prod, $qtd, (int)($row['canal_venda_id'] ?? 0));
+    $descCliCanal = min(100, (float)($row['desconto_cliente'] ?? 0) + (float)($row['desconto_canal'] ?? 0));
+    $descComDir   = min(100, (float)($row['desconto_comercial'] ?? 0) + (float)($row['desconto_diretoria'] ?? 0));
     $valor = $row['tipo_venda'] === 'bonificacao' ? 0.0
-           : $qtd * (float)$prod['preco'] * (1 - $descGrupo / 100) * (1 - $campDesc / 100);
+           : $qtd * (float)$prod['preco'] * (1 - $descCliCanal / 100) * (1 - $descComDir / 100) * (1 - $campDesc / 100);
     db()->prepare('UPDATE pedidos SET valor_total = ?, desconto_campanha = ? WHERE id = ?')
         ->execute([$valor, $campDesc ?: null, $id]);
+}
+
+// Recalcula o desconto de pagamento via Pix (5% sobre o total atual do pedido/lote em BRL),
+// mantendo-o em sincronia sempre que o valor_total de algum item muda.
+function recalcularDescontoPix(int $anyId): void {
+    $loteStmt = db()->prepare('SELECT lote_id FROM pedidos WHERE id = ?');
+    $loteStmt->execute([$anyId]);
+    $loteId = $loteStmt->fetchColumn();
+    if ($loteId) {
+        $rows = db()->prepare('SELECT id, valor_total, tipo_venda, moeda, cotacao, forma_pagamento FROM pedidos WHERE lote_id = ? ORDER BY id');
+        $rows->execute([$loteId]);
+    } else {
+        $rows = db()->prepare('SELECT id, valor_total, tipo_venda, moeda, cotacao, forma_pagamento FROM pedidos WHERE id = ?');
+        $rows->execute([$anyId]);
+    }
+    $items = $rows->fetchAll();
+    if (!$items) return;
+    $isPix = strcasecmp(trim($items[0]['forma_pagamento'] ?? ''), 'Pix') === 0;
+    $total = 0.0;
+    foreach ($items as $it) {
+        if ($it['tipo_venda'] === 'bonificacao') continue;
+        $cot   = (float)($it['cotacao'] ?? 0);
+        $fator = ($it['moeda'] !== 'BRL' && $cot > 0) ? $cot : 1.0;
+        $total += (float)$it['valor_total'] * $fator;
+    }
+    $descontoPix = $isPix ? round($total * 0.05, 2) : 0.0;
+    if ($loteId) {
+        db()->prepare('UPDATE pedidos SET desconto_pagamento = NULL WHERE lote_id = ?')->execute([$loteId]);
+    } else {
+        db()->prepare('UPDATE pedidos SET desconto_pagamento = NULL WHERE id = ?')->execute([$anyId]);
+    }
+    if ($descontoPix > 0) {
+        db()->prepare('UPDATE pedidos SET desconto_pagamento = ? WHERE id = ?')->execute([$descontoPix, $items[0]['id']]);
+    }
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -283,6 +319,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     recalcularValorItem($id); // reaplica descontos comercial/diretoria sobre o item editado
                 }
+                recalcularDescontoPix($id);
                 $det = "Produto: {$prod['descricao_pt']} | Qtd: {$qtd} | Tipo: {$tipo} | Valor: " . number_format($valor_total, 2, ',', '.');
                 logPedido($id, $numPed, 'Item editado', $ped['status'], $ped['status'], $det);
                 flash('success', 'Item atualizado com sucesso!');
@@ -319,6 +356,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,desconto_campanha,moeda,cotacao) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
                 ->execute([$ped['numero_pedido'], $tipo, $ped['data_pedido'], $ped['cliente_id'], $produto_id, $ped['supervisor'] ?? $ped['vendedor'] ?? '', $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $ped['status'], $obs, $lote_id, null, $ped['moeda'] ?? 'BRL', $ped['cotacao'] ?? null]);
             recalcularDescontosCampanha($lote_id, $dCliente, $dCanal);
+            recalcularDescontoPix($id);
             $det = "Adicionado: {$prod['descricao_pt']} | Qtd: {$qtd} | Tipo: {$tipo}";
             logPedido($id, $numPed, 'Produto adicionado', $ped['status'], $ped['status'], $det);
             flash('success', 'Produto adicionado ao pedido!');
@@ -340,6 +378,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 recalcularValorItem($id);
             }
+            recalcularDescontoPix($id);
             logPedido($id, $numPed, 'Quantidade alterada', $ped['status'], $ped['status'], "Qtd: {$novaQtd}");
             flash('success', 'Quantidade atualizada.');
         } elseif ($action === 'set_desconto' && $isComercial) {
@@ -372,6 +411,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 recalcularValorItem($id);
             }
+            recalcularDescontoPix($id);
             $pct = rtrim(rtrim(number_format($aplicado, 2, ',', '.'), '0'), ',');
             logPedido($id, $numPed, 'Desconto alterado', $ped['status'], $ped['status'], "{$label}: {$pct}%{$extra}");
             flash('success', $label . ' atualizado.' . ($extra ? ' Valor ajustado ao limite da margem de negociação.' : ''));
@@ -400,6 +440,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ((int)$cntStmt->fetchColumn() === 1) {
                 db()->prepare('UPDATE pedidos SET lote_id = NULL WHERE lote_id = ?')->execute([$loteParaRecalc]);
             }
+            if ($redirectRemover) recalcularDescontoPix($redirectRemover);
             flash('success', 'Item removido do pedido.');
         }
     } catch (Exception $e) {
@@ -614,15 +655,17 @@ foreach ($impRaw as $r) {
     $precoPadrao = (float)$r['preco_padrao'];
     $qtd = (int)($r['quantidade_total'] ?? 0);
 
-    // Descontos (base = valor por produto): canal, cliente e pedido (comercial + diretoria); campanha é multiplicativa.
+    // Descontos em cascata (mesma lógica de recalcularValorItem): canal + cliente primeiro
+    // (base = valor por produto), depois comercial + diretoria sobre esse resultado; campanha é multiplicativa por último.
     $vCanal   = $precoPadrao * $descCanal / 100;
     $vCliente = $precoPadrao * $descCliente / 100;
+    $resAposCliCanal = $precoPadrao - $vCanal - $vCliente;
     $descPedidoPct = (float)$r['desconto_comercial'] + (float)$r['desconto_diretoria'];
-    $vPedido  = $precoPadrao * $descPedidoPct / 100;
-    $resDescAditivo = $precoPadrao - $vCanal - $vCliente - $vPedido;
+    $vPedido  = $resAposCliCanal * $descPedidoPct / 100;
+    $resDescCascata = $resAposCliCanal - $vPedido;
     $descCampanhaPct = (float)($r['desconto_campanha'] ?? 0);
-    $vCampanha = $descCampanhaPct > 0 ? $resDescAditivo * $descCampanhaPct / 100 : 0;
-    $resAposDescontos = $resDescAditivo - $vCampanha;
+    $vCampanha = $descCampanhaPct > 0 ? $resDescCascata * $descCampanhaPct / 100 : 0;
+    $resAposDescontos = $resDescCascata - $vCampanha;
 
     // Bloco da empresa Network: ICMS (por NCM + UF do cliente) + impostos do NCM do produto + impostos próprios da empresa.
     // Percentuais sempre sobre o "Preço Network" da tabela de preços (independente dos descontos do pedido);
@@ -692,6 +735,8 @@ foreach ($impRaw as $r) {
         'baseCF' => $baseCF,
     ];
 }
+$impTotalFinal = array_sum(array_map(fn($it) => $it['resAposImpostos'] * $it['qtd'], $impItens));
+$impTotalBase  = array_sum(array_map(fn($it) => $it['precoPadrao']    * $it['qtd'], $impItens));
 
 $status       = $pedido['status'];
 // $isComercial / $isFinanceiro / $isSupervisor definidos no topo (TI atua como ambos)
@@ -849,12 +894,27 @@ require_once LAYOUT_PATH . '/header.php';
             <?php if (!$impItens): ?>
                 <div class="text-center text-muted py-5">Nenhum item para detalhar.</div>
             <?php else: $pctFmt = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%'; ?>
-                <?php foreach ($impItens as $idx => $it): ?>
+                <?php foreach ($impItens as $idx => $it):
+                    $itMargem = $pctFmt($it['precoPadrao'] > 0 ? $it['resAposImpostos'] / $it['precoPadrao'] * 100 : 0);
+                ?>
                 <div class="card border-0 shadow-sm mb-3">
-                    <div class="card-header bg-light py-2 d-flex justify-content-between align-items-center flex-wrap gap-1">
-                        <span><strong><?= e($it['codigo']) ?></strong> — <?= e($it['descricao']) ?></span>
-                        <span class="badge bg-secondary">Qtd: <?= (int)$it['qtd'] ?></span>
+                    <div class="card-header bg-light py-2 imp-toggle collapsed" role="button" style="cursor:pointer"
+                         data-bs-toggle="collapse" data-bs-target="#impItem<?= $idx ?>"
+                         aria-expanded="false" aria-controls="impItem<?= $idx ?>">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                            <div>
+                                <i class="bi bi-chevron-right imp-chevron me-1"></i>
+                                <strong><?= e($it['codigo']) ?></strong> — <?= e($it['descricao']) ?>
+                                <span class="badge bg-secondary ms-1">Qtd: <?= (int)$it['qtd'] ?></span>
+                            </div>
+                            <div class="text-end small">
+                                <span class="fw-bold text-success imp-final-hdr" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos']) ?></span>
+                                <span class="text-muted">(<span class="imp-margem-hdr" data-idx="<?= $idx ?>"><?= $itMargem ?></span> margem)</span>
+                                <span class="text-muted">· Total <span class="imp-final-total-hdr" data-idx="<?= $idx ?>"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></span></span>
+                            </div>
+                        </div>
                     </div>
+                    <div class="collapse" id="impItem<?= $idx ?>">
                     <div class="card-body p-0">
                         <table class="table table-sm mb-0" style="font-size:.85rem">
                             <thead>
@@ -975,6 +1035,7 @@ require_once LAYOUT_PATH . '/header.php';
                             </tbody>
                         </table>
                     </div>
+                    </div>
                 </div>
                 <span class="d-none imp-base" data-idx="<?= $idx ?>"
                       data-res-impostos="<?= number_format($it['resAposImpostos'], 4, '.', '') ?>"
@@ -982,6 +1043,17 @@ require_once LAYOUT_PATH . '/header.php';
                       data-preco-padrao="<?= number_format($it['precoPadrao'], 4, '.', '') ?>"
                       data-qtd="<?= (int)$it['qtd'] ?>"></span>
                 <?php endforeach; ?>
+                <div class="d-flex justify-content-end mt-3">
+                    <div class="border rounded p-3 bg-light" style="min-width:300px">
+                        <div class="d-flex justify-content-between fs-5 fw-bold">
+                            <span>Margem Total</span>
+                            <span class="<?= $impTotalFinal >= 0 ? 'text-success' : 'text-danger' ?>" id="impTotalGeral"><?= moedaBR($impTotalFinal) ?></span>
+                        </div>
+                        <div class="text-muted text-end" style="font-size:.8rem">
+                            (<span id="impMargemGeral"><?= $pctFmt($impTotalBase > 0 ? $impTotalFinal / $impTotalBase * 100 : 0) ?></span> margem média)
+                        </div>
+                    </div>
+                </div>
             <?php endif; ?>
             </div>
             <div class="modal-footer">
@@ -990,6 +1062,10 @@ require_once LAYOUT_PATH . '/header.php';
         </div>
     </div>
 </div>
+<style>
+    .imp-chevron { display: inline-block; transition: transform .2s; }
+    .imp-toggle:not(.collapsed) .imp-chevron { transform: rotate(90deg); }
+</style>
 <script>
 (function() {
     function fmtBRL(v) {
@@ -1001,9 +1077,8 @@ require_once LAYOUT_PATH . '/header.php';
         if (s.indexOf(',') !== -1) s = s.replace(/0+$/, '').replace(/,$/, '');
         return s + '%';
     }
-    function recalc(idx) {
+    function computeFinal(idx) {
         var baseEl = document.querySelector('.imp-base[data-idx="' + idx + '"]');
-        if (!baseEl) return;
         var resImpostos = parseFloat(baseEl.dataset.resImpostos) || 0;
         var baseCF = parseFloat(baseEl.dataset.baseCf) || 0;
         var precoPadrao = parseFloat(baseEl.dataset.precoPadrao) || 0;
@@ -1013,19 +1088,45 @@ require_once LAYOUT_PATH . '/header.php';
         var resAposMP = resImpostos - mp;
         var vCF   = baseCF * pct / 100;
         var final = resAposMP - vCF;
-        var margem = precoPadrao > 0 ? (final / precoPadrao * 100) : 0;
-        document.querySelector('.imp-mp-total[data-idx="' + idx + '"]').textContent     = fmtBRL(mp * qtd).replace('-', '');
-        document.querySelector('.imp-res-mp[data-idx="' + idx + '"]').textContent       = fmtBRL(resAposMP);
-        document.querySelector('.imp-res-mp-total[data-idx="' + idx + '"]').textContent = fmtBRL(resAposMP * qtd);
-        document.querySelector('.imp-vcf[data-idx="' + idx + '"]').textContent          = fmtBRL(vCF).replace('-', '');
-        document.querySelector('.imp-vcf-total[data-idx="' + idx + '"]').textContent    = fmtBRL(vCF * qtd).replace('-', '');
-        document.querySelector('.imp-final[data-idx="' + idx + '"]').textContent        = fmtBRL(final);
-        document.querySelector('.imp-final-total[data-idx="' + idx + '"]').textContent  = fmtBRL(final * qtd);
+        return {resAposMP: resAposMP, vCF: vCF, final: final, mp: mp, qtd: qtd, precoPadrao: precoPadrao};
+    }
+    function recalc(idx) {
+        var baseEl = document.querySelector('.imp-base[data-idx="' + idx + '"]');
+        if (!baseEl) return;
+        var r = computeFinal(idx);
+        var margem = r.precoPadrao > 0 ? (r.final / r.precoPadrao * 100) : 0;
+        document.querySelector('.imp-mp-total[data-idx="' + idx + '"]').textContent     = fmtBRL(r.mp * r.qtd).replace('-', '');
+        document.querySelector('.imp-res-mp[data-idx="' + idx + '"]').textContent       = fmtBRL(r.resAposMP);
+        document.querySelector('.imp-res-mp-total[data-idx="' + idx + '"]').textContent = fmtBRL(r.resAposMP * r.qtd);
+        document.querySelector('.imp-vcf[data-idx="' + idx + '"]').textContent          = fmtBRL(r.vCF).replace('-', '');
+        document.querySelector('.imp-vcf-total[data-idx="' + idx + '"]').textContent    = fmtBRL(r.vCF * r.qtd).replace('-', '');
+        document.querySelector('.imp-final[data-idx="' + idx + '"]').textContent        = fmtBRL(r.final);
+        document.querySelector('.imp-final-total[data-idx="' + idx + '"]').textContent  = fmtBRL(r.final * r.qtd);
         document.querySelector('.imp-margem[data-idx="' + idx + '"]').textContent       = fmtPct(margem);
+        document.querySelector('.imp-final-hdr[data-idx="' + idx + '"]').textContent       = fmtBRL(r.final);
+        document.querySelector('.imp-final-total-hdr[data-idx="' + idx + '"]').textContent = fmtBRL(r.final * r.qtd);
+        document.querySelector('.imp-margem-hdr[data-idx="' + idx + '"]').textContent      = fmtPct(margem);
+    }
+    function recalcTotal() {
+        var elTotal  = document.getElementById('impTotalGeral');
+        var elMargem = document.getElementById('impMargemGeral');
+        if (!elTotal) return;
+        var totalFinal = 0, totalBase = 0;
+        document.querySelectorAll('.imp-base').forEach(function(baseEl) {
+            var r = computeFinal(baseEl.dataset.idx);
+            totalFinal += r.final * r.qtd;
+            totalBase  += r.precoPadrao * r.qtd;
+        });
+        var margem = totalBase > 0 ? (totalFinal / totalBase * 100) : 0;
+        elTotal.textContent  = fmtBRL(totalFinal);
+        elTotal.classList.toggle('text-success', totalFinal >= 0);
+        elTotal.classList.toggle('text-danger', totalFinal < 0);
+        elMargem.textContent = fmtPct(margem);
     }
     document.addEventListener('input', function(e) {
         if (e.target.classList.contains('imp-mp') || e.target.classList.contains('imp-pctcf')) {
             recalc(e.target.dataset.idx);
+            recalcTotal();
         }
     });
 })();
@@ -1272,6 +1373,7 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                             <th class="text-center">Múltiplo</th>
                             <th class="text-center">Quantidade Total</th>
                             <th class="text-end">Preço Unit.</th>
+                            <th class="text-end">Preço com Descontos<br><small class="fw-normal text-muted">cliente + canal</small></th>
                             <th class="text-center">Desc. Comercial<?php if ($canEdit && $margemNegociacao > 0): ?><br><small class="fw-normal text-muted">máx <?= rtrim(rtrim(number_format($margemNegociacao, 2, ',', '.'), '0'), ',') ?>%</small><?php endif; ?></th>
                             <th class="text-center">Desc. Diretoria</th>
                             <th class="text-end">Valor Unit. c/ Desc.</th>
@@ -1289,6 +1391,7 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                             $dCom       = (float)($item['desconto_comercial'] ?? 0);
                             $dDir       = (float)($item['desconto_diretoria'] ?? 0);
                             $ehBonifItem = ($item['tipo_venda'] ?? 'venda') === 'bonificacao';
+                            $precoComDescCliCanal = $precoBruto * (1 - min(100, $descCliente + $descCanal) / 100);
                         ?>
                         <tr>
                             <td class="ps-3 fw-semibold"><?= e($item['descricao_produto'] ?? '—') ?></td>
@@ -1310,6 +1413,7 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                             <td class="text-center text-muted small"><?= !empty($item['multiplo']) ? (int)$item['multiplo'] : '—' ?></td>
                             <td class="text-center"><?= $qtd ?></td>
                             <td class="text-end"><?= $precoBruto > 0 ? moedaBR($precoBruto) : '—' ?></td>
+                            <td class="text-end text-muted"><?= $precoComDescCliCanal > 0 ? moedaBR($precoComDescCliCanal) : '—' ?></td>
                             <!-- Desconto Comercial (limitado pela margem de negociação do canal) -->
                             <td class="text-center">
                                 <?php if ($canEdit && !$ehBonifItem): ?>
@@ -1379,7 +1483,7 @@ moedaCorrente($pedido['moeda'] ?? 'BRL'); ?>
                         <?php endforeach; ?>
                     </tbody>
                     <tfoot class="table-light">
-                        <?php $cols = $canEdit ? 10 : 9; ?>
+                        <?php $cols = $canEdit ? 11 : 10; ?>
                         <tr>
                             <td colspan="<?= $cols ?>" class="text-end fw-semibold pe-3">Subtotal:</td>
                             <td class="fw-semibold text-end pe-3"><?= moedaBR($valorTotalGeral) ?></td>

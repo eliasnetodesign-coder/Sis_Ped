@@ -10,7 +10,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_POST['cep'], $_POST['endereco'], $_POST['numero'], $_POST['complemento'],
             $_POST['bairro'], $_POST['cidade'], $_POST['estado'], $_POST['pais'],
             $_POST['telefone1'], $_POST['telefone2'], $_POST['email'],
-            $_POST['supervisor'], $_POST['canal_venda_id'] ?: null,
+            $_POST['supervisor'] ?? '', $_POST['canal_venda_id'] ?: null,
             (float)$_POST['desconto_cliente'], (float)$_POST['limite_credito'],
             $_POST['idioma'], $_POST['moeda'], $_POST['status'],
             min(4.0, max(0.0, (float)($_POST['bonus_desempenho'] ?? 0))),
