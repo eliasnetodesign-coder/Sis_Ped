@@ -471,7 +471,7 @@ if ($pedidoId < 1) {
 $pedido = db()->prepare("
     SELECT p.*, c.razao_social, c.email AS cliente_email,
            c.desconto_cliente, c.desconto_canal, c.estado AS cliente_uf, c.cidade AS cliente_cidade,
-           c.canal_venda_id AS cliente_canal_id,
+           c.canal_venda_id AS cliente_canal_id, c.regime_tributario AS cliente_regime,
            cv.canal AS canal_venda, cv.margem_negociacao, cv.network_tipo,
            pr.codigo_produto, pr.multiplo, pr.linha, pr.grupo, pr.subgrupo,
            COALESCE(t.preco_padrao, pr.vendas_varejo) AS preco_unit
@@ -513,8 +513,13 @@ $UF_NOME = [
     'PI'=>'Piauí','PR'=>'Paraná','RJ'=>'Rio de Janeiro','RN'=>'Rio Grande Norte','RO'=>'Rondônia',
     'RR'=>'Roraima','RS'=>'Rio Grande Sul','SC'=>'Santa Catarina','SE'=>'Sergipe','SP'=>'São Paulo','TO'=>'Tocantins',
 ];
-$clienteUF  = strtoupper(trim($pedido['cliente_uf'] ?? ''));
-$ufNome     = $UF_NOME[$clienteUF] ?? null;
+$clienteUF     = strtoupper(trim($pedido['cliente_uf'] ?? ''));
+$clienteRegime = $pedido['cliente_regime'] ?? '';
+$ufNome        = $UF_NOME[$clienteUF] ?? null;
+// SP com regime Lucro Real/Presumido usa a alíquota de ICMS específica "São Paulo (LR/LP)".
+if ($clienteUF === 'SP' && in_array($clienteRegime, ['Lucro Real', 'Lucro Presumido'], true)) {
+    $ufNome = 'São Paulo (LR/LP)';
+}
 $ehLocal    = ($clienteUF !== '' && $clienteUF === EMPRESA_UF);
 $icmsTipoLabel = $clienteUF === '' ? '—' : ($ehLocal ? 'Local (' . $clienteUF . ')' : 'Interestadual (' . EMPRESA_UF . '→' . $clienteUF . ')');
 
