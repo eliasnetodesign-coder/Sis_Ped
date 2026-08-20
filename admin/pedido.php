@@ -472,7 +472,7 @@ $pedido = db()->prepare("
     SELECT p.*, c.razao_social, c.email AS cliente_email,
            c.desconto_cliente, c.desconto_canal, c.estado AS cliente_uf, c.cidade AS cliente_cidade,
            c.canal_venda_id AS cliente_canal_id,
-           cv.canal AS canal_venda, cv.margem_negociacao,
+           cv.canal AS canal_venda, cv.margem_negociacao, cv.network_tipo,
            pr.codigo_produto, pr.multiplo, pr.linha, pr.grupo, pr.subgrupo,
            COALESCE(t.preco_padrao, pr.vendas_varejo) AS preco_unit
     FROM pedidos p
@@ -666,6 +666,11 @@ $outrasEmpresas = array_values(array_filter($impEmpresas, function ($ie) use ($e
 }));
 if (!$empNet && $impEmpresas) { $empNet = $impEmpresas[0]; $outrasEmpresas = array_slice($impEmpresas, 1); }
 
+// Canal "Network / Accademia" calcula também o bloco das demais empresas (ex.: Accademia);
+// canal só "Network" não tem esse desdobramento e o imposto Network passa a incidir sobre o Resultado após Descontos.
+$temAccademia = stripos((string)($pedido['network_tipo'] ?? 'Network'), 'accademia') !== false;
+if (!$temAccademia) $outrasEmpresas = [];
+
 $impItens = [];
 foreach ($impRaw as $r) {
     $precoPadrao = (float)$r['preco_padrao'];
@@ -684,12 +689,13 @@ foreach ($impRaw as $r) {
     $resAposDescontos = $resDescCascata - $vCampanha;
 
     // Bloco da empresa Network: ICMS (por NCM + UF do cliente) + impostos do NCM do produto + impostos próprios da empresa.
-    // Percentuais sempre sobre o "Preço Network" da tabela de preços (independente dos descontos do pedido);
-    // o valor resultante é que é descontado do resultado corrente (waterfall).
+    // Canal "Network / Accademia": percentuais sobre o "Preço Network" da tabela de preços (independente dos descontos do pedido).
+    // Canal só "Network" (sem desdobramento para outras empresas): percentuais sobre o Resultado após Descontos.
     $icmsRow = $icmsByNcm[$r['ncm_id']] ?? null;
     $icmsPct = $icmsRow ? (float)($ehLocal ? $icmsRow['icms_local'] : $icmsRow['icms_interestadual']) : 0;
     $netTaxes  = [];
-    $netBase   = (float)($r['preco_network'] ?? 0);
+    $netBaseLabel = $temAccademia ? 'Preço Network' : 'Resultado após Descontos';
+    $netBase   = $temAccademia ? (float)($r['preco_network'] ?? 0) : $resAposDescontos;
     $ipiNetPct = (float)($r['ipi'] ?? 0);
     $ipiNetVal = $netBase * $ipiNetPct / 100;
     if ($empNet) {
@@ -739,21 +745,27 @@ foreach ($impRaw as $r) {
     $resAposMP     = $resAposImpostos - $custoMP;
 
     // Custos Fixos (%) = percentual cadastrado no módulo "Custos dos Produtos" aplicado sobre a baseCF.
-    $vCF          = $baseCF * $custoFixoPct / 100;
-    $resultadoIni = $resAposMP - $vCF;
+    $vCF = $baseCF * $custoFixoPct / 100;
+
+    // Desconto Financeiro: só para canal "Network / Accademia" com pedido à vista (Pix, desconto de 5%).
+    // Percentual sobre o Resultado após Descontos.
+    $descFinanceiroPct = ($temAccademia && $descontoPixAdmin > 0) ? 5.0 : 0.0;
+    $vDescFinanceiro    = $resAposDescontos * $descFinanceiroPct / 100;
+    $resultadoIni       = $resAposMP - $vCF - $vDescFinanceiro;
 
     $impItens[] = [
         'codigo' => $r['codigo_produto'], 'descricao' => $r['descricao_produto'],
         'qtd' => $qtd,
         'custoMP' => $custoMP, 'custoMPAchado' => $custoMPAchado, 'resAposMP' => $resAposMP, 'resultadoIni' => $resultadoIni,
         'custoFixoPct' => $custoFixoPct, 'vCF' => $vCF,
+        'descFinanceiroPct' => $descFinanceiroPct, 'vDescFinanceiro' => $vDescFinanceiro,
         'precoPadrao' => $precoPadrao,
         'descCanalPct' => $descCanal, 'vCanal' => $vCanal,
         'descClientePct' => $descCliente, 'vCliente' => $vCliente,
         'descPedidoPct' => $descPedidoPct, 'vPedido' => $vPedido,
         'descCampanhaPct' => $descCampanhaPct, 'vCampanha' => $vCampanha,
         'resAposDescontos' => $resAposDescontos,
-        'precoNetwork' => $netBase,
+        'precoNetwork' => $netBase, 'netBaseLabel' => $netBaseLabel,
         'netNome' => $empNet['nome'] ?? null, 'netTaxes' => $netTaxes, 'netTotal' => $netTotal,
         'resAposNet' => $resAposNet,
         'baseOutras' => $baseOutras,
@@ -765,6 +777,15 @@ foreach ($impRaw as $r) {
 $impTotalFinal = array_sum(array_map(fn($it) => $it['resultadoIni'] * $it['qtd'], $impItens));
 $impTotalBase  = array_sum(array_map(fn($it) => $it['precoPadrao']    * $it['qtd'], $impItens));
 $impMargemPct  = $impTotalBase > 0 ? $impTotalFinal / $impTotalBase * 100 : 0;
+
+// Totais por etapa do waterfall (soma de todos os produtos), para o resumo no topo do modal de Margem.
+// Cada linha (exceto a primeira e a Margem Total) mostra a soma dos negativos (deduções) daquela etapa.
+$impTotalProdutos  = $impTotalBase;
+$impDeltaDescontos = -array_sum(array_map(fn($it) => ($it['vCanal'] + $it['vCliente'] + $it['vPedido'] + $it['vCampanha']) * $it['qtd'], $impItens));
+$impDeltaNet       = -array_sum(array_map(fn($it) => $it['netTotal'] * $it['qtd'], $impItens));
+$impDeltaImpostos  = -array_sum(array_map(fn($it) => array_sum(array_column($it['blocosOutros'], 'total')) * $it['qtd'], $impItens));
+$impDeltaMP        = -array_sum(array_map(fn($it) => $it['custoMP'] * $it['qtd'], $impItens));
+$impDeltaDespesas  = -array_sum(array_map(fn($it) => ($it['vCF'] + $it['vDescFinanceiro']) * $it['qtd'], $impItens));
 
 $status       = $pedido['status'];
 // $isComercial / $isFinanceiro / $isSupervisor definidos no topo (TI atua como ambos)
@@ -923,8 +944,38 @@ require_once LAYOUT_PATH . '/header.php';
             <?php if (!$impItens): ?>
                 <div class="text-center text-muted py-5">Nenhum item para detalhar.</div>
             <?php else: $pctFmt = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%'; ?>
+                <?php
+                $netNomeGeral   = $impItens[0]['netNome'] ?? 'Network';
+                $outraNomeGeral = $impItens[0]['blocosOutros'][0]['nome'] ?? 'Impostos';
+                ?>
                 <div class="d-flex justify-content-end mb-3">
-                    <div class="border rounded p-3 bg-light" style="min-width:300px">
+                    <div class="border rounded p-3 bg-light" style="min-width:340px">
+                        <div class="d-flex flex-column gap-1 mb-2 pb-2 border-bottom" style="font-size:.8rem">
+                            <div class="d-flex justify-content-between text-muted">
+                                <span>Total dos Produtos</span>
+                                <span><?= moedaBR($impTotalProdutos) ?></span>
+                            </div>
+                            <div class="d-flex justify-content-between text-muted">
+                                <span>Total após Descontos</span>
+                                <span class="<?= $impDeltaDescontos >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaDescontos) ?></span>
+                            </div>
+                            <div class="d-flex justify-content-between text-muted">
+                                <span>Total após <?= e($netNomeGeral) ?></span>
+                                <span class="<?= $impDeltaNet >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaNet) ?></span>
+                            </div>
+                            <div class="d-flex justify-content-between text-muted">
+                                <span>Total após <?= e($outraNomeGeral) ?></span>
+                                <span class="<?= $impDeltaImpostos >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaImpostos) ?></span>
+                            </div>
+                            <div class="d-flex justify-content-between text-muted">
+                                <span>Total após Custo MP</span>
+                                <span class="<?= $impDeltaMP >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaMP) ?></span>
+                            </div>
+                            <div class="d-flex justify-content-between text-muted">
+                                <span>Total após Despesas</span>
+                                <span class="<?= $impDeltaDespesas >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaDespesas) ?></span>
+                            </div>
+                        </div>
                         <div class="d-flex justify-content-between fs-5 fw-bold">
                             <span>Margem Total</span>
                             <span class="<?= $impTotalFinal >= 0 ? 'text-success' : 'text-danger' ?>" id="impTotalGeral"><?= moedaBR($impTotalFinal) ?></span>
@@ -948,7 +999,7 @@ require_once LAYOUT_PATH . '/header.php';
                                 <span class="badge bg-secondary ms-1">Qtd: <?= (int)$it['qtd'] ?></span>
                             </div>
                             <div class="text-end small">
-                                <span class="fw-bold text-success"><?= moedaBR($it['resultadoIni']) ?></span>
+                                <span class="fw-bold <?= $it['resultadoIni'] >= 0 ? 'text-success' : 'text-danger' ?>"><?= moedaBR($it['resultadoIni']) ?></span>
                                 <span class="text-muted">(<?= $itMargem ?> margem)</span>
                                 <span class="text-muted">· Total <?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></span>
                             </div>
@@ -999,7 +1050,7 @@ require_once LAYOUT_PATH . '/header.php';
                                 </tr>
 
                                 <?php if ($it['netNome']): ?>
-                                <tr><td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: Preço Network <?= moedaBR($it['precoNetwork']) ?></span></td></tr>
+                                <tr><td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: <?= e($it['netBaseLabel']) ?> <?= moedaBR($it['precoNetwork']) ?></span></td></tr>
                                 <?php foreach ($it['netTaxes'] as $tx): ?>
                                 <tr>
                                     <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td><td></td>
@@ -1063,13 +1114,26 @@ require_once LAYOUT_PATH . '/header.php';
                                     <td class="text-end text-danger"><?= $it['vCF'] > 0 ? '-' . moedaBR($it['vCF']) : '—' ?></td>
                                     <td class="text-end text-danger text-opacity-75"><?= $it['vCF'] > 0 ? '-' . moedaBR($it['vCF'] * $it['qtd']) : '—' ?></td>
                                 </tr>
-                                <tr class="table-success fw-bold" style="font-size:.95rem">
+                                <?php if ($it['descFinanceiroPct'] > 0): ?>
+                                <tr>
+                                    <td class="text-muted align-middle">
+                                        (-) Desconto Financeiro (<?= $pctFmt($it['descFinanceiroPct']) ?>)
+                                        <div class="text-muted" style="font-size:.68rem">
+                                        % sobre Resultado após Descontos (<?= moedaBR($it['resAposDescontos']) ?>) — pedido à vista (Pix)
+                                        </div>
+                                    </td>
+                                    <td></td>
+                                    <td class="text-end text-danger"><?= $it['vDescFinanceiro'] > 0 ? '-' . moedaBR($it['vDescFinanceiro']) : '—' ?></td>
+                                    <td class="text-end text-danger text-opacity-75"><?= $it['vDescFinanceiro'] > 0 ? '-' . moedaBR($it['vDescFinanceiro'] * $it['qtd']) : '—' ?></td>
+                                </tr>
+                                <?php endif; ?>
+                                <tr class="<?= $it['resultadoIni'] >= 0 ? 'table-success' : 'table-danger' ?> fw-bold" style="font-size:.95rem">
                                     <td>Resultado Final</td><td></td>
-                                    <td class="text-end">
+                                    <td class="text-end <?= $it['resultadoIni'] >= 0 ? '' : 'text-danger' ?>">
                                         <?= moedaBR($it['resultadoIni']) ?>
                                         <span class="text-muted small fw-normal d-block">(<?= $itMargem ?> margem)</span>
                                     </td>
-                                    <td class="text-end"><?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></td>
+                                    <td class="text-end <?= $it['resultadoIni'] >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></td>
                                 </tr>
                             </tbody>
                         </table>
