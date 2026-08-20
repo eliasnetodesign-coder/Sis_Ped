@@ -705,11 +705,15 @@ foreach ($impRaw as $r) {
     $netBaseLabel = $temAccademia ? 'Preço Network' : 'Resultado após Descontos ÷ (1 + IPI)';
     $netBase   = $temAccademia ? (float)($r['preco_network'] ?? 0) : $resAposDescontos / (1 + $ipiNetPct / 100);
     $ipiNetVal = $netBase * $ipiNetPct / 100;
+    $icmsNetVal = $netBase * $icmsPct / 100;
+    // Canal só "Network": PIS/COFINS incidem sobre a base do imposto Network já deduzida do ICMS.
+    // Canal "Network / Accademia": mantém a base cheia (Preço Network).
+    $pisCofinsBase = $temAccademia ? $netBase : ($netBase - $icmsNetVal);
     if ($empNet) {
-        $netTaxes[] = ['label' => 'ICMS ' . ($clienteUF ?: '—') . ' ' . ($ehLocal ? 'Local' : 'Interestadual'), 'pct' => $icmsPct, 'val' => $netBase * $icmsPct / 100];
+        $netTaxes[] = ['label' => 'ICMS ' . ($clienteUF ?: '—') . ' ' . ($ehLocal ? 'Local' : 'Interestadual'), 'pct' => $icmsPct, 'val' => $icmsNetVal];
         $netTaxes[] = ['label' => 'IPI',    'pct' => $ipiNetPct,                   'val' => $ipiNetVal];
-        $netTaxes[] = ['label' => 'PIS',    'pct' => (float)($r['pis'] ?? 0),      'val' => $netBase * (float)($r['pis'] ?? 0) / 100];
-        $netTaxes[] = ['label' => 'COFINS', 'pct' => (float)($r['cofins'] ?? 0),   'val' => $netBase * (float)($r['cofins'] ?? 0) / 100];
+        $netTaxes[] = ['label' => 'PIS',    'pct' => (float)($r['pis'] ?? 0),      'val' => $pisCofinsBase * (float)($r['pis'] ?? 0) / 100];
+        $netTaxes[] = ['label' => 'COFINS', 'pct' => (float)($r['cofins'] ?? 0),   'val' => $pisCofinsBase * (float)($r['cofins'] ?? 0) / 100];
         $netTaxes[] = ['label' => 'IRPJ',   'pct' => (float)$empNet['irpj'],       'val' => $netBase * (float)$empNet['irpj'] / 100];
         $netTaxes[] = ['label' => 'CSLL',   'pct' => (float)$empNet['csll'],       'val' => $netBase * (float)$empNet['csll'] / 100];
         $netTaxes[] = ['label' => 'ISS',    'pct' => (float)$empNet['iss'],        'val' => $netBase * (float)$empNet['iss'] / 100];
@@ -772,7 +776,8 @@ foreach ($impRaw as $r) {
         'descPedidoPct' => $descPedidoPct, 'vPedido' => $vPedido,
         'descCampanhaPct' => $descCampanhaPct, 'vCampanha' => $vCampanha,
         'resAposDescontos' => $resAposDescontos,
-        'precoNetwork' => $netBase, 'netBaseLabel' => $netBaseLabel,
+        'precoNetwork' => $netBase, 'netBaseLabel' => $netBaseLabel, 'ipiNetPct' => $ipiNetPct,
+        'icmsNetVal' => $icmsNetVal, 'pisCofinsBase' => $pisCofinsBase, 'temAccademia' => $temAccademia,
         'netNome' => $empNet['nome'] ?? null, 'netTaxes' => $netTaxes, 'netTotal' => $netTotal,
         'resAposNet' => $resAposNet,
         'baseOutras' => $baseOutras,
@@ -1057,10 +1062,17 @@ require_once LAYOUT_PATH . '/header.php';
                                 </tr>
 
                                 <?php if ($it['netNome']): ?>
-                                <tr><td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: <?= e($it['netBaseLabel']) ?> <?= moedaBR($it['precoNetwork']) ?></span></td></tr>
+                                <tr>
+                                    <td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">
+                                        Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: <?= e($it['netBaseLabel']) ?> <?= moedaBR($it['precoNetwork']) ?><?php if (!$it['temAccademia']): ?> (<?= moedaBR($it['resAposDescontos']) ?> ÷ (1 + <?= $pctFmt($it['ipiNetPct']) ?>))<?php endif; ?></span>
+                                    </td>
+                                </tr>
                                 <?php foreach ($it['netTaxes'] as $tx): ?>
                                 <tr>
-                                    <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td><td></td>
+                                    <td class="ps-4 text-muted">
+                                        (-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)<?php if (!$it['temAccademia'] && in_array($tx['label'], ['PIS', 'COFINS'], true)): ?> <span style="font-size:.68rem">[(<?= moedaBR($it['precoNetwork']) ?> − ICMS <?= moedaBR($it['icmsNetVal']) ?>) × <?= $pctFmt($tx['pct']) ?>]</span><?php endif; ?>
+                                    </td>
+                                    <td></td>
                                     <td class="text-end text-danger">-<?= moedaBR($tx['val']) ?></td>
                                     <td class="text-end text-danger text-opacity-75">-<?= moedaBR($tx['val'] * $it['qtd']) ?></td>
                                 </tr>
