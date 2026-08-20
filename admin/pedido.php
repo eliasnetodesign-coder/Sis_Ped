@@ -699,9 +699,11 @@ foreach ($impRaw as $r) {
     $icmsRow = $icmsByNcm[$r['ncm_id']] ?? null;
     $icmsPct = $icmsRow ? (float)($ehLocal ? $icmsRow['icms_local'] : $icmsRow['icms_interestadual']) : 0;
     $netTaxes  = [];
-    $netBaseLabel = $temAccademia ? 'Preço Network' : 'Resultado após Descontos';
-    $netBase   = $temAccademia ? (float)($r['preco_network'] ?? 0) : $resAposDescontos;
     $ipiNetPct = (float)($r['ipi'] ?? 0);
+    // Canal só "Network": base não é mais direto o Resultado após Descontos, e sim esse valor
+    // "por dentro" do IPI do NCM (Resultado após Descontos / (1 + IPI%)) — isola o valor sem o IPI embutido.
+    $netBaseLabel = $temAccademia ? 'Preço Network' : 'Resultado após Descontos ÷ (1 + IPI)';
+    $netBase   = $temAccademia ? (float)($r['preco_network'] ?? 0) : $resAposDescontos / (1 + $ipiNetPct / 100);
     $ipiNetVal = $netBase * $ipiNetPct / 100;
     if ($empNet) {
         $netTaxes[] = ['label' => 'ICMS ' . ($clienteUF ?: '—') . ' ' . ($ehLocal ? 'Local' : 'Interestadual'), 'pct' => $icmsPct, 'val' => $netBase * $icmsPct / 100];
