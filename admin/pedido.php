@@ -764,6 +764,7 @@ foreach ($impRaw as $r) {
 }
 $impTotalFinal = array_sum(array_map(fn($it) => $it['resultadoIni'] * $it['qtd'], $impItens));
 $impTotalBase  = array_sum(array_map(fn($it) => $it['precoPadrao']    * $it['qtd'], $impItens));
+$impMargemPct  = $impTotalBase > 0 ? $impTotalFinal / $impTotalBase * 100 : 0;
 
 $status       = $pedido['status'];
 // $isComercial / $isFinanceiro / $isSupervisor definidos no topo (TI atua como ambos)
@@ -794,8 +795,9 @@ require_once LAYOUT_PATH . '/header.php';
         <button type="button" class="btn btn-outline-success" data-bs-toggle="modal" data-bs-target="#modalFiscal">
             <i class="bi bi-receipt me-1"></i>Detalhamento Fiscal
         </button>
-        <button type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#modalImpostos">
-            <i class="bi bi-bank me-1"></i>Margem
+        <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#modalImpostos">
+            <i class="bi bi-bank me-1"></i>Margem: <?= moedaBR($impTotalFinal) ?>
+            <span class="opacity-75">(<?= rtrim(rtrim(number_format($impMargemPct, 2, ',', '.'), '0'), ',') ?>%)</span>
         </button>
         <a href="<?= BASE_URL ?>/admin/pedido-pdf.php?id=<?= $pedidoId ?>" target="_blank"
            class="btn btn-outline-secondary">
@@ -921,6 +923,17 @@ require_once LAYOUT_PATH . '/header.php';
             <?php if (!$impItens): ?>
                 <div class="text-center text-muted py-5">Nenhum item para detalhar.</div>
             <?php else: $pctFmt = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%'; ?>
+                <div class="d-flex justify-content-end mb-3">
+                    <div class="border rounded p-3 bg-light" style="min-width:300px">
+                        <div class="d-flex justify-content-between fs-5 fw-bold">
+                            <span>Margem Total</span>
+                            <span class="<?= $impTotalFinal >= 0 ? 'text-success' : 'text-danger' ?>" id="impTotalGeral"><?= moedaBR($impTotalFinal) ?></span>
+                        </div>
+                        <div class="text-muted text-end" style="font-size:.8rem">
+                            (<span id="impMargemGeral"><?= $pctFmt($impMargemPct) ?></span> margem média)
+                        </div>
+                    </div>
+                </div>
                 <?php foreach ($impItens as $idx => $it):
                     $itMargem = $pctFmt($it['precoPadrao'] > 0 ? $it['resultadoIni'] / $it['precoPadrao'] * 100 : 0);
                 ?>
@@ -1064,17 +1077,6 @@ require_once LAYOUT_PATH . '/header.php';
                     </div>
                 </div>
                 <?php endforeach; ?>
-                <div class="d-flex justify-content-end mt-3">
-                    <div class="border rounded p-3 bg-light" style="min-width:300px">
-                        <div class="d-flex justify-content-between fs-5 fw-bold">
-                            <span>Margem Total</span>
-                            <span class="<?= $impTotalFinal >= 0 ? 'text-success' : 'text-danger' ?>" id="impTotalGeral"><?= moedaBR($impTotalFinal) ?></span>
-                        </div>
-                        <div class="text-muted text-end" style="font-size:.8rem">
-                            (<span id="impMargemGeral"><?= $pctFmt($impTotalBase > 0 ? $impTotalFinal / $impTotalBase * 100 : 0) ?></span> margem média)
-                        </div>
-                    </div>
-                </div>
             <?php endif; ?>
             </div>
             <div class="modal-footer">

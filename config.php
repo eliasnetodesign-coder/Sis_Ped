@@ -16,6 +16,12 @@ define('IP_LIBERADO', '201.6.128.102');
 define('WHATSAPP_REMETENTE', '11 99982-5523'); // número que envia a verificação
 define('WHATSAPP_CODIGO_VALIDADE', 600);        // validade do código, em segundos (10 min)
 
+// Sistema Itallian Hairtech (A&M) — usado por "Importa Pedido" para localizar
+// pedidos já lançados lá e trazer os itens (Código A&M + Qtd) para o SisPed.
+define('AEM_URL',   'https://sistema.itallianhairtech.com.br');
+define('AEM_LOGIN', 'i003');
+define('AEM_SENHA', 'Itallian142');
+
 function db() {
     static $pdo = null;
     if ($pdo === null) {
@@ -356,6 +362,144 @@ function buscarCotacaoAPI() {
         'usd'  => (float)$d['USDBRL']['bid'],
         'eur'  => (float)$d['EURBRL']['bid'],
         'data' => $d['USDBRL']['create_date'] ?? null,
+    ];
+}
+
+/**
+ * Localiza, no sistema Itallian Hairtech (A&M), o pedido cujo campo "Número
+ * do Pedido do Cliente" bate com $numero (módulo Vendas > Consulta/Reimprime),
+ * e devolve o cliente, o tipo de venda e os itens (Código A&M + Qtd já final,
+ * %Negociação = nosso Desc. Comercial, %Diretoria = nosso Desc. Diretoria)
+ * lançados lá. Usado por "Importa Pedido" (admin/pedidos.php).
+ * Retorna ['ok'=>bool,'erro'=>?string,'clienteNome','clienteCnpj','tipoVenda',
+ *          'pedidoInterno','numero','formaPagto' (coluna "Forma Pagto" do grid de
+ *          busca), 'isAVista' (true quando "00 - A Vista" — aciona 5% de desconto,
+ *          igual ao recurso de desconto Pix), 'itens'=>[['codigoAEM','nomeProduto',
+ *          'qtd','descComercial','descDiretoria'],...]].
+ */
+function buscarPedidoAEM(string $numero): array {
+    $numero = preg_replace('/\D/', '', $numero);
+    if ($numero === '') return ['ok' => false, 'erro' => 'Informe um número de pedido válido.'];
+    if (!function_exists('curl_init')) return ['ok' => false, 'erro' => 'Extensão cURL indisponível no servidor.'];
+
+    $chamar = function (string $path, ?array $postFields) {
+        $ch = curl_init(AEM_URL . $path);
+        $opts = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ];
+        if ($postFields !== null) {
+            $opts[CURLOPT_POST]       = true;
+            $opts[CURLOPT_POSTFIELDS] = http_build_query($postFields);
+        }
+        curl_setopt_array($ch, $opts);
+        $resp = curl_exec($ch);
+        curl_close($ch);
+        return $resp === false ? '' : $resp;
+    };
+
+    // 1) Login — a sessão do A&M trafega via o parâmetro LNKTRANSPORTE, não por cookie.
+    $loginHtml = $chamar('/cgi-bin/ITF/ITF.EXE', [
+        'SubMenu'           => 'FROTA',
+        'TxtLgloginUsuario' => AEM_LOGIN,
+        'PwdLgloginSenha'   => AEM_SENHA,
+    ]);
+    if (!preg_match('/LNKTRANSPORTE=([0-9A-Za-z]+)/', $loginHtml, $m)) {
+        return ['ok' => false, 'erro' => 'Não foi possível autenticar no sistema A&M.'];
+    }
+    $token = $m[1];
+
+    // 2) Busca no grid "Consulta/Reimprime Pedidos" (Vendas) pelo Número do Pedido do Cliente.
+    // O período padrão da tela é só o mês corrente — abrimos para 01/01/2000 até hoje.
+    $buscaHtml = $chamar('/cgi-bin/ITF/PD0301.EXE', [
+        'LNKTRANSPORTE' => $token,
+        'SubOpcao'      => '',
+        'SubForm'       => '',
+        'TxtPedCliente' => $numero,
+        'TxtNumero'     => '',
+        'TxtDiaInicio'  => '01', 'TxtMesInicio' => '01', 'TxtAnoInicio' => '2000',
+        'TxtDiaFim'     => date('d'), 'TxtMesFim' => date('m'), 'TxtAnoFim' => date('Y'),
+        'SelVendedor'   => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'TxtProduto' => '',
+    ]);
+    preg_match_all('/PD0303\.EXE\?LNKTRANSPORTE=[0-9A-Za-z]+&SidPed=(\d+)/', $buscaHtml, $mm);
+    $sids = array_values(array_unique($mm[1] ?? []));
+    if (count($sids) === 0) return ['ok' => false, 'erro' => 'Pedido não encontrado no sistema A&M.'];
+    if (count($sids) > 1)  return ['ok' => false, 'erro' => 'Mais de um pedido encontrado com esse número — confira no sistema A&M.'];
+    $sidPed = $sids[0];
+
+    // Coluna "Forma Pagto" (14ª <TD> da linha) do próprio grid de busca — "00 - A Vista"
+    // significa pagamento à vista e aciona o desconto de 5% (mesmo recurso do "Pix").
+    $formaPagto = '';
+    preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $buscaHtml, $rowsBusca);
+    foreach ($rowsBusca[1] as $rowHtml) {
+        if (strpos($rowHtml, 'SidPed=' . $sidPed) === false) continue;
+        preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $rowHtml, $cellsBuscaM);
+        $cellsBusca = array_map(function ($c) {
+            return trim(html_entity_decode(strip_tags($c), ENT_QUOTES, 'UTF-8'));
+        }, $cellsBuscaM[1] ?? []);
+        if (isset($cellsBusca[14])) $formaPagto = $cellsBusca[14];
+        break;
+    }
+    preg_match('/^(\d+)/', $formaPagto, $mfp);
+    $isAVista = (($mfp[1] ?? '') === '00') && (stripos($formaPagto, 'vista') !== false);
+
+    // 3) Detalhe do pedido (coluna "Pedido Interno" do grid de busca).
+    $raw = $chamar('/cgi-bin/ITF/PD0303.EXE?LNKTRANSPORTE=' . $token . '&SidPed=' . $sidPed, null);
+    if ($raw === '') return ['ok' => false, 'erro' => 'Falha ao consultar o detalhe do pedido no A&M.'];
+    $html = @mb_convert_encoding($raw, 'UTF-8', 'ISO-8859-1');
+    if ($html === false || $html === '') $html = $raw;
+
+    preg_match('/Cliente:\s*<\/FONT>\s*<\/TD>\s*<TD[^>]*>\s*<FONT[^>]*>\s*<b>\s*([^<]*?)\s*<\/b>/is', $html, $mc);
+    $clienteNome = trim(preg_replace('/^\d+\s+/', '', trim($mc[1] ?? '')));
+
+    preg_match('/CNPJ:\s*<\/FONT>\s*<\/TD>\s*<TD[^>]*>\s*<FONT[^>]*>\s*<b>\s*([^<]*?)\s*<\/b>/is', $html, $mj);
+    $clienteCnpj = preg_replace('/\D/', '', trim($mj[1] ?? ''));
+
+    preg_match('/Pedido Interno\s+([\d.]+)\s+(\d{2}\/\d{2}\/\d{4})\s+([A-Z])-/is', $html, $mt);
+    $pedidoInterno = $mt[1] ?? null;
+    $tipoVenda = (isset($mt[3]) && strtoupper($mt[3]) === 'B') ? 'bonificacao' : 'venda';
+
+    // Tabela de itens (div id="itens"): Seq, Código DZYON (rótulo da própria coluna no A&M), Catalogo, Nome do Produto, ST,
+    // Preço Tabela, %Descto, %Descto ST, Valor Unitário, %Negociação, Valor Negociado,
+    // %Diretoria, Qtd, Valor Líquido, Valor Total.
+    if (!preg_match('/id=["\']itens["\'].*?<TBODY>(.*?)<\/TBODY>/is', $html, $mBody)) {
+        return ['ok' => false, 'erro' => 'Não foi possível ler os itens do pedido no A&M.'];
+    }
+    preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mBody[1], $rows);
+    $parsePct = function ($cell) {
+        preg_match('/[\d,]+/', $cell, $mm);
+        return isset($mm[0]) ? (float)str_replace(',', '.', $mm[0]) : 0.0;
+    };
+    $itens = [];
+    foreach ($rows[1] as $rowHtml) {
+        preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $rowHtml, $cellsM);
+        $cells = array_map(function ($c) {
+            return trim(html_entity_decode(strip_tags($c), ENT_QUOTES, 'UTF-8'));
+        }, $cellsM[1] ?? []);
+        if (count($cells) < 13) continue;
+        $itens[] = [
+            'codigoAEM' => $cells[1],
+            'nomeProduto' => $cells[3],
+            'qtd'         => (int)preg_replace('/\D/', '', $cells[12]),
+            // %Negociação (col 9) = nosso "Desc. Comercial"; %Diretoria (col 11) = nosso "Desc. Diretoria".
+            'descComercial' => $parsePct($cells[9]),
+            'descDiretoria' => $parsePct($cells[11]),
+        ];
+    }
+    if (!$itens) return ['ok' => false, 'erro' => 'Pedido encontrado, mas sem itens no A&M.'];
+
+    return [
+        'ok'            => true,
+        'erro'          => null,
+        'clienteNome'   => $clienteNome,
+        'clienteCnpj'   => $clienteCnpj,
+        'tipoVenda'     => $tipoVenda,
+        'pedidoInterno' => $pedidoInterno,
+        'numero'        => $numero,
+        'formaPagto'    => $formaPagto,
+        'isAVista'      => $isAVista,
+        'itens'         => $itens,
     ];
 }
 
@@ -948,6 +1092,88 @@ function criarPedidoBonificado(int $clienteId, string $supervisor, string $dataP
     } catch (PDOException $e) {}
 
     return $criados;
+}
+
+/**
+ * Cria um pedido novo a partir de itens localizados no sistema A&M (Itallian)
+ * — usado por "Importa Pedido" (admin/pedidos.php). Espera itens já mapeados
+ * (produto_id resolvido batendo o Código A&M com produtos.codigo_produto) e a quantidade já
+ * final (o A&M já considera os múltiplos — não multiplica de novo aqui).
+ * O preço/desconto usado é o do próprio SisPed (mesma fórmula de "Adicionar
+ * Produto" em admin/pedido.php), não o valor mostrado no A&M — exceto o Desc.
+ * Comercial/Diretoria, trazidos do A&M (%Negociação/%Diretoria) e aplicados
+ * em cascata sobre o desconto de cliente/canal, igual a recalcularValorItem().
+ * Quando $descontoAVista é true (Forma Pagto "00 - A Vista" no grid do A&M), aplica
+ * o mesmo desconto de 5% sobre o total do pedido usado para pagamento via Pix
+ * (ver recalcularDescontoPix() em admin/pedido.php), gravado em desconto_pagamento
+ * no primeiro item do lote.
+ * @param array $itens [['produto_id'=>int,'qtd'=>int,'desconto_comercial'=>float,'desconto_diretoria'=>float], ...]
+ * @return array ['numero_pedido'=>string,'primeiro_id'=>int,'criados'=>int]
+ */
+function criarPedidoImportadoAEM(int $clienteId, string $tipoVenda, array $itens, ?string $numeroBusca = null, ?string $formaPagto = null, bool $descontoAVista = false): array {
+    if (!$itens) throw new Exception('Nenhum item para importar.');
+    $cli = db()->prepare('SELECT supervisor, vendedor, moeda, desconto_cliente, desconto_canal FROM clientes WHERE id = ?');
+    $cli->execute([$clienteId]);
+    $cli = $cli->fetch();
+    if (!$cli) throw new Exception('Cliente não encontrado.');
+
+    $tipoVenda  = $tipoVenda === 'bonificacao' ? 'bonificacao' : 'venda';
+    $moeda      = $cli['moeda'] ?: 'BRL';
+    $dCliente   = (float)($cli['desconto_cliente'] ?? 0);
+    $dCanal     = (float)($cli['desconto_canal'] ?? 0);
+    $descCliCanal = min(100, $dCliente + $dCanal);
+    $supervisor = $cli['supervisor'] ?: ($cli['vendedor'] ?: '');
+    $colPreco   = colPrecoMoeda($moeda, $tipoVenda === 'bonificacao');
+
+    $lote_id       = uniqid('LA', true);
+    $numero_pedido = 'PED-' . date('Y') . '-' . str_pad((string)rand(1000, 9999), 4, '0', STR_PAD_LEFT);
+    $data          = date('Y-m-d');
+    $obs           = $numeroBusca ? ('Importado do sistema A&M — Pedido Nº ' . $numeroBusca) : 'Importado do sistema A&M';
+    $multiLote     = count($itens) > 1;
+
+    $prodStmt = db()->prepare("SELECT p.descricao_pt, p.codigo_barra, COALESCE($colPreco, p.vendas_varejo, 0) AS preco
+                                FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
+                                WHERE p.id = ? AND p.status = 'ativo'");
+    $ins = db()->prepare('INSERT INTO pedidos (numero_pedido,tipo_venda,data_pedido,cliente_id,produto_id,supervisor,codigo_barra,descricao_produto,quantidade_total,valor_total,status,observacoes,lote_id,moeda,desconto_comercial,desconto_diretoria,forma_pagamento) VALUES (?,?,?,?,?,?,?,?,?,?,"comercial",?,?,?,?,?,?)');
+
+    $criados = [];
+    foreach ($itens as $it) {
+        $produtoId = (int)($it['produto_id'] ?? 0);
+        $qtd       = max(1, (int)($it['qtd'] ?? 0));
+        if (!$produtoId) continue;
+        $prodStmt->execute([$produtoId]);
+        $prod = $prodStmt->fetch();
+        if (!$prod) continue;
+        $dComercial  = (float)($it['desconto_comercial'] ?? 0);
+        $dDiretoria  = (float)($it['desconto_diretoria'] ?? 0);
+        $descComDir  = min(100, $dComercial + $dDiretoria);
+        $valor_total = $tipoVenda === 'bonificacao' ? 0.0
+                     : $qtd * (float)$prod['preco'] * (1 - $descCliCanal / 100) * (1 - $descComDir / 100);
+        $ins->execute([$numero_pedido, $tipoVenda, $data, $clienteId, $produtoId, $supervisor, $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $obs, $multiLote ? $lote_id : null, $moeda, $dComercial, $dDiretoria, $formaPagto]);
+        $criados[] = (int)db()->lastInsertId();
+    }
+    if (!$criados) throw new Exception('Nenhum item pôde ser importado.');
+
+    if ($descontoAVista) {
+        $totalStmt = db()->prepare('SELECT valor_total, tipo_venda FROM pedidos WHERE ' . ($multiLote ? 'lote_id = ?' : 'id = ?'));
+        $totalStmt->execute([$multiLote ? $lote_id : $criados[0]]);
+        $totalPedido = 0.0;
+        foreach ($totalStmt->fetchAll() as $tp) {
+            if ($tp['tipo_venda'] === 'bonificacao') continue;
+            $totalPedido += (float)$tp['valor_total'];
+        }
+        $descontoPagamento = round($totalPedido * 0.05, 2);
+        if ($descontoPagamento > 0) {
+            db()->prepare('UPDATE pedidos SET desconto_pagamento = ? WHERE id = ?')->execute([$descontoPagamento, $criados[0]]);
+        }
+    }
+
+    try {
+        db()->prepare('INSERT INTO pedido_logs (pedido_id,numero_pedido,usuario_nome,usuario_tipo,acao,status_antes,status_depois,detalhes) VALUES (?,?,?,?,?,?,?,?)')
+            ->execute([$criados[0], $numero_pedido, usuario()['nome'] ?? 'Sistema', usuario()['tipo'] ?? 'sistema', 'Pedido importado do sistema A&M', null, 'comercial', $obs]);
+    } catch (PDOException $e) {}
+
+    return ['numero_pedido' => $numero_pedido, 'primeiro_id' => $criados[0], 'criados' => count($criados)];
 }
 
 /**

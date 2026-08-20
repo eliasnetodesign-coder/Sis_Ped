@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../config.php';
 requireAdmin();
 $u = usuario();
+$isComercial = in_array($u['tipo'], ['comercial', 'tecnologia da informacao']);
 
 // AJAX: dados do cliente para popup
 if (isset($_GET['ajax_cliente'])) {
@@ -12,6 +13,163 @@ if (isset($_GET['ajax_cliente'])) {
     header('Content-Type: application/json');
     echo json_encode($row ?: null);
     exit;
+}
+
+// AJAX: prévia da importação "Importa Pedido" — busca no sistema A&M (somente leitura, não grava nada).
+if (isset($_GET['ajax_aem_preview'])) {
+    header('Content-Type: application/json');
+    if (!$isComercial) { echo json_encode(['ok' => false, 'erro' => 'Acesso restrito.']); exit; }
+    $r = buscarPedidoAEM($_GET['numero'] ?? '');
+    if (!$r['ok']) { echo json_encode($r); exit; }
+
+    $cliente = null;
+    if ($r['clienteCnpj']) {
+        $cq = db()->prepare("SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, moeda FROM clientes
+                              WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ? LIMIT 1");
+        $cq->execute([$r['clienteCnpj']]);
+        $cliente = $cq->fetch() ?: null;
+    }
+
+    // Bloqueia a importação se algum produto não tiver Valor (tabela_precos) ou Custo
+    // (módulo Custos dos Produtos, competência do mês corrente) cadastrado.
+    $competencia = date('Y-m-01');
+    $colPreco = colPrecoMoeda($cliente['moeda'] ?? 'BRL', $r['tipoVenda'] === 'bonificacao');
+
+    $itens = [];
+    foreach ($r['itens'] as $it) {
+        $pq = db()->prepare("SELECT id, descricao_pt FROM produtos WHERE codigo_produto = ? AND status = 'ativo' LIMIT 1");
+        $pq->execute([$it['codigoAEM']]);
+        $prod = $pq->fetch();
+
+        $temValor = true;
+        $temCusto = true;
+        if ($prod) {
+            if ($r['tipoVenda'] !== 'bonificacao') {
+                $pv = db()->prepare("SELECT $colPreco FROM tabela_precos t WHERE t.produto_id = ?");
+                $pv->execute([$prod['id']]);
+                $preco = $pv->fetchColumn();
+                $temValor = $preco !== false && $preco !== null && (float)$preco > 0;
+            }
+            $cv = db()->prepare('SELECT custo FROM custos_produtos WHERE produto_id = ? AND competencia = ?');
+            $cv->execute([$prod['id'], $competencia]);
+            $custo = $cv->fetchColumn();
+            $temCusto = $custo !== false && $custo !== null;
+        }
+
+        $itens[] = [
+            'codigoAEM' => $it['codigoAEM'],
+            'nomeProduto' => $it['nomeProduto'],
+            'qtd'         => $it['qtd'],
+            'descComercial' => $it['descComercial'] ?? 0,
+            'descDiretoria' => $it['descDiretoria'] ?? 0,
+            'produtoId'   => $prod['id'] ?? null,
+            'produtoDesc' => $prod['descricao_pt'] ?? null,
+            'temValor'    => $temValor,
+            'temCusto'    => $temCusto,
+        ];
+    }
+
+    echo json_encode([
+        'ok'            => true,
+        'numero'        => $r['numero'],
+        'pedidoInterno' => $r['pedidoInterno'],
+        'tipoVenda'     => $r['tipoVenda'],
+        'formaPagto'    => $r['formaPagto'],
+        'isAVista'      => $r['isAVista'],
+        'clienteNomeAEM' => $r['clienteNome'],
+        'clienteCnpjAEM' => $r['clienteCnpj'],
+        'clienteId'     => $cliente['id'] ?? null,
+        'clienteLabel'  => $cliente ? ('[' . $cliente['codigo_cliente'] . '] ' . $cliente['razao_social']) : null,
+        'clienteDescontoCliente' => $cliente ? (float)$cliente['desconto_cliente'] : null,
+        'clienteDescontoCanal'   => $cliente ? (float)$cliente['desconto_canal']   : null,
+        'itens'         => $itens,
+    ]);
+    exit;
+}
+
+// Confirmação da importação "Importa Pedido" — refaz a busca no A&M no servidor
+// (não confia em produto/preço vindos do browser) e cria o pedido novo.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'importar_aem') {
+    if (!$isComercial) { flash('danger', 'Acesso restrito ao módulo Comercial.'); header('Location: ' . BASE_URL . '/admin/pedidos.php'); exit; }
+    try {
+        $r = buscarPedidoAEM($_POST['numero'] ?? '');
+        if (!$r['ok']) throw new Exception($r['erro']);
+
+        $clienteId = (int)($_POST['cliente_id'] ?? 0);
+        if ($clienteId) {
+            $cq = db()->prepare('SELECT id FROM clientes WHERE id = ?');
+            $cq->execute([$clienteId]);
+            if (!$cq->fetch()) $clienteId = 0;
+        }
+        if (!$clienteId && $r['clienteCnpj']) {
+            $cq = db()->prepare("SELECT id FROM clientes WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ? LIMIT 1");
+            $cq->execute([$r['clienteCnpj']]);
+            $clienteId = (int)($cq->fetchColumn() ?: 0);
+        }
+        if (!$clienteId) throw new Exception('Não foi possível identificar o cliente do pedido — selecione manualmente.');
+
+        // Cliente sem desconto de cliente/canal cadastrado: o modal pediu para preencher
+        // antes de importar — salva no cadastro do cliente já aqui.
+        if (($_POST['desconto_atualizar'] ?? '') === '1') {
+            $novoDescCliente = (float)($_POST['desconto_cliente'] ?? 0);
+            $novoDescCanal   = (float)($_POST['desconto_canal'] ?? 0);
+            db()->prepare('UPDATE clientes SET desconto_cliente = ?, desconto_canal = ? WHERE id = ?')
+                ->execute([$novoDescCliente, $novoDescCanal, $clienteId]);
+        }
+
+        $moedaCliente = db()->prepare('SELECT moeda FROM clientes WHERE id = ?');
+        $moedaCliente->execute([$clienteId]);
+        $moedaCliente = $moedaCliente->fetchColumn() ?: 'BRL';
+        $colPreco = colPrecoMoeda($moedaCliente, $r['tipoVenda'] === 'bonificacao');
+        $competencia = date('Y-m-01');
+
+        $itens = [];
+        $naoMapeados = [];
+        $semValor = [];
+        $semCusto = [];
+        foreach ($r['itens'] as $it) {
+            $pq = db()->prepare("SELECT id, descricao_pt FROM produtos WHERE codigo_produto = ? AND status = 'ativo' LIMIT 1");
+            $pq->execute([$it['codigoAEM']]);
+            $prod = $pq->fetch();
+            if (!$prod) { $naoMapeados[] = $it['codigoAEM'] . ' - ' . $it['nomeProduto']; continue; }
+
+            if ($r['tipoVenda'] !== 'bonificacao') {
+                $pv = db()->prepare("SELECT $colPreco FROM tabela_precos t WHERE t.produto_id = ?");
+                $pv->execute([$prod['id']]);
+                $preco = $pv->fetchColumn();
+                if ($preco === false || $preco === null || (float)$preco <= 0) {
+                    $semValor[] = $it['codigoAEM'] . ' - ' . $prod['descricao_pt'];
+                }
+            }
+            $cv = db()->prepare('SELECT custo FROM custos_produtos WHERE produto_id = ? AND competencia = ?');
+            $cv->execute([$prod['id'], $competencia]);
+            $custo = $cv->fetchColumn();
+            if ($custo === false || $custo === null) {
+                $semCusto[] = $it['codigoAEM'] . ' - ' . $prod['descricao_pt'];
+            }
+
+            $itens[] = [
+                'produto_id' => (int)$prod['id'], 'qtd' => $it['qtd'],
+                'desconto_comercial' => $it['descComercial'] ?? 0,
+                'desconto_diretoria' => $it['descDiretoria'] ?? 0,
+            ];
+        }
+        if ($naoMapeados) throw new Exception('Produto(s) não encontrado(s) no SisPed pelo Código A&M: ' . implode('; ', $naoMapeados));
+        if ($semValor) throw new Exception('Produto(s) sem Valor cadastrado: ' . implode('; ', $semValor));
+        if ($semCusto) throw new Exception('Produto(s) sem Custo cadastrado (competência ' . date('m/Y', strtotime($competencia)) . '): ' . implode('; ', $semCusto));
+
+        // Mantém a mesma descrição já usada dentro do pedido para essa condição
+        // (cliente/novo-pedido.php) em vez do texto bruto "00 - A Vista" do A&M.
+        $formaPagamentoPedido = $r['isAVista'] ? 'A Vista' : null;
+        $res = criarPedidoImportadoAEM($clienteId, $r['tipoVenda'], $itens, $r['numero'], $formaPagamentoPedido, $r['isAVista']);
+        flash('success', 'Pedido ' . $res['numero_pedido'] . ' importado do A&M com ' . $res['criados'] . ' item(ns)!');
+        header('Location: ' . BASE_URL . '/admin/pedido.php?id=' . $res['primeiro_id']);
+        exit;
+    } catch (Exception $e) {
+        flash('danger', $e->getMessage());
+        header('Location: ' . BASE_URL . '/admin/pedidos.php');
+        exit;
+    }
 }
 
 $filtro    = $_GET['status']  ?? '';
@@ -191,11 +349,22 @@ foreach ($tipo_stmt->fetchAll() as $tt) {
     $totais_tipo_geral[$tt['tipo_venda']] = ($totais_tipo_geral[$tt['tipo_venda']] ?? 0) + (float)$tt['total'];
 }
 
+// Lista de clientes para o fallback de seleção manual em "Importa Pedido"
+// (quando o CNPJ retornado pelo A&M não bate com nenhum cliente cadastrado).
+$clientesParaImport = $isComercial
+    ? db()->query("SELECT id, codigo_cliente, razao_social, desconto_cliente, desconto_canal FROM clientes WHERE status='ativo' ORDER BY razao_social")->fetchAll()
+    : [];
+
 $pageTitle = 'Pedidos';
 require_once LAYOUT_PATH . '/header.php';
 ?>
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
     <h4 class="fw-bold mb-0"><i class="bi bi-list-check me-2"></i>Pedidos</h4>
+    <?php if ($isComercial): ?>
+    <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalImportaAEM">
+        <i class="bi bi-cloud-download me-1"></i>Importa Pedido
+    </button>
+    <?php endif; ?>
 </div>
 
 <!-- Cards de resumo -->
@@ -534,6 +703,47 @@ $cardDefs = [
     </div>
 </div>
 
+<!-- Modal: Importa Pedido (busca no sistema A&M / Itallian) -->
+<div class="modal fade" id="modalImportaAEM" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold"><i class="bi bi-cloud-download me-2 text-primary"></i>Importa Pedido</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 align-items-end mb-3">
+                    <div class="col">
+                        <label class="form-label fw-semibold">Número do Pedido</label>
+                        <input type="text" id="aemNumero" class="form-control" maxlength="6"
+                               placeholder="Número do pedido lançado no sistema A&amp;M" inputmode="numeric">
+                    </div>
+                    <div class="col-auto">
+                        <button type="button" class="btn btn-primary" id="aemBuscarBtn">
+                            <i class="bi bi-search me-1"></i>Buscar
+                        </button>
+                    </div>
+                </div>
+                <div id="aemResultado"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                <button type="button" class="btn btn-success" id="aemConfirmarBtn" disabled>
+                    <i class="bi bi-check2-circle me-1"></i>Confirmar Importação
+                </button>
+            </div>
+        </div>
+    </div>
+    <form method="POST" action="<?= BASE_URL ?>/admin/pedidos.php" id="aemForm" style="display:none">
+        <input type="hidden" name="action" value="importar_aem">
+        <input type="hidden" name="numero" id="aemFormNumero">
+        <input type="hidden" name="cliente_id" id="aemFormClienteId">
+        <input type="hidden" name="desconto_atualizar" id="aemFormDescontoAtualizar">
+        <input type="hidden" name="desconto_cliente" id="aemFormDescontoCliente">
+        <input type="hidden" name="desconto_canal" id="aemFormDescontoCanal">
+    </form>
+</div>
+
 <script>
 (function() {
     function campo(label, valor, wide) {
@@ -602,5 +812,168 @@ $cardDefs = [
     });
 })();
 </script>
+
+<?php if ($isComercial): ?>
+<script>
+(function() {
+    var CLIENTES_IMPORT = <?= json_encode(array_map(function ($c) {
+        return [
+            'id' => (int)$c['id'], 'label' => '[' . $c['codigo_cliente'] . '] ' . $c['razao_social'],
+            'descontoCliente' => (float)$c['desconto_cliente'], 'descontoCanal' => (float)$c['desconto_canal'],
+        ];
+    }, $clientesParaImport)) ?>;
+    var itensAtual = [];
+    var clienteIdAtual = null;
+
+    function precisaDesconto(descCliente, descCanal) {
+        return !(parseFloat(descCliente) > 0) && !(parseFloat(descCanal) > 0);
+    }
+
+    function atualizarCaixaDesconto(descCliente, descCanal) {
+        var box = document.getElementById('aemDescontoBox');
+        if (!box) return;
+        if (precisaDesconto(descCliente, descCanal)) {
+            box.innerHTML = '<div class="alert alert-warning py-2 mb-2">'
+                + '<i class="bi bi-exclamation-triangle me-1"></i>Este cliente não tem desconto de cliente/canal cadastrado. Informe antes de importar:'
+                + '<div class="row g-2 mt-1">'
+                + '<div class="col-6"><label class="form-label small mb-0">Desconto do Cliente %</label>'
+                + '<input type="number" step="0.01" min="0" class="form-control form-control-sm" id="aemDescCliente" value="' + (parseFloat(descCliente) || 0) + '"></div>'
+                + '<div class="col-6"><label class="form-label small mb-0">Desconto do Canal %</label>'
+                + '<input type="number" step="0.01" min="0" class="form-control form-control-sm" id="aemDescCanal" value="' + (parseFloat(descCanal) || 0) + '"></div>'
+                + '</div></div>';
+        } else {
+            box.innerHTML = '';
+        }
+    }
+
+    function escapeHtml(s) {
+        return (s === null || s === undefined ? '' : String(s)).replace(/[&<>"']/g, function(c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+        });
+    }
+
+    function atualizarConfirmar() {
+        var algumProblema = itensAtual.some(function(it) {
+            return !it.produtoId || it.temValor === false || it.temCusto === false;
+        });
+        document.getElementById('aemConfirmarBtn').disabled = !clienteIdAtual || algumProblema || itensAtual.length === 0;
+    }
+
+    function renderResultado(d) {
+        var el = document.getElementById('aemResultado');
+        if (!d.ok) {
+            el.innerHTML = '<div class="alert alert-danger">' + escapeHtml(d.erro || 'Erro ao buscar pedido.') + '</div>';
+            itensAtual = []; clienteIdAtual = null;
+            document.getElementById('aemConfirmarBtn').disabled = true;
+            return;
+        }
+        itensAtual = d.itens;
+        clienteIdAtual = d.clienteId;
+
+        var html = '<div class="mb-3">';
+        html += '<div class="small text-muted">Pedido Interno A&amp;M: <strong>' + escapeHtml(d.pedidoInterno || '—')
+              + '</strong> &middot; Tipo: <strong>' + (d.tipoVenda === 'bonificacao' ? 'Bonificação' : 'Venda')
+              + '</strong> &middot; Forma Pagto: <strong>' + escapeHtml(d.formaPagto || '—') + '</strong></div>';
+        if (d.isAVista) {
+            html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-percent me-1"></i>'
+                  + 'Pagamento à vista — será aplicado desconto de 5% sobre o total do pedido.</div>';
+        }
+        if (d.clienteId) {
+            html += '<div class="alert alert-success py-2 mb-0 mt-2"><i class="bi bi-check-circle me-1"></i>Cliente identificado: '
+                  + escapeHtml(d.clienteLabel) + '</div>';
+        } else {
+            html += '<div class="alert alert-warning py-2 mb-2 mt-2"><i class="bi bi-exclamation-triangle me-1"></i>'
+                  + 'Cliente do A&amp;M (' + escapeHtml(d.clienteNomeAEM) + ' &mdash; CNPJ ' + escapeHtml(d.clienteCnpjAEM)
+                  + ') não encontrado no SisPed. Selecione manualmente:</div>';
+            html += '<select class="form-select" id="aemClienteSelect"><option value="">Selecione o cliente...</option>';
+            CLIENTES_IMPORT.forEach(function(c) {
+                html += '<option value="' + c.id + '">' + escapeHtml(c.label) + '</option>';
+            });
+            html += '</select>';
+        }
+        html += '<div id="aemDescontoBox" class="mt-2"></div>';
+        html += '</div>';
+
+        html += '<div class="table-responsive"><table class="table table-sm align-middle">'
+              + '<thead><tr><th>Código A&amp;M</th><th>Produto (A&amp;M)</th><th class="text-end">Qtd</th>'
+              + '<th class="text-end">Desc.Com%</th><th class="text-end">Desc.Dir%</th><th>Produto no SisPed</th></tr></thead><tbody>';
+        itensAtual.forEach(function(it) {
+            var temProblema = !it.produtoId || it.temValor === false || it.temCusto === false;
+            var statusCol;
+            if (!it.produtoId) {
+                statusCol = '<span class="text-danger fw-semibold">Não mapeado</span>';
+            } else {
+                statusCol = escapeHtml(it.produtoDesc);
+                var avisos = [];
+                if (it.temValor === false) avisos.push('sem Valor');
+                if (it.temCusto === false) avisos.push('sem Custo');
+                if (avisos.length) {
+                    statusCol += ' <span class="text-danger fw-semibold">(' + avisos.join(', ') + ')</span>';
+                }
+            }
+            html += '<tr' + (temProblema ? ' class="table-danger"' : '') + '>'
+                + '<td>' + escapeHtml(it.codigoAEM) + '</td>'
+                + '<td>' + escapeHtml(it.nomeProduto) + '</td>'
+                + '<td class="text-end">' + it.qtd + '</td>'
+                + '<td class="text-end">' + (it.descComercial || 0) + '</td>'
+                + '<td class="text-end">' + (it.descDiretoria || 0) + '</td>'
+                + '<td>' + statusCol + '</td>'
+                + '</tr>';
+        });
+        html += '</tbody></table></div>';
+        el.innerHTML = html;
+
+        var sel = document.getElementById('aemClienteSelect');
+        if (sel) {
+            sel.addEventListener('change', function() {
+                clienteIdAtual = sel.value ? parseInt(sel.value, 10) : null;
+                var c = CLIENTES_IMPORT.find(function(x) { return x.id === clienteIdAtual; });
+                atualizarCaixaDesconto(c ? c.descontoCliente : 0, c ? c.descontoCanal : 0);
+                atualizarConfirmar();
+            });
+        } else if (d.clienteId) {
+            atualizarCaixaDesconto(d.clienteDescontoCliente, d.clienteDescontoCanal);
+        }
+        atualizarConfirmar();
+    }
+
+    document.getElementById('aemBuscarBtn').addEventListener('click', function() {
+        var numero = document.getElementById('aemNumero').value.trim();
+        if (!numero) return;
+        document.getElementById('aemResultado').innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></div>';
+        document.getElementById('aemConfirmarBtn').disabled = true;
+        fetch('<?= BASE_URL ?>/admin/pedidos.php?ajax_aem_preview=1&numero=' + encodeURIComponent(numero))
+            .then(function(r) { return r.json(); })
+            .then(renderResultado)
+            .catch(function() {
+                document.getElementById('aemResultado').innerHTML = '<div class="alert alert-danger">Erro ao buscar pedido.</div>';
+            });
+    });
+
+    document.getElementById('aemConfirmarBtn').addEventListener('click', function() {
+        if (this.disabled) return;
+        document.getElementById('aemFormNumero').value = document.getElementById('aemNumero').value.trim();
+        document.getElementById('aemFormClienteId').value = clienteIdAtual || '';
+        var descCliente = document.getElementById('aemDescCliente');
+        var descCanal   = document.getElementById('aemDescCanal');
+        if (descCliente && descCanal) {
+            document.getElementById('aemFormDescontoAtualizar').value = '1';
+            document.getElementById('aemFormDescontoCliente').value = descCliente.value || '0';
+            document.getElementById('aemFormDescontoCanal').value = descCanal.value || '0';
+        } else {
+            document.getElementById('aemFormDescontoAtualizar').value = '';
+        }
+        document.getElementById('aemForm').submit();
+    });
+
+    document.getElementById('modalImportaAEM').addEventListener('hidden.bs.modal', function() {
+        document.getElementById('aemNumero').value = '';
+        document.getElementById('aemResultado').innerHTML = '';
+        document.getElementById('aemConfirmarBtn').disabled = true;
+        itensAtual = []; clienteIdAtual = null;
+    });
+})();
+</script>
+<?php endif; ?>
 
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>
