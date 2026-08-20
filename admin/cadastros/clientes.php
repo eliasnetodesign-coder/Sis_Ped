@@ -15,6 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_POST['idioma'], $_POST['moeda'], $_POST['status'],
             min(4.0, max(0.0, (float)($_POST['bonus_desempenho'] ?? 0))),
             min(5,   max(0,   (int)  ($_POST['material_apoio']   ?? 0))),
+            $_POST['regime_tributario'] ?: null,
         ];
         // Cap desconto_canal to canal's maximum
         $descanal = (float)($_POST['desconto_canal'] ?? 0);
@@ -32,11 +33,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($a === 'criar') {
             if (!$_POST['senha']) throw new Exception('Senha obrigatória.');
             $d[] = $_POST['senha'];
-            db()->prepare('INSERT INTO clientes (codigo_cliente,cnpj,cpf,razao_social,cep,endereco,numero,complemento,bairro,cidade,estado,pais,telefone1,telefone2,email,supervisor,canal_venda_id,desconto_cliente,desconto_canal,limite_credito,idioma,moeda,status,bonus_desempenho,material_apoio,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
+            db()->prepare('INSERT INTO clientes (codigo_cliente,cnpj,cpf,razao_social,cep,endereco,numero,complemento,bairro,cidade,estado,pais,telefone1,telefone2,email,supervisor,canal_venda_id,desconto_cliente,desconto_canal,limite_credito,idioma,moeda,status,bonus_desempenho,material_apoio,regime_tributario,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($d);
             flash('success', 'Cliente criado com sucesso!');
         } elseif ($a === 'editar') {
             $d[] = (int)$_POST['id'];
-            db()->prepare('UPDATE clientes SET codigo_cliente=?,cnpj=?,cpf=?,razao_social=?,cep=?,endereco=?,numero=?,complemento=?,bairro=?,cidade=?,estado=?,pais=?,telefone1=?,telefone2=?,email=?,supervisor=?,canal_venda_id=?,desconto_cliente=?,desconto_canal=?,limite_credito=?,idioma=?,moeda=?,status=?,bonus_desempenho=?,material_apoio=? WHERE id=?')->execute($d);
+            db()->prepare('UPDATE clientes SET codigo_cliente=?,cnpj=?,cpf=?,razao_social=?,cep=?,endereco=?,numero=?,complemento=?,bairro=?,cidade=?,estado=?,pais=?,telefone1=?,telefone2=?,email=?,supervisor=?,canal_venda_id=?,desconto_cliente=?,desconto_canal=?,limite_credito=?,idioma=?,moeda=?,status=?,bonus_desempenho=?,material_apoio=?,regime_tributario=? WHERE id=?')->execute($d);
             if ($_POST['senha']) {
                 db()->prepare('UPDATE clientes SET senha=? WHERE id=?')->execute([$_POST['senha'], (int)$_POST['id']]);
             }
@@ -268,6 +269,15 @@ require_once LAYOUT_PATH . '/header.php';
                         <div class="col-md-4"><label class="form-label fw-semibold">CNPJ</label><input type="text" name="cnpj" id="f1" class="form-control"></div>
                         <div class="col-md-3"><label class="form-label fw-semibold">CPF</label><input type="text" name="cpf" id="f2" class="form-control"></div>
                         <div class="col-md-3"><label class="form-label fw-semibold">Status</label><select name="status" id="fstatus" class="form-select"><option value="ativo">Ativo</option><option value="inativo">Inativo</option></select></div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Regime Tributário</label>
+                            <select name="regime_tributario" id="f_regime_trib" class="form-select">
+                                <option value="">— Selecione —</option>
+                                <option value="Simples Nacional">Simples Nacional</option>
+                                <option value="Lucro Real">Lucro Real</option>
+                                <option value="Lucro Presumido">Lucro Presumido</option>
+                            </select>
+                        </div>
                         <div class="col-md-12"><label class="form-label fw-semibold">Razão Social <span class="text-danger">*</span></label><input type="text" name="razao_social" id="f3" class="form-control" required></div>
                         <div class="col-md-3"><label class="form-label fw-semibold">CEP</label><input type="text" name="cep" id="f4" class="form-control"></div>
                         <div class="col-md-5"><label class="form-label fw-semibold">Endereço</label><input type="text" name="endereco" id="f5" class="form-control"></div>
@@ -453,6 +463,7 @@ var _exportClientes = <?= json_encode(array_map(function($c) {
         'Estado'             => $c['estado']         ?? '',
         'País'               => $c['pais']           ?? '',
         'Status'             => $c['status']         ?? '',
+        'Regime Tributário'  => $c['regime_tributario'] ?? '',
     ];
 }, $clientes), JSON_UNESCAPED_UNICODE) ?>;
 
@@ -638,6 +649,7 @@ function novoReg() {
     document.getElementById('fstatus').value='ativo';
     document.getElementById('f19').value='pt';
     document.getElementById('f20').value='BRL';
+    document.getElementById('f_regime_trib').value='';
     atualizarDescCanal(false);
 }
 function editarReg(d) {
@@ -670,6 +682,7 @@ function editarReg(d) {
     document.getElementById('f20').value=d.moeda||'BRL';
     document.getElementById('f21').value='';
     document.getElementById('fstatus').value=d.status||'ativo';
+    document.getElementById('f_regime_trib').value=d.regime_tributario||'';
     atualizarDescCanal(false);
     new bootstrap.Modal(document.getElementById('modal')).show();
 }

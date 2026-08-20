@@ -3,7 +3,7 @@ require_once __DIR__ . '/../../config.php';
 requireComercial();
 
 // Lista fixa de estados (mesma ordem/grafia da planilha)
-$ESTADOS = ['Acre','Alagoas','Amazonas','Amapa','Bahia','Ceará','Distrito Federal','Espirito Santo','Goias','Maranhão','Minas Gerais','Mato Grosso Sul','Mato Grosso','Para','Paraíba','Pernanbuco','Piauí','Paraná','Rio de Janeiro','Rio Grande Norte','Rondônia','Roraima','Rio Grande Sul','Santa Catarina','Sergipe','São Paulo','Tocantins'];
+$ESTADOS = ['Acre','Alagoas','Amazonas','Amapa','Bahia','Ceará','Distrito Federal','Espirito Santo','Goias','Maranhão','Minas Gerais','Mato Grosso Sul','Mato Grosso','Para','Paraíba','Pernanbuco','Piauí','Paraná','Rio de Janeiro','Rio Grande Norte','Rondônia','Roraima','Rio Grande Sul','Santa Catarina','Sergipe','São Paulo','São Paulo (LR/LP)','Tocantins'];
 
 // Converte entrada do form em decimal ou null
 function nv($v) {
