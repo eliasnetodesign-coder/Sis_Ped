@@ -378,8 +378,10 @@ function buscarCotacaoAPI() {
  * Retorna ['ok'=>bool,'erro'=>?string,'clienteNome','clienteCnpj','tipoVenda',
  *          'pedidoInterno','numero','formaPagto' (coluna "Forma Pagto" do grid de
  *          busca), 'isAVista' (true quando "00 - A Vista" — aciona 5% de desconto,
- *          igual ao recurso de desconto Pix), 'itens'=>[['codigoAEM','nomeProduto',
- *          'qtd','descComercial','descDiretoria'],...]].
+ *          igual ao recurso de desconto Pix), 'descontoCanalAEM' (coluna "%Descto"
+ *          do detalhe do pedido = nosso "Desconto do Canal"), 'descontoClienteAEM'
+ *          (coluna "%Descto ST" = nosso "Desconto do Cliente"), 'itens'=>[['codigoAEM',
+ *          'nomeProduto','qtd','descComercial','descDiretoria'],...]].
  */
 function buscarPedidoAEM(string $numero): array {
     $numero = preg_replace('/\D/', '', $numero);
@@ -476,12 +478,19 @@ function buscarPedidoAEM(string $numero): array {
         return isset($mm[0]) ? (float)str_replace(',', '.', $mm[0]) : 0.0;
     };
     $itens = [];
+    $descontoCanalAEM = 0.0;
+    $descontoClienteAEM = 0.0;
     foreach ($rows[1] as $rowHtml) {
         preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $rowHtml, $cellsM);
         $cells = array_map(function ($c) {
             return trim(html_entity_decode(strip_tags($c), ENT_QUOTES, 'UTF-8'));
         }, $cellsM[1] ?? []);
         if (count($cells) < 13) continue;
+        if (!$itens) {
+            // %Descto (col 6) = nosso "Desconto do Canal"; %Descto ST (col 7) = nosso "Desconto do Cliente".
+            $descontoCanalAEM   = $parsePct($cells[6]);
+            $descontoClienteAEM = $parsePct($cells[7]);
+        }
         $itens[] = [
             'codigoAEM' => $cells[1],
             'nomeProduto' => $cells[3],
@@ -494,16 +503,18 @@ function buscarPedidoAEM(string $numero): array {
     if (!$itens) return ['ok' => false, 'erro' => 'Pedido encontrado, mas sem itens no A&M.'];
 
     return [
-        'ok'            => true,
-        'erro'          => null,
-        'clienteNome'   => $clienteNome,
-        'clienteCnpj'   => $clienteCnpj,
-        'tipoVenda'     => $tipoVenda,
-        'pedidoInterno' => $pedidoInterno,
-        'numero'        => $numero,
-        'formaPagto'    => $formaPagto,
-        'isAVista'      => $isAVista,
-        'itens'         => $itens,
+        'ok'                 => true,
+        'erro'               => null,
+        'clienteNome'        => $clienteNome,
+        'clienteCnpj'        => $clienteCnpj,
+        'tipoVenda'          => $tipoVenda,
+        'pedidoInterno'      => $pedidoInterno,
+        'numero'             => $numero,
+        'formaPagto'         => $formaPagto,
+        'isAVista'           => $isAVista,
+        'descontoCanalAEM'   => $descontoCanalAEM,
+        'descontoClienteAEM' => $descontoClienteAEM,
+        'itens'              => $itens,
     ];
 }
 

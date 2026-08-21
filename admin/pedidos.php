@@ -24,7 +24,7 @@ if (isset($_GET['ajax_aem_preview'])) {
 
     $cliente = null;
     if ($r['clienteCnpj']) {
-        $cq = db()->prepare("SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, moeda FROM clientes
+        $cq = db()->prepare("SELECT id, razao_social, codigo_cliente, moeda FROM clientes
                               WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ? LIMIT 1");
         $cq->execute([$r['clienteCnpj']]);
         $cliente = $cq->fetch() ?: null;
@@ -80,8 +80,8 @@ if (isset($_GET['ajax_aem_preview'])) {
         'clienteCnpjAEM' => $r['clienteCnpj'],
         'clienteId'     => $cliente['id'] ?? null,
         'clienteLabel'  => $cliente ? ('[' . $cliente['codigo_cliente'] . '] ' . $cliente['razao_social']) : null,
-        'clienteDescontoCliente' => $cliente ? (float)$cliente['desconto_cliente'] : null,
-        'clienteDescontoCanal'   => $cliente ? (float)$cliente['desconto_canal']   : null,
+        'descontoCanal'   => $r['descontoCanalAEM'],
+        'descontoCliente' => $r['descontoClienteAEM'],
         'itens'         => $itens,
     ]);
     exit;
@@ -108,14 +108,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         }
         if (!$clienteId) throw new Exception('Não foi possível identificar o cliente do pedido — selecione manualmente.');
 
-        // Cliente sem desconto de cliente/canal cadastrado: o modal pediu para preencher
-        // antes de importar — salva no cadastro do cliente já aqui.
-        if (($_POST['desconto_atualizar'] ?? '') === '1') {
-            $novoDescCliente = (float)($_POST['desconto_cliente'] ?? 0);
-            $novoDescCanal   = (float)($_POST['desconto_canal'] ?? 0);
-            db()->prepare('UPDATE clientes SET desconto_cliente = ?, desconto_canal = ? WHERE id = ?')
-                ->execute([$novoDescCliente, $novoDescCanal, $clienteId]);
-        }
+        // Desconto do Cliente/Canal não é mais digitado no modal — vem sempre do próprio
+        // pedido no A&M ("%Descto" = Desconto do Canal; "%Descto ST" = Desconto do Cliente)
+        // e atualiza o cadastro do cliente.
+        db()->prepare('UPDATE clientes SET desconto_cliente = ?, desconto_canal = ? WHERE id = ?')
+            ->execute([$r['descontoClienteAEM'], $r['descontoCanalAEM'], $clienteId]);
 
         $moedaCliente = db()->prepare('SELECT moeda FROM clientes WHERE id = ?');
         $moedaCliente->execute([$clienteId]);
@@ -352,7 +349,7 @@ foreach ($tipo_stmt->fetchAll() as $tt) {
 // Lista de clientes para o fallback de seleção manual em "Importa Pedido"
 // (quando o CNPJ retornado pelo A&M não bate com nenhum cliente cadastrado).
 $clientesParaImport = $isComercial
-    ? db()->query("SELECT id, codigo_cliente, razao_social, desconto_cliente, desconto_canal FROM clientes WHERE status='ativo' ORDER BY razao_social")->fetchAll()
+    ? db()->query("SELECT id, codigo_cliente, razao_social FROM clientes WHERE status='ativo' ORDER BY razao_social")->fetchAll()
     : [];
 
 $pageTitle = 'Pedidos';
@@ -738,9 +735,6 @@ $cardDefs = [
         <input type="hidden" name="action" value="importar_aem">
         <input type="hidden" name="numero" id="aemFormNumero">
         <input type="hidden" name="cliente_id" id="aemFormClienteId">
-        <input type="hidden" name="desconto_atualizar" id="aemFormDescontoAtualizar">
-        <input type="hidden" name="desconto_cliente" id="aemFormDescontoCliente">
-        <input type="hidden" name="desconto_canal" id="aemFormDescontoCanal">
     </form>
 </div>
 
@@ -817,33 +811,22 @@ $cardDefs = [
 <script>
 (function() {
     var CLIENTES_IMPORT = <?= json_encode(array_map(function ($c) {
-        return [
-            'id' => (int)$c['id'], 'label' => '[' . $c['codigo_cliente'] . '] ' . $c['razao_social'],
-            'descontoCliente' => (float)$c['desconto_cliente'], 'descontoCanal' => (float)$c['desconto_canal'],
-        ];
+        return ['id' => (int)$c['id'], 'label' => '[' . $c['codigo_cliente'] . '] ' . $c['razao_social']];
     }, $clientesParaImport)) ?>;
     var itensAtual = [];
     var clienteIdAtual = null;
 
-    function precisaDesconto(descCliente, descCanal) {
-        return !(parseFloat(descCliente) > 0) && !(parseFloat(descCanal) > 0);
-    }
-
+    // Desconto do Cliente/Canal vem sempre do próprio pedido no A&M (%Descto ST / %Descto)
+    // — apenas informativo aqui, não é mais editável.
     function atualizarCaixaDesconto(descCliente, descCanal) {
         var box = document.getElementById('aemDescontoBox');
         if (!box) return;
-        if (precisaDesconto(descCliente, descCanal)) {
-            box.innerHTML = '<div class="alert alert-warning py-2 mb-2">'
-                + '<i class="bi bi-exclamation-triangle me-1"></i>Este cliente não tem desconto de cliente/canal cadastrado. Informe antes de importar:'
-                + '<div class="row g-2 mt-1">'
-                + '<div class="col-6"><label class="form-label small mb-0">Desconto do Cliente %</label>'
-                + '<input type="number" step="0.01" min="0" class="form-control form-control-sm" id="aemDescCliente" value="' + (parseFloat(descCliente) || 0) + '"></div>'
-                + '<div class="col-6"><label class="form-label small mb-0">Desconto do Canal %</label>'
-                + '<input type="number" step="0.01" min="0" class="form-control form-control-sm" id="aemDescCanal" value="' + (parseFloat(descCanal) || 0) + '"></div>'
-                + '</div></div>';
-        } else {
-            box.innerHTML = '';
-        }
+        box.innerHTML = '<div class="row g-2 mt-1">'
+            + '<div class="col-6"><label class="form-label small mb-0">Desconto do Canal %</label>'
+            + '<input type="text" class="form-control form-control-sm" value="' + (parseFloat(descCanal) || 0) + '" readonly disabled></div>'
+            + '<div class="col-6"><label class="form-label small mb-0">Desconto do Cliente %</label>'
+            + '<input type="text" class="form-control form-control-sm" value="' + (parseFloat(descCliente) || 0) + '" readonly disabled></div>'
+            + '</div>';
     }
 
     function escapeHtml(s) {
@@ -923,16 +906,14 @@ $cardDefs = [
         html += '</tbody></table></div>';
         el.innerHTML = html;
 
+        atualizarCaixaDesconto(d.descontoCliente, d.descontoCanal);
+
         var sel = document.getElementById('aemClienteSelect');
         if (sel) {
             sel.addEventListener('change', function() {
                 clienteIdAtual = sel.value ? parseInt(sel.value, 10) : null;
-                var c = CLIENTES_IMPORT.find(function(x) { return x.id === clienteIdAtual; });
-                atualizarCaixaDesconto(c ? c.descontoCliente : 0, c ? c.descontoCanal : 0);
                 atualizarConfirmar();
             });
-        } else if (d.clienteId) {
-            atualizarCaixaDesconto(d.clienteDescontoCliente, d.clienteDescontoCanal);
         }
         atualizarConfirmar();
     }
@@ -954,15 +935,6 @@ $cardDefs = [
         if (this.disabled) return;
         document.getElementById('aemFormNumero').value = document.getElementById('aemNumero').value.trim();
         document.getElementById('aemFormClienteId').value = clienteIdAtual || '';
-        var descCliente = document.getElementById('aemDescCliente');
-        var descCanal   = document.getElementById('aemDescCanal');
-        if (descCliente && descCanal) {
-            document.getElementById('aemFormDescontoAtualizar').value = '1';
-            document.getElementById('aemFormDescontoCliente').value = descCliente.value || '0';
-            document.getElementById('aemFormDescontoCanal').value = descCanal.value || '0';
-        } else {
-            document.getElementById('aemFormDescontoAtualizar').value = '';
-        }
         document.getElementById('aemForm').submit();
     });
 
