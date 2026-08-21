@@ -975,10 +975,12 @@ require_once LAYOUT_PATH . '/header.php';
                                 <span>Total após <?= e($netNomeGeral) ?></span>
                                 <span class="<?= $impDeltaNet >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaNet) ?></span>
                             </div>
+                            <?php if ($impItens[0]['temAccademia'] ?? false): ?>
                             <div class="d-flex justify-content-between text-muted">
                                 <span>Total após <?= e($outraNomeGeral) ?></span>
                                 <span class="<?= $impDeltaImpostos >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaImpostos) ?></span>
                             </div>
+                            <?php endif; ?>
                             <div class="d-flex justify-content-between text-muted">
                                 <span>Total após Custo MP</span>
                                 <span class="<?= $impDeltaMP >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaMP) ?></span>
@@ -1094,11 +1096,13 @@ require_once LAYOUT_PATH . '/header.php';
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php endforeach; ?>
+                                <?php if ($it['temAccademia']): ?>
                                 <tr class="table-light fw-semibold">
-                                    <td>Resultado após Impostos</td><td></td>
+                                    <td>Resultado após Academia</td><td></td>
                                     <td class="text-end"><?= moedaBR($it['resAposImpostos']) ?></td>
                                     <td class="text-end text-muted"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></td>
                                 </tr>
+                                <?php endif; ?>
 
                                 <tr>
                                     <td class="text-muted align-middle">
