@@ -82,6 +82,7 @@ if (isset($_GET['ajax_aem_preview'])) {
         'clienteLabel'  => $cliente ? ('[' . $cliente['codigo_cliente'] . '] ' . $cliente['razao_social']) : null,
         'descontoCanal'   => $r['descontoCanalAEM'],
         'descontoCliente' => $r['descontoClienteAEM'],
+        'pedidoAccademia' => $r['pedidoAccademia'],
         'itens'         => $itens,
     ]);
     exit;
@@ -113,6 +114,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         // e atualiza o cadastro do cliente.
         db()->prepare('UPDATE clientes SET desconto_cliente = ?, desconto_canal = ? WHERE id = ?')
             ->execute([$r['descontoClienteAEM'], $r['descontoCanalAEM'], $clienteId]);
+
+        // "Pedido Accademia" (Cadastro de Distribuidores no A&M) define o Canal de Venda
+        // do cliente no SisPed: SIM = Distribuidor, NAO = Varejo.
+        if ($r['pedidoAccademia'] === 'SIM' || $r['pedidoAccademia'] === 'NAO') {
+            $canalNome = $r['pedidoAccademia'] === 'SIM' ? 'Distribuidor' : 'Varejo';
+            $cvStmt = db()->prepare('SELECT id FROM canal_venda WHERE canal = ? LIMIT 1');
+            $cvStmt->execute([$canalNome]);
+            $canalVendaId = $cvStmt->fetchColumn();
+            if ($canalVendaId) {
+                db()->prepare('UPDATE clientes SET canal_venda_id = ? WHERE id = ?')->execute([$canalVendaId, $clienteId]);
+            }
+        }
 
         $moedaCliente = db()->prepare('SELECT moeda FROM clientes WHERE id = ?');
         $moedaCliente->execute([$clienteId]);
@@ -853,10 +866,12 @@ $cardDefs = [
         itensAtual = d.itens;
         clienteIdAtual = d.clienteId;
 
+        var canalAEM = d.pedidoAccademia === 'SIM' ? 'Distribuidor' : (d.pedidoAccademia === 'NAO' ? 'Varejo' : '—');
         var html = '<div class="mb-3">';
         html += '<div class="small text-muted">Pedido Interno A&amp;M: <strong>' + escapeHtml(d.pedidoInterno || '—')
               + '</strong> &middot; Tipo: <strong>' + (d.tipoVenda === 'bonificacao' ? 'Bonificação' : 'Venda')
-              + '</strong> &middot; Forma Pagto: <strong>' + escapeHtml(d.formaPagto || '—') + '</strong></div>';
+              + '</strong> &middot; Forma Pagto: <strong>' + escapeHtml(d.formaPagto || '—')
+              + '</strong> &middot; Canal (A&amp;M): <strong>' + canalAEM + '</strong></div>';
         if (d.isAVista) {
             html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-percent me-1"></i>'
                   + 'Pagamento à vista — será aplicado desconto de 5% sobre o total do pedido.</div>';

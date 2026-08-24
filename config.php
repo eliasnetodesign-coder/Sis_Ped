@@ -380,8 +380,10 @@ function buscarCotacaoAPI() {
  *          busca), 'isAVista' (true quando "00 - A Vista" — aciona 5% de desconto,
  *          igual ao recurso de desconto Pix), 'descontoCanalAEM' (coluna "%Descto"
  *          do detalhe do pedido = nosso "Desconto do Canal"), 'descontoClienteAEM'
- *          (coluna "%Descto ST" = nosso "Desconto do Cliente"), 'itens'=>[['codigoAEM',
- *          'nomeProduto','qtd','descComercial','descDiretoria'],...]].
+ *          (coluna "%Descto ST" = nosso "Desconto do Cliente"), 'pedidoAccademia'
+ *          (coluna "Pedido Accademia" do Cadastro de Distribuidores — 'SIM'|'NAO'|null —
+ *          SIM define o Canal de Venda do cliente como "Distribuidor", NAO como "Varejo"),
+ *          'itens'=>[['codigoAEM','nomeProduto','qtd','descComercial','descDiretoria'],...]].
  */
 function buscarPedidoAEM(string $numero): array {
     $numero = preg_replace('/\D/', '', $numero);
@@ -436,7 +438,10 @@ function buscarPedidoAEM(string $numero): array {
 
     // Coluna "Forma Pagto" (14ª <TD> da linha) do próprio grid de busca — "00 - A Vista"
     // significa pagamento à vista e aciona o desconto de 5% (mesmo recurso do "Pix").
+    // Coluna "Codigo" (8ª <TD>) identifica o cliente/distribuidor — usada a seguir para
+    // consultar o Cadastro de Distribuidores.
     $formaPagto = '';
+    $codigoClienteAEM = '';
     preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $buscaHtml, $rowsBusca);
     foreach ($rowsBusca[1] as $rowHtml) {
         if (strpos($rowHtml, 'SidPed=' . $sidPed) === false) continue;
@@ -445,10 +450,44 @@ function buscarPedidoAEM(string $numero): array {
             return trim(html_entity_decode(strip_tags($c), ENT_QUOTES, 'UTF-8'));
         }, $cellsBuscaM[1] ?? []);
         if (isset($cellsBusca[14])) $formaPagto = $cellsBusca[14];
+        if (isset($cellsBusca[7]))  $codigoClienteAEM = $cellsBusca[7];
         break;
     }
     preg_match('/^(\d+)/', $formaPagto, $mfp);
     $isAVista = (($mfp[1] ?? '') === '00') && (stripos($formaPagto, 'vista') !== false);
+
+    // Cadastro de Distribuidores (Cadastro > Cadastro de Distribuidores, CL200.EXE): localiza
+    // a linha pelo "Codigo" (2ª <TD>) e lê a coluna "Pedido Accademia" (última <TD>, SIM/NAO) —
+    // usada para definir o Canal de Venda do cliente no SisPed (SIM=Distribuidor, NAO=Varejo).
+    $pedidoAccademia = null;
+    if ($codigoClienteAEM !== '') {
+        $distribHtml = $chamar('/cgi-bin/ITF/CL200.EXE', [
+            'LNKTRANSPORTE' => $token,
+            'HidMenu'       => 'CLMENU.EXE',
+            'SubMenu'       => 'FROTA',
+        ]);
+        // Página com milhares de linhas — localiza os limites do <TBODY> com strpos (não regex,
+        // que estoura o backtrack limit do PCRE ao varrer um documento desse tamanho).
+        $posTabela = strpos($distribHtml, 'id="tabela"');
+        if ($posTabela === false) $posTabela = strpos($distribHtml, "id='tabela'");
+        $posTBody = $posTabela !== false ? strpos($distribHtml, '<TBODY>', $posTabela) : false;
+        $posTBodyFim = $posTBody !== false ? strpos($distribHtml, '</TBODY>', $posTBody) : false;
+        if ($posTBody !== false && $posTBodyFim !== false) {
+            $tbodyDist = substr($distribHtml, $posTBody + 7, $posTBodyFim - $posTBody - 7);
+            preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $tbodyDist, $distRows);
+            foreach ($distRows[1] as $rowHtml) {
+                preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $rowHtml, $cellsDistM);
+                $cellsDist = array_map(function ($c) {
+                    return trim(html_entity_decode(strip_tags($c), ENT_QUOTES, 'UTF-8'));
+                }, $cellsDistM[1] ?? []);
+                if (count($cellsDist) < 18) continue;
+                if ($cellsDist[1] === $codigoClienteAEM) {
+                    $pedidoAccademia = strtoupper($cellsDist[17]);
+                    break;
+                }
+            }
+        }
+    }
 
     // 3) Detalhe do pedido (coluna "Pedido Interno" do grid de busca).
     $raw = $chamar('/cgi-bin/ITF/PD0303.EXE?LNKTRANSPORTE=' . $token . '&SidPed=' . $sidPed, null);
@@ -514,6 +553,7 @@ function buscarPedidoAEM(string $numero): array {
         'isAVista'           => $isAVista,
         'descontoCanalAEM'   => $descontoCanalAEM,
         'descontoClienteAEM' => $descontoClienteAEM,
+        'pedidoAccademia'    => $pedidoAccademia,
         'itens'              => $itens,
     ];
 }
