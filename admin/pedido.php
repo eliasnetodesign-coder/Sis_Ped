@@ -706,9 +706,9 @@ foreach ($impRaw as $r) {
     $netBase   = $temAccademia ? (float)($r['preco_network'] ?? 0) : $resAposDescontos / (1 + $ipiNetPct / 100);
     $ipiNetVal = $netBase * $ipiNetPct / 100;
     $icmsNetVal = $netBase * $icmsPct / 100;
-    // Canal só "Network": PIS/COFINS incidem sobre a base do imposto Network já deduzida do ICMS.
-    // Canal "Network / Accademia": mantém a base cheia (Preço Network).
-    $pisCofinsBase = $temAccademia ? $netBase : ($netBase - $icmsNetVal);
+    // PIS/COFINS incidem sobre a base do imposto Network já deduzida do ICMS (mesmo cálculo do canal "Network"
+    // aplicado sobre a base do canal "Network / Accademia", que continua sendo o Preço Network).
+    $pisCofinsBase = $netBase - $icmsNetVal;
     if ($empNet) {
         $netTaxes[] = ['label' => 'ICMS ' . ($clienteUF ?: '—') . ' ' . ($ehLocal ? 'Local' : 'Interestadual'), 'pct' => $icmsPct, 'val' => $icmsNetVal];
         $netTaxes[] = ['label' => 'IPI',    'pct' => $ipiNetPct,                   'val' => $ipiNetVal];
@@ -1066,7 +1066,7 @@ require_once LAYOUT_PATH . '/header.php';
                                 <?php if ($it['netNome']): ?>
                                 <tr>
                                     <td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">
-                                        Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: <?= e($it['netBaseLabel']) ?> <?= moedaBR($it['precoNetwork']) ?><?php if (!$it['temAccademia']): ?> (<?= moedaBR($it['resAposDescontos']) ?> ÷ (1 + <?= $pctFmt($it['ipiNetPct']) ?>))<?php endif; ?></span>
+                                        Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: <?= e($it['netBaseLabel']) ?> <?= moedaBR($it['precoNetwork']) ?><?php if (!$it['temAccademia']): ?> (<?= moedaBR($it['resAposDescontos']) ?> ÷ (1 + <?= $pctFmt($it['ipiNetPct']) ?>))<?php else: ?> (PIS/COFINS: <?= moedaBR($it['precoNetwork']) ?> − ICMS <?= moedaBR($it['icmsNetVal']) ?> = <?= moedaBR($it['pisCofinsBase']) ?>)<?php endif; ?></span>
                                     </td>
                                 </tr>
                                 <?php foreach ($it['netTaxes'] as $tx): ?>

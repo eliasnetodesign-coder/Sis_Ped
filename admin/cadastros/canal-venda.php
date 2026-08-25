@@ -32,7 +32,7 @@ require_once LAYOUT_PATH . '/header.php';
 </div>
 <div class="card shadow-sm border-0"><div class="card-body p-0"><div class="table-responsive">
 <table class="table table-hover mb-0">
-    <thead class="table-light"><tr><th>Canal</th><th>Faixa de Faturamento</th><th>Desconto Máximo</th><th>Margem de Negociação</th><th>Network</th><th>Ações</th></tr></thead>
+    <thead class="table-light"><tr><th>Canal</th><th>Faixa de Faturamento</th><th>Desconto Máximo</th><th>Margem de Negociação</th><th>Tipo de Faturamento</th><th>Ações</th></tr></thead>
     <tbody>
     <?php if ($canais): foreach ($canais as $c): ?>
         <tr>
@@ -62,7 +62,7 @@ require_once LAYOUT_PATH . '/header.php';
             <div class="mb-3"><label class="form-label fw-semibold">Faixa de Faturamento</label><input type="text" name="faixa_faturamento" id="f_faixa" class="form-control" placeholder="Ex: Até R$ 50.000"></div>
             <div class="mb-3"><label class="form-label fw-semibold">Desconto Máximo (%)</label><input type="number" step="0.01" name="desconto" id="f_desc" class="form-control" value="0"></div>
             <div class="mb-3"><label class="form-label fw-semibold">Margem de Negociação (%)</label><input type="number" step="0.01" min="0" name="margem_negociacao" id="f_margem" class="form-control" value="0"><div class="form-text">Teto do <strong>Desconto Comercial</strong> que poderá ser aplicado no pedido (soma aos descontos de canal e cliente).</div></div>
-            <div class="mb-3"><label class="form-label fw-semibold">Network</label><select name="network_tipo" id="f_network" class="form-select"><option value="Network">Network</option><option value="Network / Accademia">Network / Accademia</option></select></div>
+            <div class="mb-3"><label class="form-label fw-semibold">Tipo de Faturamento</label><select name="network_tipo" id="f_network" class="form-select"><option value="Network">Network</option><option value="Network / Accademia">Network / Accademia</option></select></div>
         </div>
         <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button><button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i>Salvar</button></div>
     </form>
