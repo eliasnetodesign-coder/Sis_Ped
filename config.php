@@ -19,7 +19,7 @@ define('WHATSAPP_CODIGO_VALIDADE', 600);        // validade do código, em segun
 // Sistema Itallian Hairtech (A&M) — usado por "Importa Pedido" para localizar
 // pedidos já lançados lá e trazer os itens (Código A&M + Qtd) para o SisPed.
 define('AEM_URL',   'https://sistema.itallianhairtech.com.br');
-define('AEM_LOGIN', 'i003');
+define('AEM_LOGIN', 'AUT');
 define('AEM_SENHA', 'Itallian142');
 
 function db() {
@@ -481,7 +481,9 @@ function buscarPedidoAEM(string $numero): array {
                     return trim(html_entity_decode(strip_tags($c), ENT_QUOTES, 'UTF-8'));
                 }, $cellsDistM[1] ?? []);
                 if (count($cellsDist) < 18) continue;
-                if ($cellsDist[1] === $codigoClienteAEM) {
+                // O último dígito do "Codigo" identifica a loja (mesmo cliente pode ter
+                // mais de uma) — compara só os 5 primeiros dígitos dos dois lados.
+                if (substr($cellsDist[1], 0, 5) === substr($codigoClienteAEM, 0, 5)) {
                     $pedidoAccademia = strtoupper($cellsDist[17]);
                     break;
                 }
