@@ -83,6 +83,7 @@ if (isset($_GET['ajax_aem_preview'])) {
         'descontoCanal'   => $r['descontoCanalAEM'],
         'descontoCliente' => $r['descontoClienteAEM'],
         'pedidoAccademia' => $r['pedidoAccademia'],
+        'creditoUtilizado' => $r['creditoUtilizadoAEM'],
         'itens'         => $itens,
     ]);
     exit;
@@ -172,7 +173,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         // (cliente/novo-pedido.php) em vez do texto bruto "00 - A Vista" do A&M.
         $formaPagamentoPedido = $r['isAVista'] ? 'A Vista' : null;
         $res = criarPedidoImportadoAEM($clienteId, $r['tipoVenda'], $itens, $r['numero'], $formaPagamentoPedido, $r['isAVista']);
-        flash('success', 'Pedido ' . $res['numero_pedido'] . ' importado do A&M com ' . $res['criados'] . ' item(ns)!');
+
+        // Coluna "Credito Utilizado" do grid de busca do A&M: crédito do cliente já
+        // abatido do pedido lá no A&M. Lança essa quantia como concessão de crédito
+        // (mesmo mecanismo do módulo "Concessão de Créditos"), já aprovada e já
+        // consumida por este pedido, e grava o valor no próprio pedido importado.
+        $creditoMsg = '';
+        if ($r['creditoUtilizadoAEM'] > 0.001) {
+            $descCredito = 'Crédito utilizado no pedido A&M nº ' . $r['numero']
+                . ($r['pedidoInterno'] ? ' (Pedido Interno ' . $r['pedidoInterno'] . ')' : '');
+            db()->prepare('INSERT INTO creditos (cliente_id, descricao, observacao_interna, valor, data, usuario_id, valor_utilizado) VALUES (?,?,?,?,?,?,?)')
+                ->execute([$clienteId, $descCredito, 'Importado automaticamente via Importa Pedido (A&M)', $r['creditoUtilizadoAEM'], date('Y-m-d'), $u['id'], $r['creditoUtilizadoAEM']]);
+            $creditoId = (int)db()->lastInsertId();
+            db()->prepare('INSERT INTO creditos_logs (credito_id, acao, usuario_nome) VALUES (?,?,?)')
+                ->execute([$creditoId, 'aprovado', $u['nome']]);
+            db()->prepare('UPDATE pedidos SET credito_utilizado = ? WHERE id = ?')
+                ->execute([$r['creditoUtilizadoAEM'], $res['primeiro_id']]);
+            $creditoMsg = ' Crédito de ' . number_format($r['creditoUtilizadoAEM'], 2, ',', '.') . ' importado do A&M e registrado em Concessão de Créditos.';
+        }
+
+        flash('success', 'Pedido ' . $res['numero_pedido'] . ' importado do A&M com ' . $res['criados'] . ' item(ns)!' . $creditoMsg);
         header('Location: ' . BASE_URL . '/admin/pedido.php?id=' . $res['primeiro_id']);
         exit;
     } catch (Exception $e) {
@@ -875,6 +895,11 @@ $cardDefs = [
         if (d.isAVista) {
             html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-percent me-1"></i>'
                   + 'Pagamento à vista — será aplicado desconto de 5% sobre o total do pedido.</div>';
+        }
+        if (d.creditoUtilizado > 0.001) {
+            html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-coin me-1"></i>'
+                  + 'Crédito Utilizado no A&amp;M: <strong>' + d.creditoUtilizado.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+                  + '</strong> — será lançado como concessão de crédito do cliente ao confirmar.</div>';
         }
         if (d.clienteId) {
             html += '<div class="alert alert-success py-2 mb-0 mt-2"><i class="bi bi-check-circle me-1"></i>Cliente identificado: '

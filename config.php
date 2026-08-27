@@ -383,6 +383,9 @@ function buscarCotacaoAPI() {
  *          (coluna "%Descto ST" = nosso "Desconto do Cliente"), 'pedidoAccademia'
  *          (coluna "Pedido Accademia" do Cadastro de Distribuidores — 'SIM'|'NAO'|null —
  *          SIM define o Canal de Venda do cliente como "Distribuidor", NAO como "Varejo"),
+ *          'creditoUtilizadoAEM' (coluna "Credito Utilizado" do mesmo grid de busca —
+ *          crédito do cliente já abatido do pedido lá no A&M; a importação lança essa
+ *          quantia como concessão de crédito do cliente, já consumida por este pedido),
  *          'itens'=>[['codigoAEM','nomeProduto','qtd','descComercial','descDiretoria'],...]].
  */
 function buscarPedidoAEM(string $numero): array {
@@ -439,9 +442,15 @@ function buscarPedidoAEM(string $numero): array {
     // Coluna "Forma Pagto" (14ª <TD> da linha) do próprio grid de busca — "00 - A Vista"
     // significa pagamento à vista e aciona o desconto de 5% (mesmo recurso do "Pix").
     // Coluna "Codigo" (8ª <TD>) identifica o cliente/distribuidor — usada a seguir para
-    // consultar o Cadastro de Distribuidores.
+    // consultar o Cadastro de Distribuidores. Coluna "Credito Utilizado" (11ª <TD>) traz
+    // o valor de crédito do cliente já abatido do pedido lá no A&M.
+    $parseValorBR = function ($cell) {
+        preg_match('/[\d.,]+/', (string)$cell, $mm);
+        return isset($mm[0]) ? (float)str_replace(['.', ','], ['', '.'], $mm[0]) : 0.0;
+    };
     $formaPagto = '';
     $codigoClienteAEM = '';
+    $creditoUtilizadoAEM = 0.0;
     preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $buscaHtml, $rowsBusca);
     foreach ($rowsBusca[1] as $rowHtml) {
         if (strpos($rowHtml, 'SidPed=' . $sidPed) === false) continue;
@@ -451,6 +460,7 @@ function buscarPedidoAEM(string $numero): array {
         }, $cellsBuscaM[1] ?? []);
         if (isset($cellsBusca[14])) $formaPagto = $cellsBusca[14];
         if (isset($cellsBusca[7]))  $codigoClienteAEM = $cellsBusca[7];
+        if (isset($cellsBusca[10])) $creditoUtilizadoAEM = $parseValorBR($cellsBusca[10]);
         break;
     }
     preg_match('/^(\d+)/', $formaPagto, $mfp);
@@ -556,6 +566,7 @@ function buscarPedidoAEM(string $numero): array {
         'descontoCanalAEM'   => $descontoCanalAEM,
         'descontoClienteAEM' => $descontoClienteAEM,
         'pedidoAccademia'    => $pedidoAccademia,
+        'creditoUtilizadoAEM' => $creditoUtilizadoAEM,
         'itens'              => $itens,
     ];
 }
