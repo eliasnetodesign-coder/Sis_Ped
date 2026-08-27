@@ -676,7 +676,9 @@ if (!$empNet && $impEmpresas) { $empNet = $impEmpresas[0]; $outrasEmpresas = arr
 $temAccademia = stripos((string)($pedido['network_tipo'] ?? 'Network'), 'accademia') !== false;
 if (!$temAccademia) $outrasEmpresas = [];
 
-$impItens = [];
+// 1ª passada: descontos em cascata (mesma lógica de recalcularValorItem) de cada item, para
+// achar o "Total após Descontos" do pedido — base do percentual de Crédito Aplicado (abaixo).
+$impPre = [];
 foreach ($impRaw as $r) {
     $precoPadrao = (float)$r['preco_padrao'];
     $qtd = (int)($r['quantidade_total'] ?? 0);
@@ -693,17 +695,38 @@ foreach ($impRaw as $r) {
     $vCampanha = $descCampanhaPct > 0 ? $resDescCascata * $descCampanhaPct / 100 : 0;
     $resAposDescontos = $resDescCascata - $vCampanha;
 
+    $impPre[] = compact('r', 'precoPadrao', 'qtd', 'vCanal', 'vCliente', 'descPedidoPct', 'vPedido', 'descCampanhaPct', 'vCampanha', 'resAposDescontos');
+}
+
+// Crédito Aplicado (concessão de crédito do cliente, importada do A&M ou do módulo Concessão de
+// Créditos): valor absoluto do pedido, convertido em percentual sobre o Total após Descontos e
+// aplicado a cada item nessa mesma proporção — mesma mecânica do Desconto Financeiro (% sobre o
+// Resultado após Descontos), já que o crédito não tem vínculo com nenhum produto específico.
+$impTotalAposDescontos = array_sum(array_map(fn($p) => $p['resAposDescontos'] * $p['qtd'], $impPre));
+$pctCreditoGeral = ($creditoUsadoAdmin > 0 && $impTotalAposDescontos > 0)
+    ? $creditoUsadoAdmin / $impTotalAposDescontos * 100 : 0.0;
+
+$impItens = [];
+foreach ($impPre as $p) {
+    extract($p);
+
+    // Crédito Aplicado do item = % Crédito Geral sobre o Resultado após Descontos deste item.
+    // O resultado (Resultado após Crédito) passa a ser a base dos impostos a seguir — a base
+    // tributável do item já sai reduzida do crédito concedido ao cliente.
+    $vCredito = $resAposDescontos * $pctCreditoGeral / 100;
+    $resAposCredito = $resAposDescontos - $vCredito;
+
     // Bloco da empresa Network: ICMS (por NCM + UF do cliente) + impostos do NCM do produto + impostos próprios da empresa.
     // Canal "Network / Accademia": percentuais sobre o "Preço Network" da tabela de preços (independente dos descontos do pedido).
-    // Canal só "Network" (sem desdobramento para outras empresas): percentuais sobre o Resultado após Descontos.
+    // Canal só "Network" (sem desdobramento para outras empresas): percentuais sobre o Resultado após Crédito.
     $icmsRow = $icmsByNcm[$r['ncm_id']] ?? null;
     $icmsPct = $icmsRow ? (float)($ehLocal ? $icmsRow['icms_local'] : $icmsRow['icms_interestadual']) : 0;
     $netTaxes  = [];
     $ipiNetPct = (float)($r['ipi'] ?? 0);
-    // Canal só "Network": base não é mais direto o Resultado após Descontos, e sim esse valor
-    // "por dentro" do IPI do NCM (Resultado após Descontos / (1 + IPI%)) — isola o valor sem o IPI embutido.
-    $netBaseLabel = $temAccademia ? 'Preço Network' : 'Resultado após Descontos ÷ (1 + IPI)';
-    $netBase   = $temAccademia ? (float)($r['preco_network'] ?? 0) : $resAposDescontos / (1 + $ipiNetPct / 100);
+    // Canal só "Network": base não é mais direto o Resultado após Crédito, e sim esse valor
+    // "por dentro" do IPI do NCM (Resultado após Crédito / (1 + IPI%)) — isola o valor sem o IPI embutido.
+    $netBaseLabel = $temAccademia ? 'Preço Network' : 'Resultado após Crédito ÷ (1 + IPI)';
+    $netBase   = $temAccademia ? (float)($r['preco_network'] ?? 0) : $resAposCredito / (1 + $ipiNetPct / 100);
     $ipiNetVal = $netBase * $ipiNetPct / 100;
     $icmsNetVal = $netBase * $icmsPct / 100;
     // PIS/COFINS incidem sobre a base do imposto Network já deduzida do ICMS (mesmo cálculo do canal "Network"
@@ -719,11 +742,11 @@ foreach ($impRaw as $r) {
         $netTaxes[] = ['label' => 'ISS',    'pct' => (float)$empNet['iss'],        'val' => $netBase * (float)$empNet['iss'] / 100];
     }
     $netTotal   = array_sum(array_column($netTaxes, 'val'));
-    $resAposNet = $resAposDescontos - $netTotal;
+    $resAposNet = $resAposCredito - $netTotal;
 
-    // Base de cálculo das demais empresas (ex.: Accademia) = Resultado após Descontos - Preço Network - IPI Network.
+    // Base de cálculo das demais empresas (ex.: Accademia) = Resultado após Crédito - Preço Network - IPI Network.
     // Se o resultado for negativo, desconsidera o cálculo (base = 0, sem impostos nesse bloco).
-    $baseOutras = $resAposDescontos - $netBase - $ipiNetVal;
+    $baseOutras = $resAposCredito - $netBase - $ipiNetVal;
     if ($baseOutras < 0) $baseOutras = 0;
 
     // Blocos das demais empresas (em sequência): impostos próprios + PIS/COFINS específicos da empresa (cadastrados no NCM)
@@ -759,9 +782,9 @@ foreach ($impRaw as $r) {
     $vCF = $baseCF * $custoFixoPct / 100;
 
     // Desconto Financeiro: só para canal "Network / Accademia" com pedido à vista (Pix, desconto de 5%).
-    // Percentual sobre o Resultado após Descontos.
+    // Percentual sobre o Resultado após Crédito.
     $descFinanceiroPct = ($temAccademia && $descontoPixAdmin > 0) ? 5.0 : 0.0;
-    $vDescFinanceiro    = $resAposDescontos * $descFinanceiroPct / 100;
+    $vDescFinanceiro    = $resAposCredito * $descFinanceiroPct / 100;
     $resultadoIni       = $resAposMP - $vCF - $vDescFinanceiro;
 
     $impItens[] = [
@@ -776,6 +799,7 @@ foreach ($impRaw as $r) {
         'descPedidoPct' => $descPedidoPct, 'vPedido' => $vPedido,
         'descCampanhaPct' => $descCampanhaPct, 'vCampanha' => $vCampanha,
         'resAposDescontos' => $resAposDescontos,
+        'pctCredito' => $pctCreditoGeral, 'vCredito' => $vCredito, 'resAposCredito' => $resAposCredito,
         'precoNetwork' => $netBase, 'netBaseLabel' => $netBaseLabel, 'ipiNetPct' => $ipiNetPct,
         'icmsNetVal' => $icmsNetVal, 'pisCofinsBase' => $pisCofinsBase, 'temAccademia' => $temAccademia,
         'netNome' => $empNet['nome'] ?? null, 'netTaxes' => $netTaxes, 'netTotal' => $netTotal,
@@ -794,6 +818,7 @@ $impMargemPct  = $impTotalBase > 0 ? $impTotalFinal / $impTotalBase * 100 : 0;
 // Cada linha (exceto a primeira e a Margem Total) mostra a soma dos negativos (deduções) daquela etapa.
 $impTotalProdutos  = $impTotalBase;
 $impDeltaDescontos = -array_sum(array_map(fn($it) => ($it['vCanal'] + $it['vCliente'] + $it['vPedido'] + $it['vCampanha']) * $it['qtd'], $impItens));
+$impDeltaCredito   = -array_sum(array_map(fn($it) => $it['vCredito'] * $it['qtd'], $impItens));
 $impDeltaNet       = -array_sum(array_map(fn($it) => $it['netTotal'] * $it['qtd'], $impItens));
 $impDeltaImpostos  = -array_sum(array_map(fn($it) => array_sum(array_column($it['blocosOutros'], 'total')) * $it['qtd'], $impItens));
 $impDeltaMP        = -array_sum(array_map(fn($it) => $it['custoMP'] * $it['qtd'], $impItens));
@@ -971,6 +996,12 @@ require_once LAYOUT_PATH . '/header.php';
                                 <span>Total após Descontos</span>
                                 <span class="<?= $impDeltaDescontos >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaDescontos) ?></span>
                             </div>
+                            <?php if ($creditoUsadoAdmin > 0): ?>
+                            <div class="d-flex justify-content-between text-muted">
+                                <span>Total após Crédito Aplicado</span>
+                                <span class="<?= $impDeltaCredito >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaCredito) ?></span>
+                            </div>
+                            <?php endif; ?>
                             <div class="d-flex justify-content-between text-muted">
                                 <span>Total após <?= e($netNomeGeral) ?></span>
                                 <span class="<?= $impDeltaNet >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($impDeltaNet) ?></span>
@@ -1062,11 +1093,23 @@ require_once LAYOUT_PATH . '/header.php';
                                     <td class="text-end"><?= moedaBR($it['resAposDescontos']) ?></td>
                                     <td class="text-end text-muted"><?= moedaBR($it['resAposDescontos'] * $it['qtd']) ?></td>
                                 </tr>
+                                <?php if ($it['vCredito'] > 0): ?>
+                                <tr>
+                                    <td class="ps-4 text-muted">(-) Crédito Aplicado (<?= $pctFmt($it['pctCredito']) ?>)</td><td></td>
+                                    <td class="text-end text-danger">-<?= moedaBR($it['vCredito']) ?></td>
+                                    <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vCredito'] * $it['qtd']) ?></td>
+                                </tr>
+                                <tr class="table-light fw-semibold">
+                                    <td>Resultado após Crédito</td><td></td>
+                                    <td class="text-end"><?= moedaBR($it['resAposCredito']) ?></td>
+                                    <td class="text-end text-muted"><?= moedaBR($it['resAposCredito'] * $it['qtd']) ?></td>
+                                </tr>
+                                <?php endif; ?>
 
                                 <?php if ($it['netNome']): ?>
                                 <tr>
                                     <td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">
-                                        Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: <?= e($it['netBaseLabel']) ?> <?= moedaBR($it['precoNetwork']) ?><?php if (!$it['temAccademia']): ?> (<?= moedaBR($it['resAposDescontos']) ?> ÷ (1 + <?= $pctFmt($it['ipiNetPct']) ?>))<?php else: ?> (PIS/COFINS: <?= moedaBR($it['precoNetwork']) ?> − ICMS <?= moedaBR($it['icmsNetVal']) ?> = <?= moedaBR($it['pisCofinsBase']) ?>)<?php endif; ?></span>
+                                        Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: <?= e($it['netBaseLabel']) ?> <?= moedaBR($it['precoNetwork']) ?><?php if (!$it['temAccademia']): ?> (<?= moedaBR($it['resAposCredito']) ?> ÷ (1 + <?= $pctFmt($it['ipiNetPct']) ?>))<?php else: ?> (PIS/COFINS: <?= moedaBR($it['precoNetwork']) ?> − ICMS <?= moedaBR($it['icmsNetVal']) ?> = <?= moedaBR($it['pisCofinsBase']) ?>)<?php endif; ?></span>
                                     </td>
                                 </tr>
                                 <?php foreach ($it['netTaxes'] as $tx): ?>
@@ -1087,7 +1130,7 @@ require_once LAYOUT_PATH . '/header.php';
                                 <?php endif; ?>
 
                                 <?php foreach ($it['blocosOutros'] as $bl): ?>
-                                <tr><td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Impostos <?= e($bl['nome']) ?> <span class="text-muted text-lowercase fw-normal">— base: Result. após Descontos − Preço Network − IPI Network = <?= moedaBR($it['baseOutras']) ?></span></td></tr>
+                                <tr><td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Impostos <?= e($bl['nome']) ?> <span class="text-muted text-lowercase fw-normal">— base: Result. após Crédito − Preço Network − IPI Network = <?= moedaBR($it['baseOutras']) ?></span></td></tr>
                                 <?php foreach ($bl['taxes'] as $tx): ?>
                                 <tr>
                                     <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td><td></td>
@@ -1142,7 +1185,7 @@ require_once LAYOUT_PATH . '/header.php';
                                     <td class="text-muted align-middle">
                                         (-) Desconto Financeiro (<?= $pctFmt($it['descFinanceiroPct']) ?>)
                                         <div class="text-muted" style="font-size:.68rem">
-                                        % sobre Resultado após Descontos (<?= moedaBR($it['resAposDescontos']) ?>) — pedido à vista (Pix)
+                                        % sobre Resultado após Crédito (<?= moedaBR($it['resAposCredito']) ?>) — pedido à vista (Pix)
                                         </div>
                                     </td>
                                     <td></td>
