@@ -34,6 +34,7 @@ function db() {
             );
             try { $pdo->exec("ALTER TABLE pedidos ADD COLUMN lote_id VARCHAR(40) NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE clientes MODIFY COLUMN email VARCHAR(255) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE configuracoes MODIFY COLUMN valor TEXT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("UPDATE clientes SET email = NULL WHERE email = ''"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE tabela_precos ADD COLUMN preco_network DECIMAL(10,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE tabela_precos ADD COLUMN preco_auxiliar DECIMAL(10,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
@@ -568,6 +569,448 @@ function buscarPedidoAEM(string $numero): array {
         'pedidoAccademia'    => $pedidoAccademia,
         'creditoUtilizadoAEM' => $creditoUtilizadoAEM,
         'itens'              => $itens,
+    ];
+}
+
+/**
+ * Tabela "Estados com ST" (percentual de ST por UF) usada na análise financeira.
+ * Guardada em `configuracoes` (chave `st_estados`, JSON) e editável pela tela
+ * Financeiro > Análise Financeira. Cada item: UF => [nome, com_academia, sem_academia].
+ * O percentual só se aplica "quando o DI ou Loja reclamam"; caso contrário fica sem ST.
+ */
+function stEstadosPadrao(): array {
+    $base = [
+        'AC' => ['Acre', 0, 0],                'AL' => ['Alagoas', 13, 13],
+        'AP' => ['Amapá', 5, 13],              'AM' => ['Amazonas', 0, 0],
+        'BA' => ['Bahia', 0, 0],               'CE' => ['Ceará', 0, 0],
+        'ES' => ['Espírito Santo', 0, 0],      'GO' => ['Goiás', 0, 0],
+        'MA' => ['Maranhão', 0, 0],            'MT' => ['Mato Grosso', 5, 13],
+        'MS' => ['Mato Grosso do Sul', 0, 0],  'MG' => ['Minas Gerais', 8, 13],
+        'PA' => ['Pará', 0, 0],                'PB' => ['Paraíba', 0, 0],
+        'PR' => ['Paraná', 5, 13],             'PE' => ['Pernambuco', 0, 0],
+        'PI' => ['Piauí', 0, 0],               'RJ' => ['Rio de Janeiro', 8, 13],
+        'RN' => ['Rio Grande do Norte', 0, 0], 'RS' => ['Rio Grande do Sul', 8, 13],
+        'RO' => ['Rondônia', 0, 0],            'RR' => ['Roraima', 0, 0],
+        'SC' => ['Santa Catarina', 0, 0],      'SP' => ['São Paulo', 5, 13],
+        'SE' => ['Sergipe', 0, 0],             'TO' => ['Tocantins', 0, 0],
+        'DF' => ['Distrito Federal', 0, 0],
+    ];
+    $out = [];
+    foreach ($base as $uf => $r) {
+        $out[$uf] = ['nome' => $r[0], 'com_academia' => (float)$r[1], 'sem_academia' => (float)$r[2]];
+    }
+    return $out;
+}
+
+function stEstadosTabela(): array {
+    $out  = stEstadosPadrao();
+    $json = getConfig('st_estados');
+    if ($json) {
+        $d = json_decode($json, true);
+        if (is_array($d)) {
+            foreach ($out as $uf => &$def) {
+                // formato compacto salvo: {"UF":[com,sem]}; aceita também {"UF":{"com_academia":..}}
+                if (isset($d[$uf])) {
+                    $v = $d[$uf];
+                    if (array_key_exists(0, (array)$v)) {
+                        $def['com_academia'] = (float)$v[0];
+                        $def['sem_academia'] = (float)$v[1];
+                    } else {
+                        if (isset($v['com_academia'])) $def['com_academia'] = (float)$v['com_academia'];
+                        if (isset($v['sem_academia'])) $def['sem_academia'] = (float)$v['sem_academia'];
+                    }
+                }
+            }
+            unset($def);
+        }
+    }
+    return $out;
+}
+
+function stEstadosSalvar(array $tabela): void {
+    $pad = stEstadosPadrao();
+    $delta = [];
+    foreach ($pad as $uf => $def) {
+        $c = isset($tabela[$uf]['com_academia']) ? max(0.0, (float)str_replace(',', '.', $tabela[$uf]['com_academia'])) : $def['com_academia'];
+        $s = isset($tabela[$uf]['sem_academia']) ? max(0.0, (float)str_replace(',', '.', $tabela[$uf]['sem_academia'])) : $def['sem_academia'];
+        // guarda só o que difere do padrão (mantém o JSON pequeno)
+        if (abs($c - $def['com_academia']) > 0.0001 || abs($s - $def['sem_academia']) > 0.0001) {
+            $delta[$uf] = [$c + 0, $s + 0];
+        }
+    }
+    setConfig('st_estados', $delta ? json_encode($delta) : '');
+}
+
+/**
+ * Análise financeira (sob demanda, sem gravar nada) dos pedidos aguardando
+ * liberação no sistema Itallian Hairtech (A&M). Reproduz o roteiro manual:
+ *
+ *   Vendas > Aprovação > "Pedidos Aguardando liberação" > Buscar Pedidos
+ *     -> lê o bloco "Pedidos" (colunas Numero, Tipo, Data, Codigo, Cliente,
+ *        Valor, Credito Utilizado, Saldo A Pagar, Simulador Network,
+ *        Simulador Accademia, %Dscto Avista, Simulador Descto).
+ *
+ *   Para cada "Codigo" do grid: Cheques Recebidos > "Detalhe do Conta Corrente",
+ *     campo "Codigo Distribuidor" = Codigo sem o 1o e o ultimo digito (o ultimo
+ *     digito e a filial; a conta corrente/limite e no nivel do distribuidor).
+ *     -> le "Limite de Credito" e a tabela de Atrasos (linhas 01-Network,
+ *        04-Accademia e Total).
+ *
+ *   Para cada pedido (link "Numero" -> PD0303): lê o cabeçalho (Cidade/UF) e o
+ *     grid de itens (%Descto, %Descto ST, %Negociação, %Diretoria, Qtd).
+ *
+ * Conferências (avaliação individual por cliente/Codigo):
+ *   1) Atrasos no Conta Corrente -> linha Total da coluna "Atrasos" == 0.
+ *   2) Limite de Crédito         -> [soma (Simulador Network + Simulador Descto) das
+ *                                   linhas Tipo "V" que NÃO são À Vista]
+ *                                   + [Venda já FATURADA no mês corrente para o mesmo
+ *                                   Codigo Distribuidor — Vendas > Consulta/Reimprime
+ *                                   (PD0301), tipo Venda, Situação "FC - Faturado",
+ *                                   soma da coluna ValorPedido]
+ *                                   deve caber em "Limite de Credito". Pedido com Forma
+ *                                   "00 - ... A Vista" não consome limite (passa direto).
+ *   3) ST por Estado             -> % Descto ST aplicado no pedido (maior entre os
+ *                                   itens) NÃO pode ser maior que o da tabela
+ *                                   stEstadosTabela() para a UF do pedido. Coluna
+ *                                   "com Academia" quando o Cadastro de Distribuidores
+ *                                   (CL200) marca PedidoAccademia = SIM para o Codigo;
+ *                                   senão "sem Academia". null = UF fora da tabela.
+ *   4) Desconto Diretoria        -> pedido passa quando NÃO tem produto com %Diretoria > 0;
+ *                                   se tiver, lista os produtos.
+ * Um pedido fica "conforme" (marcado por padrão) quando passa nos 4 requisitos.
+ *
+ * @param string|null $dataInicio dd/mm/aaaa (padrao: 01/01 do ano corrente)
+ * @param string|null $dataFim    dd/mm/aaaa (padrao: 31/12 do ano corrente)
+ * @return array ['ok'=>bool,'erro'=>?string,'gerado_em'=>string,'periodo'=>[ini,fim],
+ *                'linhas'=>[...grid...],'analises'=>[codigo=>[...dados+checks...]]]
+ */
+function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = null): array {
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'erro' => 'Extensão cURL indisponível no servidor.'];
+    }
+
+    $ano        = (int)date('Y');
+    $dataInicio = $dataInicio ?: ('01/01/' . $ano);
+    $dataFim    = $dataFim    ?: ('31/12/' . $ano);
+    $datPix     = date('01/m/Y', strtotime('first day of next month'));
+
+    $chamar = function (string $path, ?array $postFields) {
+        $ch = curl_init(AEM_URL . $path);
+        $opts = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 45,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_USERAGENT      => 'Mozilla/5.0',
+        ];
+        if ($postFields !== null) {
+            $opts[CURLOPT_POST]       = true;
+            $opts[CURLOPT_POSTFIELDS] = http_build_query($postFields);
+        }
+        curl_setopt_array($ch, $opts);
+        $resp = curl_exec($ch);
+        curl_close($ch);
+        return $resp === false ? '' : $resp;
+    };
+    $txt = function ($h) {
+        return trim(preg_replace('/\s+/', ' ', html_entity_decode(strip_tags((string)$h), ENT_QUOTES, 'UTF-8')));
+    };
+    $num = function ($s) {
+        $s = preg_replace('/[^\d.,-]/', '', (string)$s);
+        return $s === '' ? 0.0 : (float)str_replace(['.', ','], ['', '.'], $s);
+    };
+
+    // 1) Login — a sessão do A&M trafega via o parâmetro LNKTRANSPORTE.
+    $loginHtml = $chamar('/cgi-bin/ITF/ITF.EXE', [
+        'SubMenu'           => 'FROTA',
+        'TxtLgloginUsuario' => AEM_LOGIN,
+        'PwdLgloginSenha'   => AEM_SENHA,
+    ]);
+    if (!preg_match('/LNKTRANSPORTE=([0-9A-Za-z]+)/', $loginHtml, $m)) {
+        return ['ok' => false, 'erro' => 'Não foi possível autenticar no sistema A&M.'];
+    }
+    $token = $m[1];
+
+    // 2) Grid "Pedidos Aguardando liberação" (Vendas > Aprovação, PD0506 -> PD050P).
+    $chamar('/cgi-bin/ITF/LOGIN.EXE',  ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0277']);
+    $chamar('/cgi-bin/ITF/PD0506.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+    $gridHtml = $chamar('/cgi-bin/ITF/PD050P.EXE', [
+        'LNKTRANSPORTE' => $token,
+        'TxtPedido'     => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '',
+        'TxtDataInicio' => $dataInicio, 'TxtDataFim' => $dataFim, 'TxtDatPix' => $datPix,
+    ]);
+    if ($gridHtml === '') return ['ok' => false, 'erro' => 'Falha ao consultar o grid de pedidos no A&M.'];
+    $gridHtml = @mb_convert_encoding($gridHtml, 'UTF-8', 'ISO-8859-1') ?: $gridHtml;
+
+    // Só o bloco "Pedidos": linhas com o link javascript:monta(pedidoInterno,codigo).
+    preg_match_all('/<TBODY>(.*?)<\/TBODY>/is', $gridHtml, $tbodies);
+    $rowsHtml = '';
+    foreach ($tbodies[1] as $chunk) {
+        if (stripos($chunk, 'javascript:monta(') !== false) $rowsHtml .= $chunk;
+    }
+    preg_match_all('/<TR\b[^>]*>(.*?)<\/TR>/is', $rowsHtml, $trs);
+
+    $cols = ['numero', 'acao', 'tipo', 'data', 'codigo', 'cliente', 'valor', 'credito_utilizado',
+             'saldo_a_pagar', 'sim_network', 'sim_accademia', 'pct_dscto_avista', 'sim_descto', 'atraso_col', 'forma'];
+    $linhas = [];
+    foreach ($trs[1] as $trHtml) {
+        preg_match_all('/<TD\b[^>]*>(.*?)<\/TD>/is', $trHtml, $tds);
+        if (count($tds[1]) < 13) continue;
+        $row = [];
+        foreach ($tds[1] as $i => $cell) {
+            $row[$cols[$i] ?? ('c' . $i)] = $txt($cell);
+        }
+        // nome completo do cliente vem no title="" da 6a célula (a visível é truncada).
+        if (preg_match('/title="([^"]*)"/i', $tds[1][5] ?? '', $mt)) {
+            $row['cliente_completo'] = $txt($mt[1]);
+        } else {
+            $row['cliente_completo'] = $row['cliente'] ?? '';
+        }
+        if (preg_match("/monta\('(\d+)','(\d+)'\)/", $trHtml, $mm)) $row['pedido_interno'] = $mm[1];
+        $row['tipo'] = strtoupper($row['tipo'] ?? '');
+        // Checagem 4: forma de pagamento "00 - 00 - A Vista".
+        $row['forma'] = $row['forma'] ?? '';
+        $row['is_a_vista'] = (bool)preg_match('/^\s*00\s*-/', $row['forma'])
+                             && stripos($row['forma'], 'vista') !== false;
+        $linhas[] = $row;
+    }
+
+    $porCodigo = [];
+    foreach ($linhas as $row) $porCodigo[$row['codigo']][] = $row;
+
+    // Cadastro de Distribuidores (CL200) — coluna "PedidoAccademia" (SIM/NAO) por
+    // Codigo. Página grande (>800 KB): baixa uma vez e monta o mapa first5 => SIM/NAO.
+    // O último dígito do Codigo é a filial, então a chave é os 5 primeiros dígitos.
+    $mapAccademia = [];
+    $distribHtml = $chamar('/cgi-bin/ITF/CL200.EXE', [
+        'LNKTRANSPORTE' => $token, 'HidMenu' => 'CLMENU.EXE', 'SubMenu' => 'FROTA',
+    ]);
+    $distribHtml = @mb_convert_encoding($distribHtml, 'UTF-8', 'ISO-8859-1') ?: $distribHtml;
+    $posTab = strpos($distribHtml, 'id="tabela"');
+    if ($posTab === false) $posTab = strpos($distribHtml, "id='tabela'");
+    $posB = $posTab !== false ? strpos($distribHtml, '<TBODY>', $posTab) : false;
+    $posE = $posB !== false ? strpos($distribHtml, '</TBODY>', $posB) : false;
+    if ($posB !== false && $posE !== false) {
+        preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', substr($distribHtml, $posB + 7, $posE - $posB - 7), $dRows);
+        foreach ($dRows[1] as $rowHtml) {
+            preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $rowHtml, $dc);
+            $cd = array_map($txt, $dc[1]);
+            if (count($cd) < 18) continue;
+            $key = substr($cd[1], 0, 5);
+            if ($key !== '') $mapAccademia[$key] = (strtoupper($cd[17]) === 'SIM');
+        }
+    }
+
+    // 3) "Detalhe do Conta Corrente" (Cheques Recebidos, CX130) por Codigo.
+    $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0632']);
+    $chamar('/cgi-bin/ITF/CX130.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'CKMENU.EXE', 'SubMenu' => 'FROTA']);
+    // "Consulta/Reimprime" (Vendas, PD030 -> PD0301) — soma dos pedidos JÁ FATURADOS
+    // (Situação "FC - Faturado"), tipo Venda, do mês corrente, por Codigo Distribuidor.
+    $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0163']);
+    $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+    $fatIni = date('01/m/Y');
+    $fatFim = date('t/m/Y');
+
+    $stTab = stEstadosTabela();
+    $analises = [];
+    foreach ($porCodigo as $codigo => $rows) {
+        // "Codigo Distribuidor" = Codigo sem o 1o e o ultimo digito (ex.: 141801 -> 4180).
+        $codDist = strlen((string)$codigo) > 2 ? substr((string)$codigo, 1, -1) : (string)$codigo;
+
+        // Pedidos de Venda já faturados no mês (Consulta/Reimprime): soma "ValorPedido"
+        // das linhas cuja "Situação" contém "Faturado".
+        $fatHtml = $chamar('/cgi-bin/ITF/PD0301.EXE', [
+            'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '',
+            'TxtPedCliente' => '', 'TxtNumero' => '',
+            'TxtDiaInicio' => substr($fatIni, 0, 2), 'TxtMesInicio' => substr($fatIni, 3, 2), 'TxtAnoInicio' => substr($fatIni, 6, 4),
+            'TxtDiaFim' => substr($fatFim, 0, 2), 'TxtMesFim' => substr($fatFim, 3, 2), 'TxtAnoFim' => substr($fatFim, 6, 4),
+            'SelVendedor' => '', 'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
+            'TxtProduto' => '', 'RdbSel' => 'V',
+        ]);
+        $fatHtml = @mb_convert_encoding($fatHtml, 'UTF-8', 'ISO-8859-1') ?: $fatHtml;
+        $faturadoMes = 0.0; $faturadoQtd = 0;
+        if (preg_match('/<TBODY>(.*?)<\/TBODY>/is', $fatHtml, $mfb)) {
+            preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mfb[1], $frows);
+            foreach ($frows[1] as $frow) {
+                preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $frow, $fc);
+                $fcell = array_map($txt, $fc[1]);
+                if (count($fcell) < 12) continue;
+                if (stripos($fcell[11], 'fatura') !== false) { $faturadoMes += $num($fcell[9]); $faturadoQtd++; }
+            }
+        }
+
+        $cc = $chamar('/cgi-bin/ITF/CX130.EXE', [
+            'LNKTRANSPORTE' => $token,
+            'SubCampo' => '', 'SubOpcao' => 'detalhe', 'SubKey' => '', 'SubKeyTitulos' => '',
+            'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
+            'TxtDataInicio' => '01/01/2020', 'TxtDataFim' => $dataFim, 'ChkZerado' => 'on',
+        ]);
+        $cc = @mb_convert_encoding($cc, 'UTF-8', 'ISO-8859-1') ?: $cc;
+
+        preg_match('/id=TxtDistrib[^>]*value="([^"]*)"/i', $cc, $md);
+        preg_match('/Canal Venda:\s*<b>(.*?)<\/b>/is', $cc, $mcv);
+        preg_match('/Limite de Credito:\s*<br>\s*<b>(.*?)<\/b>/is', $cc, $ml);
+        $limiteTxt = $txt($ml[1] ?? '');
+        $limiteNum = $num($limiteTxt);
+
+        $atrasos = ['network' => null, 'accademia' => null, 'total' => 0.0];
+        $boletosRows = [];
+        if (preg_match('/<div id=boletos>(.*?)<\/div>/is', $cc, $mb)) {
+            preg_match_all('/<tr[^>]*>(.*?)<\/tr>/is', $mb[1], $btr);
+            foreach ($btr[1] as $rowHtml) {
+                preg_match_all('/<t[dh][^>]*>(.*?)<\/t[dh]>/is', $rowHtml, $bc);
+                $cells = array_map($txt, $bc[1]);
+                if (!$cells || $cells[0] === '' || stripos($cells[0], 'empresa') !== false) continue;
+                $boletosRows[] = $cells;
+                $emp = strtolower($cells[0]);
+                if (strpos($emp, 'network') !== false)  $atrasos['network']   = $num($cells[2] ?? 0);
+                if (strpos($emp, 'accademia') !== false) $atrasos['accademia'] = $num($cells[2] ?? 0);
+                if (strpos($emp, 'total') !== false)     $atrasos['total']     = $num($cells[2] ?? 0);
+            }
+        }
+
+        $somaNetworkV = 0.0; $somaDesctoV = 0.0; $somaVNaoAvista = 0.0; $tipos = [];
+        foreach ($rows as $r) {
+            $tipos[] = $r['tipo'];
+            if ($r['tipo'] === 'V') {
+                $sn = $num($r['sim_network']);
+                $sd = $num($r['sim_descto']);
+                $somaNetworkV += $sn;
+                $somaDesctoV  += $sd;
+                // Check 2: pedido À Vista não consome limite de crédito.
+                if (empty($r['is_a_vista'])) $somaVNaoAvista += $sn + $sd;
+            }
+        }
+        $somaV = $somaNetworkV + $somaDesctoV;
+
+        // 1) Atrasos no Conta Corrente.
+        $checkSemAtraso = ($atrasos['total'] <= 0.005);
+        // 2) Limite de Crédito — (pedidos V aguardando que NÃO são À Vista)
+        //    + (Venda já faturada no mês, do Consulta/Reimprime) deve caber no limite.
+        $check2Base        = $somaVNaoAvista + $faturadoMes;
+        $semFinanciar      = ($check2Base <= 0.005);
+        $checkDentroLimite = $semFinanciar ? true : ($limiteNum > 0 && $check2Base <= $limiteNum + 0.005);
+
+        // "Com Academia" vem do Cadastro de Distribuidores (coluna PedidoAccademia SIM/NAO),
+        // no nível do Codigo (5 primeiros dígitos). null = Codigo não achado no cadastro.
+        $accademiaFlag = $mapAccademia[substr((string)$codigo, 0, 5)] ?? null;
+        $comAcademia   = ($accademiaFlag === true);
+        $stCol         = $comAcademia ? 'com_academia' : 'sem_academia';
+
+        // 3) ST por Estado e 4) Desconto Diretoria — detalhe de cada pedido (PD0303).
+        $qtdAVista = 0; $qtdStOk = 0; $qtdStAval = 0;
+        $temItemDiretoria = false; $temItemDesctoST = false;
+        foreach ($rows as $i => $r) {
+            $rows[$i]['com_academia']       = $comAcademia;
+            $rows[$i]['accademia_cadastro'] = $accademiaFlag === null ? null : ($accademiaFlag ? 'SIM' : 'NAO');
+
+            $det = $chamar('/cgi-bin/ITF/PD0303.EXE', [
+                'LNKTRANSPORTE' => $token, 'SidPed' => $r['pedido_interno'] ?? '',
+            ]);
+            $det = @mb_convert_encoding($det, 'UTF-8', 'ISO-8859-1') ?: $det;
+
+            $uf = ''; $cidade = '';
+            if (preg_match('/CEP\/Cidade\/UF:\s*<\/FONT>\s*<\/TD>\s*<TD[^>]*>\s*<FONT[^>]*>\s*<b>\s*(\d*)\s*(.*?)\s+([A-Z]{2})\s*<\/b>/is', $det, $mu)) {
+                $cidade = $txt($mu[2]); $uf = strtoupper($mu[3]);
+            }
+            $rows[$i]['uf'] = $uf;
+            $rows[$i]['cidade'] = $cidade;
+
+            $itensDiretoria = []; $itensDesctoST = []; $maxDesctoST = 0.0;
+            if (preg_match('/id=["\']itens["\'].*?<TBODY>(.*?)<\/TBODY>/is', $det, $mBody)) {
+                preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mBody[1], $itrs);
+                foreach ($itrs[1] as $itrHtml) {
+                    preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $itrHtml, $itds);
+                    $ic = array_map($txt, $itds[1]);
+                    if (count($ic) < 13) continue;
+                    $item = [
+                        'codigo'         => $ic[1],
+                        'nome'           => $ic[3],
+                        'pct_descto'     => $num($ic[6]),
+                        'pct_descto_st'  => $num($ic[7]),
+                        'pct_negociacao' => $num($ic[9]),
+                        'pct_diretoria'  => $num($ic[11]),
+                        'qtd'            => (int)preg_replace('/\D/', '', $ic[12]),
+                    ];
+                    if ($item['pct_descto_st'] > $maxDesctoST) $maxDesctoST = $item['pct_descto_st'];
+                    if ($item['pct_diretoria'] > 0.005) $itensDiretoria[] = $item;
+                    if ($item['pct_descto_st'] > 0.005) $itensDesctoST[]  = $item;
+                }
+            }
+            $rows[$i]['itens_diretoria'] = $itensDiretoria;
+            $rows[$i]['itens_descto_st'] = $itensDesctoST;
+            $rows[$i]['tem_diretoria']   = (bool)$itensDiretoria;
+            $rows[$i]['tem_descto_st']   = (bool)$itensDesctoST;
+            if ($itensDiretoria) $temItemDiretoria = true;
+            if ($itensDesctoST)  $temItemDesctoST  = true;
+
+            $stEsperado = ($uf && isset($stTab[$uf])) ? $stTab[$uf][$stCol] : null;
+            $rows[$i]['st_coluna']       = $comAcademia ? 'com' : 'sem';
+            $rows[$i]['st_esperado']     = $stEsperado;
+            $rows[$i]['st_estado_nome']  = ($uf && isset($stTab[$uf])) ? $stTab[$uf]['nome'] : '';
+            $rows[$i]['descto_st_pedido'] = $maxDesctoST;
+            // Check 3: % Descto ST aplicado no pedido não pode ser MAIOR que o da tabela do estado.
+            $checkStPedido = ($stEsperado === null) ? null : ($maxDesctoST <= $stEsperado + 0.01);
+            $rows[$i]['check_st'] = $checkStPedido;
+            if ($checkStPedido !== null) { $qtdStAval++; if ($checkStPedido) $qtdStOk++; }
+
+            if (!empty($r['is_a_vista'])) $qtdAVista++;
+            // Check 2 por pedido: À Vista sempre passa; senão depende do limite do Codigo.
+            $check2Pedido = !empty($r['is_a_vista']) ? true : $checkDentroLimite;
+            $rows[$i]['check_limite'] = $check2Pedido;
+            // Check 4 por pedido: sem produto com % Diretoria.
+            $check4Pedido = !$itensDiretoria;
+            $rows[$i]['check_diretoria'] = $check4Pedido;
+            // "conforme" (marcado por padrão) = atende os 4 requisitos.
+            $rows[$i]['conforme'] = ($checkSemAtraso && $check2Pedido && $checkStPedido !== false && $check4Pedido);
+        }
+
+        // ST no nível do Codigo: ok se todos os pedidos avaliáveis passaram.
+        $checkStCodigo  = ($qtdStAval === 0) ? true : ($qtdStOk === $qtdStAval);
+        $aprovadoCodigo = ($checkSemAtraso && $checkDentroLimite && $checkStCodigo && !$temItemDiretoria);
+
+        $analises[(string)$codigo] = [
+            'codigo'              => (string)$codigo,
+            'codigo_distribuidor' => $codDist,
+            'distribuidor_cc'     => $txt($md[1] ?? ''),
+            'canal_venda'         => $txt($mcv[1] ?? ''),
+            'cliente'             => $rows[0]['cliente_completo'] ?? '',
+            'com_academia'        => $comAcademia,
+            'accademia_cadastro'  => $accademiaFlag === null ? null : ($accademiaFlag ? 'SIM' : 'NAO'),
+            'linhas'              => $rows,
+            'tipos'               => $tipos,
+            'limite_txt'          => $limiteTxt,
+            'limite_num'          => $limiteNum,
+            'soma_network_v'      => $somaNetworkV,
+            'soma_descto_v'       => $somaDesctoV,
+            'soma_v'              => $somaV,
+            'soma_v_nao_avista'   => $somaVNaoAvista,
+            'faturado_mes'        => $faturadoMes,
+            'faturado_mes_qtd'    => $faturadoQtd,
+            'faturado_periodo'    => [$fatIni, $fatFim],
+            'check2_base'         => $check2Base,
+            'sem_financiar'       => $semFinanciar,
+            'atrasos'             => $atrasos,
+            'boletos_rows'        => $boletosRows,
+            'check_sem_atraso'    => $checkSemAtraso,
+            'check_dentro_limite' => $checkDentroLimite,
+            'check_st_codigo'     => $checkStCodigo,
+            'pedidos_total'       => count($rows),
+            'pedidos_a_vista'     => $qtdAVista,
+            'pedidos_st_ok'       => $qtdStOk,
+            'pedidos_st_avaliados'=> $qtdStAval,
+            'tem_item_diretoria'  => $temItemDiretoria,
+            'tem_item_descto_st'  => $temItemDesctoST,
+            'aprovado'            => $aprovadoCodigo,
+        ];
+    }
+
+    return [
+        'ok'        => true,
+        'erro'      => null,
+        'gerado_em' => date('d/m/Y H:i'),
+        'periodo'   => [$dataInicio, $dataFim],
+        'linhas'    => $linhas,
+        'analises'  => $analises,
     ];
 }
 

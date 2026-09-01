@@ -342,6 +342,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 ['slug'=>'contas-pagar',        'label'=>'Contas a Pagar',      'icon'=>'bi-arrow-up-circle'],
                 ['slug'=>'ordens-pagamento',    'label'=>'Ordens de Pagamento', 'icon'=>'bi-cash-stack'],
                 ['slug'=>'ordens-investimento', 'label'=>'Ordens de Invest.',   'icon'=>'bi-graph-up-arrow'],
+                ['slug'=>'analise-financeira',  'label'=>'Análise Financeira',  'icon'=>'bi-search'],
             ];
             $admAtivo = $_inCadastros && $_pg === 'usuarios';
             ?>
