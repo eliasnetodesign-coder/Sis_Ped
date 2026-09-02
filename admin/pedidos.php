@@ -240,7 +240,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         // Mantém a mesma descrição já usada dentro do pedido para essa condição
         // (cliente/novo-pedido.php) em vez do texto bruto "00 - A Vista" do A&M.
         $formaPagamentoPedido = $r['isAVista'] ? 'A Vista' : null;
-        $res = criarPedidoImportadoAEM($clienteId, $r['tipoVenda'], $itens, $r['numero'], $formaPagamentoPedido, $r['isAVista']);
+        // Marca o pedido como importado "BF" quando o Obs do A&M começa com "BF"
+        // (característica BF), para o relatório admin/relatorios/bf-am.php filtrar.
+        $ehImportBF = ($_POST['modo_bf'] ?? '') === '1' && !empty($r['ehBf']);
+        $res = criarPedidoImportadoAEM($clienteId, $r['tipoVenda'], $itens, $r['numero'], $formaPagamentoPedido, $r['isAVista'], $ehImportBF);
 
         // Coluna "Credito Utilizado" do grid de busca do A&M: crédito do cliente já
         // abatido do pedido lá no A&M. Lança essa quantia como concessão de crédito

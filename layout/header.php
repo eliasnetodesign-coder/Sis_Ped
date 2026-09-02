@@ -268,6 +268,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                 ['slug'=>'impostos',          'label'=>'Impostos',            'icon'=>'bi-percent'],
             ];
             $relLinks = [
+                ['slug'=>'am',                   'label'=>'Relatórios A&M',      'icon'=>'bi-clipboard-data'],
                 ['slug'=>'status-pedidos',       'label'=>'Status dos Pedidos',  'icon'=>'bi-kanban'],
                 ['slug'=>'faturamento-diario',   'label'=>'Fat. Diário',         'icon'=>'bi-calendar-day'],
                 ['slug'=>'faturamento-mensal',   'label'=>'Fat. Mensal',         'icon'=>'bi-calendar-month'],
