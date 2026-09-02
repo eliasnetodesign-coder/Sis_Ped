@@ -220,6 +220,73 @@ function db() {
             try { $pdo->exec("ALTER TABLE metas ADD UNIQUE KEY cliente_trimestre_ano_unique (cliente_id, trimestre, ano)"); } catch (PDOException $e) {}
             // Regime tributário do cliente, usado no cálculo de impostos/margens.
             try { $pdo->exec("ALTER TABLE clientes ADD COLUMN regime_tributario ENUM('Simples Nacional','Lucro Real','Lucro Presumido') NULL DEFAULT NULL"); } catch (PDOException $e) {}
+
+            // Log de liberações de pedido feitas pelo SisPed no sistema A&M (botão "Liberar" na
+            // Análise Financeira — ver liberarPedidoAEM() em config.php).
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS liberacoes_am_logs (
+                id             INT AUTO_INCREMENT PRIMARY KEY,
+                sid_ped        VARCHAR(20) NOT NULL,
+                numero_pedido  VARCHAR(20) NULL,
+                codigo_cliente VARCHAR(20) NULL,
+                cliente_nome   VARCHAR(180) NULL,
+                usuario_id     INT NULL,
+                usuario_nome   VARCHAR(100) NULL,
+                status         ENUM('liberado','erro','pulado_avista') NOT NULL,
+                resposta       TEXT NULL,
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                KEY idx_sid_ped (sid_ped),
+                KEY idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+
+            // Campanhas "Beauty" do check 5 da Análise Financeira A&M — independente do
+            // módulo de campanhas do pedido local (tabela `campanhas`); ver campanhas-am-dados.php.
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanhas_am (
+                id            INT AUTO_INCREMENT PRIMARY KEY,
+                nome          VARCHAR(120) NOT NULL,
+                tipo          ENUM('desconto','bonificacao') NOT NULL DEFAULT 'desconto',
+                criterio      ENUM('quantidade','valor') NOT NULL DEFAULT 'quantidade',
+                unidade       VARCHAR(20) NULL,
+                observacoes   TEXT NULL,
+                ativo         TINYINT NOT NULL DEFAULT 1,
+                ordem         INT NOT NULL DEFAULT 0,
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanhas_am_produtos (
+                id             INT AUTO_INCREMENT PRIMARY KEY,
+                campanha_id    INT NOT NULL,
+                codigo_produto VARCHAR(30) NOT NULL,
+                produto_nome   VARCHAR(180) NULL,
+                KEY idx_campanha (campanha_id),
+                KEY idx_codigo (codigo_produto)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanhas_am_faixas (
+                id           INT AUTO_INCREMENT PRIMARY KEY,
+                campanha_id  INT NOT NULL,
+                minimo       DECIMAL(12,2) NOT NULL DEFAULT 0,
+                maximo       DECIMAL(12,2) NULL,
+                percentual   DECIMAL(6,2) NOT NULL DEFAULT 0,
+                KEY idx_campanha (campanha_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanhas_am_bonificacao (
+                id                   INT AUTO_INCREMENT PRIMARY KEY,
+                campanha_id          INT NOT NULL,
+                qtd_base             INT NOT NULL DEFAULT 1,
+                produto_bonus_codigo VARCHAR(30) NOT NULL,
+                produto_bonus_nome   VARCHAR(180) NULL,
+                qtd_bonus            INT NOT NULL DEFAULT 1,
+                KEY idx_campanha (campanha_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanhas_am_fora (
+                id             INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_produto VARCHAR(30) NOT NULL,
+                produto_nome   VARCHAR(180) NULL,
+                UNIQUE KEY uq_codigo (codigo_produto)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try {
+                if ((int)$pdo->query('SELECT COUNT(*) FROM campanhas_am')->fetchColumn() === 0) {
+                    campanhasAmSeedInicial($pdo);
+                }
+            } catch (PDOException $e) {}
         } catch (PDOException $e) {
             die('Erro de conexão com o banco de dados. <a href="' . BASE_URL . '/install.php">Clique aqui para configurar.</a>');
         }
@@ -642,6 +709,184 @@ function stEstadosSalvar(array $tabela): void {
 }
 
 /**
+ * Popula campanhas_am/campanhas_am_produtos/campanhas_am_faixas/campanhas_am_bonificacao/
+ * campanhas_am_fora a partir de campanhas-am-dados.php — só roda quando campanhas_am está
+ * vazia (chamado de db(), logo depois de criar as tabelas). Depois disso a edição é feita
+ * pela tela (botão "Campanhas" em admin/financeiro/analise-financeira.php).
+ */
+function campanhasAmSeedInicial(PDO $pdo): void {
+    $arq = __DIR__ . '/campanhas-am-dados.php';
+    if (!is_file($arq)) return;
+    $dados = require $arq;
+    if (!is_array($dados) || empty($dados['campanhas'])) return;
+
+    $insCamp  = $pdo->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,unidade,observacoes,ativo,ordem) VALUES (?,?,?,?,?,1,?)');
+    $insFaixa = $pdo->prepare('INSERT INTO campanhas_am_faixas (campanha_id,minimo,maximo,percentual) VALUES (?,?,?,?)');
+    $insProd  = $pdo->prepare('INSERT INTO campanhas_am_produtos (campanha_id,codigo_produto,produto_nome) VALUES (?,?,?)');
+    $insBonif = $pdo->prepare('INSERT INTO campanhas_am_bonificacao (campanha_id,qtd_base,produto_bonus_codigo,produto_bonus_nome,qtd_bonus) VALUES (?,?,?,?,?)');
+
+    foreach ($dados['campanhas'] as $ordem => $c) {
+        $insCamp->execute([$c['nome'], $c['tipo'], $c['criterio'], $c['unidade'] ?? null, $c['observacoes'] ?? null, $ordem]);
+        $campId = (int)$pdo->lastInsertId();
+        foreach ($c['faixas'] ?? [] as $f) $insFaixa->execute([$campId, $f[0], $f[1], $f[2]]);
+        foreach ($c['produtos'] ?? [] as $p) $insProd->execute([$campId, $p[0], $p[1]]);
+        foreach ($c['bonificacao'] ?? [] as $b) $insBonif->execute([$campId, $b['qtd_base'], $b['produto_bonus_codigo'], $b['produto_bonus_nome'], $b['qtd_bonus']]);
+    }
+
+    $insFora = $pdo->prepare('INSERT IGNORE INTO campanhas_am_fora (codigo_produto,produto_nome) VALUES (?,?)');
+    foreach ($dados['fora_campanha'] ?? [] as $p) $insFora->execute([$p[0], $p[1]]);
+}
+
+/** Lista todas as campanhas_am com faixas/produtos/bonificação aninhados (para a tela editável e para campanhasAmAvaliarPedido()). */
+function campanhasAmListar(): array {
+    $rows = db()->query('SELECT * FROM campanhas_am ORDER BY ordem, id')->fetchAll();
+    $ids = array_column($rows, 'id');
+    $faixasPor = []; $produtosPor = []; $bonifPor = [];
+    if ($ids) {
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $fq = db()->prepare("SELECT * FROM campanhas_am_faixas WHERE campanha_id IN ($ph) ORDER BY minimo");
+        $fq->execute($ids);
+        foreach ($fq->fetchAll() as $f) $faixasPor[$f['campanha_id']][] = $f;
+
+        $pq = db()->prepare("SELECT * FROM campanhas_am_produtos WHERE campanha_id IN ($ph) ORDER BY id");
+        $pq->execute($ids);
+        foreach ($pq->fetchAll() as $p) $produtosPor[$p['campanha_id']][] = $p;
+
+        $bq = db()->prepare("SELECT * FROM campanhas_am_bonificacao WHERE campanha_id IN ($ph) ORDER BY id");
+        $bq->execute($ids);
+        foreach ($bq->fetchAll() as $b) $bonifPor[$b['campanha_id']][] = $b;
+    }
+    foreach ($rows as &$r) {
+        $r['faixas']      = $faixasPor[$r['id']] ?? [];
+        $r['produtos']    = $produtosPor[$r['id']] ?? [];
+        $r['bonificacao'] = $bonifPor[$r['id']] ?? [];
+    }
+    unset($r);
+    return $rows;
+}
+
+/** Lista os produtos cadastrados como "fora de campanha" (campanhas_am_fora). */
+function campanhasAmForaLista(): array {
+    return db()->query('SELECT * FROM campanhas_am_fora ORDER BY produto_nome')->fetchAll();
+}
+
+/** Acha, entre as faixas de uma campanha ([id,minimo,maximo,percentual]), a de maior "minimo" que $valor ainda atinge (null = nenhuma faixa atingida). */
+function campanhasAmFaixaPara(array $faixas, float $valor): ?array {
+    $ordenadas = $faixas;
+    usort($ordenadas, fn($a, $b) => (float)$a['minimo'] <=> (float)$b['minimo']);
+    $achou = null;
+    foreach ($ordenadas as $f) {
+        if ($valor + 0.0001 >= (float)$f['minimo']) $achou = $f; else break;
+    }
+    return $achou;
+}
+
+/**
+ * Check 5 (Campanhas): confere os itens de UM pedido do A&M contra as campanhas "Beauty"
+ * cadastradas em campanhas_am. Regra combinada com o usuário:
+ *  - Campanhas tipo "desconto" têm faixas por quantidade OU valor agregado dos produtos da
+ *    sua lista presentes no pedido; a faixa atingida define o %Diretoria "esperado" — só o
+ *    campo %Diretoria do item é comparado (não %Negociação).
+ *  - Item que não pertence a nenhuma campanha e tem %Diretoria > 0, ou que pertence a uma
+ *    campanha mas tem %Diretoria acima do esperado pela faixa atingida, é sinalizado como
+ *    "fora de campanha".
+ *  - Campanhas tipo "bonificacao" (ex.: Camp 6): a cada N unidades do produto gatilho no
+ *    MESMO pedido, confere se a quantidade correspondente do produto de bonificação também
+ *    está presente no pedido.
+ *
+ * @param array $itens itens do pedido (PD0303): [['codigo','nome','qtd','pct_diretoria','valor_total',...], ...]
+ * @return array ['campanhas_atingidas'=>[...], 'itens_fora_campanha'=>[...], 'tem_item_fora_campanha'=>bool,
+ *                'bonificacoes'=>[...], 'check_campanha'=>bool]
+ */
+function campanhasAmAvaliarPedido(array $itens): array {
+    static $campanhas = null, $mapaCampanha = null;
+    if ($campanhas === null) {
+        $campanhas = campanhasAmListar();
+        $mapaCampanha = [];
+        foreach ($campanhas as $c) {
+            if (empty($c['ativo'])) continue;
+            foreach ($c['produtos'] as $p) $mapaCampanha[$p['codigo_produto']] = $c['id'];
+        }
+    }
+    $porId = [];
+    foreach ($campanhas as $c) $porId[$c['id']] = $c;
+
+    // 1) Agrega qtd/valor por campanha, a partir dos itens deste pedido.
+    $agQtd = []; $agValor = []; $itensPorCampanha = [];
+    foreach ($itens as $it) {
+        $campId = $mapaCampanha[$it['codigo'] ?? ''] ?? null;
+        if ($campId === null || $porId[$campId]['tipo'] !== 'desconto') continue;
+        $agQtd[$campId]   = ($agQtd[$campId] ?? 0) + (int)($it['qtd'] ?? 0);
+        $agValor[$campId] = ($agValor[$campId] ?? 0) + (float)($it['valor_total'] ?? 0);
+        $itensPorCampanha[$campId][] = $it;
+    }
+
+    // 2) Para cada campanha com item presente, acha a faixa atingida e o % esperado.
+    $percEsperado = []; $campanhasAtingidas = [];
+    foreach ($itensPorCampanha as $campId => $itensC) {
+        $c = $porId[$campId];
+        $agregado = $c['criterio'] === 'valor' ? ($agValor[$campId] ?? 0) : ($agQtd[$campId] ?? 0);
+        $faixa = campanhasAmFaixaPara($c['faixas'], $agregado);
+        $percEsperado[$campId] = $faixa ? (float)$faixa['percentual'] : 0.0;
+        $campanhasAtingidas[] = [
+            'campanha_id' => $campId, 'nome' => $c['nome'], 'unidade' => $c['unidade'], 'criterio' => $c['criterio'],
+            'agregado' => $agregado, 'percentual_esperado' => $percEsperado[$campId], 'faixa' => $faixa, 'itens' => $itensC,
+        ];
+    }
+
+    // 3) Sinaliza itens com %Diretoria acima do esperado (sem campanha = esperado 0).
+    $itensForaCampanha = [];
+    foreach ($itens as $it) {
+        $diretoria = (float)($it['pct_diretoria'] ?? 0);
+        if ($diretoria <= 0.005) continue;
+        $campId = $mapaCampanha[$it['codigo'] ?? ''] ?? null;
+        if ($campId === null) {
+            $itensForaCampanha[] = $it + ['motivo' => 'sem_campanha', 'percentual_esperado' => 0.0, 'campanha_nome' => null];
+            continue;
+        }
+        $c = $porId[$campId];
+        if ($c['tipo'] !== 'desconto') continue;
+        $pctEsp = $percEsperado[$campId] ?? 0.0;
+        if ($diretoria > $pctEsp + 0.01) {
+            $itensForaCampanha[] = $it + ['motivo' => 'acima_da_faixa', 'percentual_esperado' => $pctEsp, 'campanha_nome' => $c['nome']];
+        }
+    }
+
+    // 4) Bonificação (ex.: Camp 6): a cada N un. do produto gatilho, confere a qtd do produto de bonificação no mesmo pedido.
+    $qtdPorCodigo = [];
+    foreach ($itens as $it) $qtdPorCodigo[$it['codigo'] ?? ''] = ($qtdPorCodigo[$it['codigo'] ?? ''] ?? 0) + (int)($it['qtd'] ?? 0);
+    $bonificacoes = [];
+    foreach ($campanhas as $c) {
+        if ($c['tipo'] !== 'bonificacao' || empty($c['ativo'])) continue;
+        $qtdTrigger = 0;
+        foreach ($c['produtos'] as $p) $qtdTrigger += $qtdPorCodigo[$p['codigo_produto']] ?? 0;
+        if ($qtdTrigger <= 0) continue;
+        foreach ($c['bonificacao'] as $b) {
+            $base = max(1, (int)$b['qtd_base']);
+            $mult = intdiv($qtdTrigger, $base);
+            if ($mult <= 0) continue;
+            $esperado   = $mult * (int)$b['qtd_bonus'];
+            $encontrado = $qtdPorCodigo[$b['produto_bonus_codigo']] ?? 0;
+            $bonificacoes[] = [
+                'campanha_id' => $c['id'], 'nome' => $c['nome'], 'qtd_trigger' => $qtdTrigger, 'mult' => $mult,
+                'produto_bonus_codigo' => $b['produto_bonus_codigo'], 'produto_bonus_nome' => $b['produto_bonus_nome'],
+                'qtd_bonus_esperada' => $esperado, 'qtd_bonus_encontrada' => $encontrado, 'ok' => $encontrado >= $esperado,
+            ];
+        }
+    }
+    $bonifOk = true;
+    foreach ($bonificacoes as $b) if (!$b['ok']) $bonifOk = false;
+
+    return [
+        'campanhas_atingidas'    => $campanhasAtingidas,
+        'itens_fora_campanha'    => $itensForaCampanha,
+        'tem_item_fora_campanha' => (bool)$itensForaCampanha,
+        'bonificacoes'           => $bonificacoes,
+        'check_campanha'         => !$itensForaCampanha && $bonifOk,
+    ];
+}
+
+/**
  * Análise financeira (sob demanda, sem gravar nada) dos pedidos aguardando
  * liberação no sistema Itallian Hairtech (A&M). Reproduz o roteiro manual:
  *
@@ -663,10 +908,10 @@ function stEstadosSalvar(array $tabela): void {
  *   1) Atrasos no Conta Corrente -> linha Total da coluna "Atrasos" == 0.
  *   2) Limite de Crédito         -> [soma (Simulador Network + Simulador Descto) das
  *                                   linhas Tipo "V" que NÃO são À Vista]
- *                                   + [Venda já FATURADA no mês corrente para o mesmo
- *                                   Codigo Distribuidor — Vendas > Consulta/Reimprime
- *                                   (PD0301), tipo Venda, Situação "FC - Faturado",
- *                                   soma da coluna ValorPedido]
+ *                                   + ["Total Geral" do cliente — painel Pedidos + Cheques +
+ *                                   Acordos + Cursos que a própria tela "Pedidos Aguardando
+ *                                   liberação" (PD0506->PD050P) mostra quando filtrada pelo
+ *                                   Codigo Distribuidor]
  *                                   deve caber em "Limite de Credito". Pedido com Forma
  *                                   "00 - ... A Vista" não consome limite (passa direto).
  *   3) ST por Estado             -> % Descto ST aplicado no pedido (maior entre os
@@ -675,8 +920,17 @@ function stEstadosSalvar(array $tabela): void {
  *                                   "com Academia" quando o Cadastro de Distribuidores
  *                                   (CL200) marca PedidoAccademia = SIM para o Codigo;
  *                                   senão "sem Academia". null = UF fora da tabela.
- *   4) Desconto Diretoria        -> pedido passa quando NÃO tem produto com %Diretoria > 0;
- *                                   se tiver, lista os produtos.
+ *   4) Campanhas                 -> gate pela coluna "Obs" do pedido no grid "Consulta/
+ *                                   Reimprime" (PD0301): só roda a análise de campanha
+ *                                   (campanhasAmAvaliarPedido()) quando Obs começa com "BF" — aí
+ *                                   o %Diretoria de cada item não pode passar do % esperado pela
+ *                                   faixa de quantidade/valor atingida na campanha (sem campanha
+ *                                   = esperado 0); campanhas de bonificação (ex.: Camp 6)
+ *                                   conferem se a qtd do produto de brinde bate com a qtd
+ *                                   comprada do produto gatilho. SEM "BF" nenhuma campanha se
+ *                                   aplica, então qualquer %Diretoria > 0 já é desconto não
+ *                                   previsto — pedido não passa (absorveu o antigo check
+ *                                   "Desconto Diretoria", removido por ficar redundante).
  * Um pedido fica "conforme" (marcado por padrão) quando passa nos 4 requisitos.
  *
  * @param string|null $dataInicio dd/mm/aaaa (padrao: 01/01 do ano corrente)
@@ -767,9 +1021,10 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         }
         if (preg_match("/monta\('(\d+)','(\d+)'\)/", $trHtml, $mm)) $row['pedido_interno'] = $mm[1];
         $row['tipo'] = strtoupper($row['tipo'] ?? '');
-        // Checagem 4: forma de pagamento "00 - 00 - A Vista".
+        // Checagem 4: forma de pagamento "00 - A Vista" — no grid de "Aguardando liberação" a
+        // célula vem com um traço antes do "00" (ex.: "- 00 - A Vista"), por isso o [\s-]* inicial.
         $row['forma'] = $row['forma'] ?? '';
-        $row['is_a_vista'] = (bool)preg_match('/^\s*00\s*-/', $row['forma'])
+        $row['is_a_vista'] = (bool)preg_match('/^[\s-]*00\s*-/', $row['forma'])
                              && stripos($row['forma'], 'vista') !== false;
         $linhas[] = $row;
     }
@@ -803,40 +1058,37 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
     // 3) "Detalhe do Conta Corrente" (Cheques Recebidos, CX130) por Codigo.
     $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0632']);
     $chamar('/cgi-bin/ITF/CX130.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'CKMENU.EXE', 'SubMenu' => 'FROTA']);
-    // "Consulta/Reimprime" (Vendas, PD030 -> PD0301) — soma dos pedidos JÁ FATURADOS
-    // (Situação "FC - Faturado"), tipo Venda, do mês corrente, por Codigo Distribuidor.
+    // "Consulta/Reimprime" (Vendas, PD030 -> PD0301) — usado por pedido pra ler a coluna "Obs"
+    // do grid (gate do Check 5: só roda a análise de campanha quando Obs começa com "BF").
     $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0163']);
     $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
-    $fatIni = date('01/m/Y');
-    $fatFim = date('t/m/Y');
 
     $stTab = stEstadosTabela();
+    $campanhasAmPorId = array_column(campanhasAmListar(), null, 'id');
     $analises = [];
     foreach ($porCodigo as $codigo => $rows) {
         // "Codigo Distribuidor" = Codigo sem o 1o e o ultimo digito (ex.: 141801 -> 4180).
         $codDist = strlen((string)$codigo) > 2 ? substr((string)$codigo, 1, -1) : (string)$codigo;
 
-        // Pedidos de Venda já faturados no mês (Consulta/Reimprime): soma "ValorPedido"
-        // das linhas cuja "Situação" contém "Faturado".
-        $fatHtml = $chamar('/cgi-bin/ITF/PD0301.EXE', [
-            'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '',
-            'TxtPedCliente' => '', 'TxtNumero' => '',
-            'TxtDiaInicio' => substr($fatIni, 0, 2), 'TxtMesInicio' => substr($fatIni, 3, 2), 'TxtAnoInicio' => substr($fatIni, 6, 4),
-            'TxtDiaFim' => substr($fatFim, 0, 2), 'TxtMesFim' => substr($fatFim, 3, 2), 'TxtAnoFim' => substr($fatFim, 6, 4),
-            'SelVendedor' => '', 'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
-            'TxtProduto' => '', 'RdbSel' => 'V',
+        // "Total Geral" do cliente (Pedidos + Cheques + Acordos + Cursos) — painel que a própria
+        // tela "Pedidos Aguardando liberação" (PD0506->PD050P) mostra quando filtrada pelo Codigo
+        // Distribuidor (mesma tela/sessão já aberta acima; só refaz o POST com TxtCodDist).
+        $totGeralHtml = $chamar('/cgi-bin/ITF/PD050P.EXE', [
+            'LNKTRANSPORTE' => $token,
+            'TxtPedido' => '', 'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
+            'TxtDataInicio' => $dataInicio, 'TxtDataFim' => $dataFim, 'TxtDatPix' => $datPix,
         ]);
-        $fatHtml = @mb_convert_encoding($fatHtml, 'UTF-8', 'ISO-8859-1') ?: $fatHtml;
-        $faturadoMes = 0.0; $faturadoQtd = 0;
-        if (preg_match('/<TBODY>(.*?)<\/TBODY>/is', $fatHtml, $mfb)) {
-            preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mfb[1], $frows);
-            foreach ($frows[1] as $frow) {
-                preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $frow, $fc);
-                $fcell = array_map($txt, $fc[1]);
-                if (count($fcell) < 12) continue;
-                if (stripos($fcell[11], 'fatura') !== false) { $faturadoMes += $num($fcell[9]); $faturadoQtd++; }
-            }
+        $totGeralHtml = @mb_convert_encoding($totGeralHtml, 'UTF-8', 'ISO-8859-1') ?: $totGeralHtml;
+        $totalGeral = 0.0;
+        if (preg_match('/id="?total"?[^>]*>\s*Total Geral.*?<b>\s*R?\$?\s*([\d.,]+)\s*<\/b>/is', $totGeralHtml, $mtg)) {
+            $totalGeral = $num($mtg[1]);
         }
+        // "Supervisor" e "Segmento" do cliente — só aparecem no painel dessa mesma tela filtrada
+        // (não vêm no Detalhe do Conta Corrente abaixo).
+        preg_match('/Supervisor:\s*<b>(.*?)<\/b>/is', $totGeralHtml, $msup);
+        preg_match('/Segmento\.?:\s*<b>(.*?)<\/b>/is', $totGeralHtml, $mseg);
+        $supervisor = $txt($msup[1] ?? '');
+        $segmento   = $txt($mseg[1] ?? '');
 
         $cc = $chamar('/cgi-bin/ITF/CX130.EXE', [
             'LNKTRANSPORTE' => $token,
@@ -849,8 +1101,29 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         preg_match('/id=TxtDistrib[^>]*value="([^"]*)"/i', $cc, $md);
         preg_match('/Canal Venda:\s*<b>(.*?)<\/b>/is', $cc, $mcv);
         preg_match('/Limite de Credito:\s*<br>\s*<b>(.*?)<\/b>/is', $cc, $ml);
-        $limiteTxt = $txt($ml[1] ?? '');
-        $limiteNum = $num($limiteTxt);
+        $limiteTxt  = $txt($ml[1] ?? '');
+        $limiteNum  = $num($limiteTxt);
+        $distribuidorCc = $txt($md[1] ?? '');
+
+        // Grid "Instrução"/"Histórico de Instruções" (Vendas > ..., VD0302) — mesmo link
+        // "Consultar Instruções" da tela "Pedidos Aguardando liberação"; acessível direto na
+        // sessão CX130 já aberta acima, sem handshake de LOGIN.EXE extra.
+        $instrucoes = [];
+        if ($distribuidorCc !== '') {
+            $vdHtml = $chamar('/cgi-bin/ITF/VD0302.EXE', [
+                'LNKTRANSPORTE' => $token, 'SidCodigo' => $distribuidorCc,
+            ]);
+            $vdHtml = @mb_convert_encoding($vdHtml, 'UTF-8', 'ISO-8859-1') ?: $vdHtml;
+            if (preg_match('/id="historico"[^>]*>.*?<TABLE[^>]*>(.*?)<\/TABLE>/is', $vdHtml, $mhist)) {
+                preg_match_all('/<TR[^>]*onClick="hi\(this\)"[^>]*>(.*?)<\/TR>/is', $mhist[1], $hrows);
+                foreach ($hrows[1] as $hrow) {
+                    preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $hrow, $hc);
+                    $hcell = array_map($txt, $hc[1]);
+                    if (count($hcell) < 3) continue;
+                    $instrucoes[] = ['data' => $hcell[0], 'texto' => $hcell[1], 'usuario' => $hcell[2]];
+                }
+            }
+        }
 
         $atrasos = ['network' => null, 'accademia' => null, 'total' => 0.0];
         $boletosRows = [];
@@ -884,9 +1157,9 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
 
         // 1) Atrasos no Conta Corrente.
         $checkSemAtraso = ($atrasos['total'] <= 0.005);
-        // 2) Limite de Crédito — (pedidos V aguardando que NÃO são À Vista)
-        //    + (Venda já faturada no mês, do Consulta/Reimprime) deve caber no limite.
-        $check2Base        = $somaVNaoAvista + $faturadoMes;
+        // 2) Limite de Crédito — (pedidos V aguardando que NÃO são À Vista) + (Total Geral do
+        //    cliente: Pedidos + Cheques + Acordos + Cursos) deve caber no limite.
+        $check2Base        = $somaVNaoAvista + $totalGeral;
         $semFinanciar      = ($check2Base <= 0.005);
         $checkDentroLimite = $semFinanciar ? true : ($limiteNum > 0 && $check2Base <= $limiteNum + 0.005);
 
@@ -896,9 +1169,10 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         $comAcademia   = ($accademiaFlag === true);
         $stCol         = $comAcademia ? 'com_academia' : 'sem_academia';
 
-        // 3) ST por Estado e 4) Desconto Diretoria — detalhe de cada pedido (PD0303).
+        // 3) ST por Estado e 4) Campanhas — detalhe de cada pedido (PD0303).
         $qtdAVista = 0; $qtdStOk = 0; $qtdStAval = 0;
-        $temItemDiretoria = false; $temItemDesctoST = false;
+        $temItemDesctoST = false; $temItemForaCampanha = false;
+        $resumoCampanhas = []; // campanha_id => ['nome','criterio','unidade','agregado'] — soma entre os pedidos do código
         foreach ($rows as $i => $r) {
             $rows[$i]['com_academia']       = $comAcademia;
             $rows[$i]['accademia_cadastro'] = $accademiaFlag === null ? null : ($accademiaFlag ? 'SIM' : 'NAO');
@@ -915,7 +1189,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             $rows[$i]['uf'] = $uf;
             $rows[$i]['cidade'] = $cidade;
 
-            $itensDiretoria = []; $itensDesctoST = []; $maxDesctoST = 0.0;
+            $itensTodos = []; $itensDiretoria = []; $itensDesctoST = []; $maxDesctoST = 0.0;
             if (preg_match('/id=["\']itens["\'].*?<TBODY>(.*?)<\/TBODY>/is', $det, $mBody)) {
                 preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mBody[1], $itrs);
                 foreach ($itrs[1] as $itrHtml) {
@@ -930,18 +1204,98 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
                         'pct_negociacao' => $num($ic[9]),
                         'pct_diretoria'  => $num($ic[11]),
                         'qtd'            => (int)preg_replace('/\D/', '', $ic[12]),
+                        'valor_total'    => $num($ic[14] ?? 0),
                     ];
+                    $itensTodos[] = $item;
                     if ($item['pct_descto_st'] > $maxDesctoST) $maxDesctoST = $item['pct_descto_st'];
                     if ($item['pct_diretoria'] > 0.005) $itensDiretoria[] = $item;
                     if ($item['pct_descto_st'] > 0.005) $itensDesctoST[]  = $item;
                 }
             }
+            $rows[$i]['itens_am']        = $itensTodos;
             $rows[$i]['itens_diretoria'] = $itensDiretoria;
             $rows[$i]['itens_descto_st'] = $itensDesctoST;
             $rows[$i]['tem_diretoria']   = (bool)$itensDiretoria;
             $rows[$i]['tem_descto_st']   = (bool)$itensDesctoST;
-            if ($itensDiretoria) $temItemDiretoria = true;
             if ($itensDesctoST)  $temItemDesctoST  = true;
+
+            // Coluna "Obs" do grid "Consulta/Reimprime" (PD0301) para ESTE pedido — gate do
+            // Check 5: só roda a análise de campanha quando os 2 primeiros caracteres são "BF".
+            // Sem "BF", o pedido não é de campanha; o Check 5 vira informativo (mostra os mesmos
+            // itens com %Diretoria do Check 4, sem comparar contra faixa nenhuma).
+            $obsPedido = ''; $ehBf = false;
+            $numeroBusca = preg_replace('/\D/', '', $r['numero'] ?? '');
+            if ($numeroBusca !== '') {
+                $obsHtml = $chamar('/cgi-bin/ITF/PD0301.EXE', [
+                    'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '',
+                    'TxtPedCliente' => $numeroBusca, 'TxtNumero' => '',
+                    'TxtDiaInicio' => '01', 'TxtMesInicio' => '01', 'TxtAnoInicio' => '2000',
+                    'TxtDiaFim' => date('d'), 'TxtMesFim' => date('m'), 'TxtAnoFim' => date('Y'),
+                    'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '',
+                    'TxtProduto' => '',
+                ]);
+                $obsHtml = @mb_convert_encoding($obsHtml, 'UTF-8', 'ISO-8859-1') ?: $obsHtml;
+                if (preg_match('/<TBODY>(.*?)<\/TBODY>/is', $obsHtml, $mob)) {
+                    preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mob[1], $orows);
+                    $achou = null;
+                    foreach ($orows[1] as $orow) {
+                        preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $orow, $oc);
+                        $ocell = array_map($txt, $oc[1]);
+                        if (count($ocell) < 13) continue;
+                        // Confere pelo SidPed (link "Pedido Interno") quando houver mais de um
+                        // resultado pro mesmo número; senão fica com a primeira linha achada.
+                        if (!empty($r['pedido_interno']) && strpos($orow, 'SidPed=' . $r['pedido_interno']) === false) {
+                            if ($achou === null) $achou = $ocell;
+                            continue;
+                        }
+                        $achou = $ocell;
+                        break;
+                    }
+                    // "Obs" é a célula logo após a "Forma Pagto" (ex.: "00 - A Vista", "71B -
+                    // 30/60/90DD") — a posição fixa a partir do fim varia conforme "Situação"/
+                    // "Altera"/"MA" renderizam ou não célula própria em cada linha.
+                    if ($achou !== null) {
+                        foreach ($achou as $ix => $cel) {
+                            if (preg_match('/^\d+[A-Za-z]?\s*-\s*\S/', $cel)) { $obsPedido = $achou[$ix + 1] ?? ''; break; }
+                        }
+                    }
+                }
+                $ehBf = (strtoupper(substr(trim($obsPedido), 0, 2)) === 'BF');
+            }
+            $rows[$i]['obs']    = $obsPedido;
+            $rows[$i]['eh_bf']  = $ehBf;
+
+            // Check 5: itens do pedido x campanhas "Beauty" cadastradas (campanhas_am) — só
+            // quando o pedido é marcado "BF" no Obs. Sem "BF" nenhuma campanha se aplica, então
+            // qualquer %Diretoria > 0 é desconto não previsto — sinalizado em vermelho igual ao
+            // check 4 (não fica "certo"), não fica neutro/informativo.
+            if ($ehBf) {
+                $avCampanha = campanhasAmAvaliarPedido($itensTodos);
+            } else {
+                $itensSemBf = array_map(fn($it) => $it + ['motivo' => 'sem_bf', 'percentual_esperado' => 0.0, 'campanha_nome' => null], $itensDiretoria);
+                $avCampanha = [
+                    'campanhas_atingidas'    => [],
+                    'itens_fora_campanha'    => $itensSemBf,
+                    'tem_item_fora_campanha' => (bool)$itensSemBf,
+                    'bonificacoes'           => [],
+                    'check_campanha'         => !$itensSemBf,
+                ];
+            }
+            $rows[$i]['campanhas_atingidas']    = $avCampanha['campanhas_atingidas'];
+            $rows[$i]['itens_fora_campanha']    = $avCampanha['itens_fora_campanha'];
+            $rows[$i]['tem_item_fora_campanha'] = $avCampanha['tem_item_fora_campanha'];
+            $rows[$i]['bonificacoes_campanha']  = $avCampanha['bonificacoes'];
+            $rows[$i]['check_campanha']         = $avCampanha['check_campanha'];
+            // Conta como "problema" tanto item com %Diretoria fora da faixa quanto bonificação
+            // (ex.: Camp 6) que não bateu — os dois fazem o check 5 falhar.
+            if (!$avCampanha['check_campanha']) $temItemForaCampanha = true;
+            foreach ($avCampanha['campanhas_atingidas'] as $ca) {
+                $cid = $ca['campanha_id'];
+                if (!isset($resumoCampanhas[$cid])) {
+                    $resumoCampanhas[$cid] = ['nome' => $ca['nome'], 'criterio' => $ca['criterio'], 'unidade' => $ca['unidade'], 'agregado' => 0.0];
+                }
+                $resumoCampanhas[$cid]['agregado'] += $ca['agregado'];
+            }
 
             $stEsperado = ($uf && isset($stTab[$uf])) ? $stTab[$uf][$stCol] : null;
             $rows[$i]['st_coluna']       = $comAcademia ? 'com' : 'sem';
@@ -957,22 +1311,33 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             // Check 2 por pedido: À Vista sempre passa; senão depende do limite do Codigo.
             $check2Pedido = !empty($r['is_a_vista']) ? true : $checkDentroLimite;
             $rows[$i]['check_limite'] = $check2Pedido;
-            // Check 4 por pedido: sem produto com % Diretoria.
-            $check4Pedido = !$itensDiretoria;
-            $rows[$i]['check_diretoria'] = $check4Pedido;
             // "conforme" (marcado por padrão) = atende os 4 requisitos.
-            $rows[$i]['conforme'] = ($checkSemAtraso && $check2Pedido && $checkStPedido !== false && $check4Pedido);
+            $rows[$i]['conforme'] = ($checkSemAtraso && $check2Pedido && $checkStPedido !== false && $avCampanha['check_campanha']);
         }
 
         // ST no nível do Codigo: ok se todos os pedidos avaliáveis passaram.
         $checkStCodigo  = ($qtdStAval === 0) ? true : ($qtdStOk === $qtdStAval);
-        $aprovadoCodigo = ($checkSemAtraso && $checkDentroLimite && $checkStCodigo && !$temItemDiretoria);
+        $aprovadoCodigo = ($checkSemAtraso && $checkDentroLimite && $checkStCodigo && !$temItemForaCampanha);
+
+        // Faixa/benefício de cada campanha no resumo, recalculada sobre o total somado entre os
+        // pedidos do código (não a de um pedido isolado — a soma pode cruzar pra uma faixa maior).
+        foreach ($resumoCampanhas as $cid => &$rc) {
+            $faixas = $campanhasAmPorId[$cid]['faixas'] ?? [];
+            $faixa = campanhasAmFaixaPara($faixas, $rc['agregado']);
+            $rc['percentual']  = $faixa ? (float)$faixa['percentual'] : 0.0;
+            $rc['faixa_min']   = $faixa['minimo'] ?? null;
+            $rc['faixa_max']   = $faixa['maximo'] ?? null;
+        }
+        unset($rc);
 
         $analises[(string)$codigo] = [
             'codigo'              => (string)$codigo,
             'codigo_distribuidor' => $codDist,
-            'distribuidor_cc'     => $txt($md[1] ?? ''),
+            'distribuidor_cc'     => $distribuidorCc,
             'canal_venda'         => $txt($mcv[1] ?? ''),
+            'supervisor'          => $supervisor,
+            'segmento'            => $segmento,
+            'instrucoes'          => $instrucoes,
             'cliente'             => $rows[0]['cliente_completo'] ?? '',
             'com_academia'        => $comAcademia,
             'accademia_cadastro'  => $accademiaFlag === null ? null : ($accademiaFlag ? 'SIM' : 'NAO'),
@@ -984,9 +1349,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             'soma_descto_v'       => $somaDesctoV,
             'soma_v'              => $somaV,
             'soma_v_nao_avista'   => $somaVNaoAvista,
-            'faturado_mes'        => $faturadoMes,
-            'faturado_mes_qtd'    => $faturadoQtd,
-            'faturado_periodo'    => [$fatIni, $fatFim],
+            'total_geral_cliente' => $totalGeral,
             'check2_base'         => $check2Base,
             'sem_financiar'       => $semFinanciar,
             'atrasos'             => $atrasos,
@@ -998,8 +1361,9 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             'pedidos_a_vista'     => $qtdAVista,
             'pedidos_st_ok'       => $qtdStOk,
             'pedidos_st_avaliados'=> $qtdStAval,
-            'tem_item_diretoria'  => $temItemDiretoria,
             'tem_item_descto_st'  => $temItemDesctoST,
+            'tem_item_fora_campanha' => $temItemForaCampanha,
+            'campanhas_resumo'    => array_values($resumoCampanhas),
             'aprovado'            => $aprovadoCodigo,
         ];
     }
@@ -1012,6 +1376,95 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         'linhas'    => $linhas,
         'analises'  => $analises,
     ];
+}
+
+/**
+ * Libera UM pedido no sistema A&M (Vendas > Pedidos Aguardando liberação, botão "Liberar
+ * Pedido" da coluna Ação — reproduz o mesmo endpoint/parâmetros do clique manual no A&M):
+ *  1) Login (ITF.EXE) -> token curto.
+ *  2) Abre a tela "Pedidos Aguardando liberação" (PD0506 -> PD050P) — necessário pra capturar,
+ *     do próprio HTML renderizado, o LNKTRANSPORTE "longo" que o A&M embute no JS da tela
+ *     (diferente do token curto usado em links de navegação — os endpoints de ação exigem esse
+ *     valor tal como veio) e o campo AreaPedido (textarea somente-leitura com a lista de SidPed
+ *     do grid, que a tela também envia nesse POST).
+ *  3) POST em PD0509.EXE {LNKTRANSPORTE=<longo>, SubKey=$sidPed, SubOpcao='individual',
+ *     AreaPedido, AreaTexto=''} — mesma chamada da função JS `libera(ky,'individual',obj)`.
+ * Sempre refaz login + reabre a tela antes de liberar (não usa cache), pra garantir um
+ * LNKTRANSPORTE válido no momento da chamada, e confere que o SidPed está mesmo no grid atual
+ * antes de enviar (evita liberar em cima de uma tela desatualizada).
+ *
+ * IMPORTANTE: essa função grava de verdade no A&M (ação real, não é simulação). O formato exato
+ * da resposta de sucesso/erro do PD0509.EXE não foi validado em produção — 'ok'=>true aqui
+ * significa só que a chamada foi enviada e respondeu algo; 'resposta' guarda o corpo cru
+ * devolvido pelo A&M para conferência manual (fica gravado no log de liberações).
+ *
+ * @return array ['ok'=>bool,'erro'=>?string,'resposta'=>?string]
+ */
+function liberarPedidoAEM(string $sidPed): array {
+    $sidPed = trim($sidPed);
+    if ($sidPed === '') return ['ok' => false, 'erro' => 'SidPed vazio.', 'resposta' => null];
+    if (!function_exists('curl_init')) return ['ok' => false, 'erro' => 'Extensão cURL indisponível no servidor.', 'resposta' => null];
+
+    $chamar = function (string $path, ?array $postFields) {
+        $ch = curl_init(AEM_URL . $path);
+        $opts = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_USERAGENT      => 'Mozilla/5.0',
+        ];
+        if ($postFields !== null) {
+            $opts[CURLOPT_POST]       = true;
+            $opts[CURLOPT_POSTFIELDS] = http_build_query($postFields);
+        }
+        curl_setopt_array($ch, $opts);
+        $resp = curl_exec($ch);
+        curl_close($ch);
+        return $resp === false ? '' : $resp;
+    };
+
+    $loginHtml = $chamar('/cgi-bin/ITF/ITF.EXE', [
+        'SubMenu' => 'FROTA', 'TxtLgloginUsuario' => AEM_LOGIN, 'PwdLgloginSenha' => AEM_SENHA,
+    ]);
+    if (!preg_match('/LNKTRANSPORTE=([0-9A-Za-z]+)/', $loginHtml, $m)) {
+        return ['ok' => false, 'erro' => 'Não foi possível autenticar no sistema A&M.', 'resposta' => null];
+    }
+    $token = $m[1];
+
+    $chamar('/cgi-bin/ITF/LOGIN.EXE',  ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0277']);
+    $chamar('/cgi-bin/ITF/PD0506.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+    $gridHtml = $chamar('/cgi-bin/ITF/PD050P.EXE', [
+        'LNKTRANSPORTE' => $token,
+        'TxtPedido'     => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '',
+        'TxtDataInicio' => date('01/01/Y'), 'TxtDataFim' => date('31/12/Y'),
+        'TxtDatPix'     => date('01/m/Y', strtotime('first day of next month')),
+    ]);
+    if ($gridHtml === '') return ['ok' => false, 'erro' => 'Falha ao abrir a tela de pedidos aguardando liberação no A&M.', 'resposta' => null];
+    $gridHtml = @mb_convert_encoding($gridHtml, 'UTF-8', 'ISO-8859-1') ?: $gridHtml;
+
+    // LNKTRANSPORTE "longo" embutido no JS da própria tela (diferente do token curto do login) —
+    // os endpoints de ação (PD0509.EXE) exigem exatamente esse valor.
+    if (!preg_match('/function\s+libera\(ky,opc,obj\)\s*\{\s*\$\.post\("\/cgi-bin\/ITF\/PD0509\.EXE",\{\s*LNKTRANSPORTE:\s*"([^"]*)"/s', $gridHtml, $mlt)) {
+        return ['ok' => false, 'erro' => 'Não foi possível localizar o token de sessão da tela de liberação no A&M (layout da tela pode ter mudado).', 'resposta' => null];
+    }
+    $longToken = $mlt[1];
+
+    $areaPedido = '';
+    if (preg_match('/id=AreaPedido[^>]*>([^<]*)</i', $gridHtml, $map)) $areaPedido = html_entity_decode($map[1], ENT_QUOTES, 'UTF-8');
+
+    // Confere que o SidPed realmente está no grid atual antes de liberar.
+    if (strpos($gridHtml, "libera('" . $sidPed . "'") === false) {
+        return ['ok' => false, 'erro' => 'Pedido não encontrado na tela de "Aguardando liberação" do A&M no momento (já liberado, cancelado, ou fora do período padrão da tela).', 'resposta' => null];
+    }
+
+    $resp = $chamar('/cgi-bin/ITF/PD0509.EXE', [
+        'LNKTRANSPORTE' => $longToken, 'SubKey' => $sidPed, 'SubOpcao' => 'individual',
+        'AreaPedido' => $areaPedido, 'AreaTexto' => '',
+    ]);
+    if ($resp === '') return ['ok' => false, 'erro' => 'Sem resposta do A&M ao liberar o pedido.', 'resposta' => null];
+    $resp = @mb_convert_encoding($resp, 'UTF-8', 'ISO-8859-1') ?: $resp;
+
+    return ['ok' => true, 'erro' => null, 'resposta' => $resp];
 }
 
 /**

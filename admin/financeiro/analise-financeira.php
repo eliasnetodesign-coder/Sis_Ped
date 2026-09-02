@@ -14,6 +14,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar_
     exit;
 }
 
+// ── Liberar pedidos selecionados no A&M (GRAVA de verdade lá — ver liberarPedidoAEM()) ────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'liberar_pedidos') {
+    header('Content-Type: application/json');
+    $codigo = trim($_POST['codigo'] ?? '');
+    $itens  = is_array($_POST['itens'] ?? null) ? $_POST['itens'] : [];
+    $insLog = db()->prepare('INSERT INTO liberacoes_am_logs (sid_ped,numero_pedido,codigo_cliente,usuario_id,usuario_nome,status,resposta) VALUES (?,?,?,?,?,?,?)');
+    $resultados = [];
+    foreach ($itens as $it) {
+        $sidped = trim($it['sidped'] ?? '');
+        $numero = trim($it['numero'] ?? '');
+        $tipo   = strtoupper(trim($it['tipo'] ?? ''));
+        $avista = !empty($it['avista']);
+        if ($sidped === '') continue;
+        // À vista não libera por aqui, exceto pedido de Bonificação (tipo B) — sempre pode.
+        if ($avista && $tipo !== 'B') {
+            $insLog->execute([$sidped, $numero, $codigo, $u['id'], $u['nome'], 'pulado_avista', 'Pedido à vista — liberação por aqui não permitida (por enquanto).']);
+            $resultados[] = ['sidped' => $sidped, 'numero' => $numero, 'status' => 'pulado_avista'];
+            continue;
+        }
+        $r = liberarPedidoAEM($sidped);
+        $insLog->execute([$sidped, $numero, $codigo, $u['id'], $u['nome'], $r['ok'] ? 'liberado' : 'erro', $r['ok'] ? $r['resposta'] : $r['erro']]);
+        $resultados[] = ['sidped' => $sidped, 'numero' => $numero, 'status' => $r['ok'] ? 'liberado' : 'erro', 'erro' => $r['erro']];
+    }
+    echo json_encode(['ok' => true, 'resultados' => $resultados]);
+    exit;
+}
+
 // ── Consulta sob demanda ao sistema A&M (não grava nada) ─────────────────────
 $resultado = null;
 $erro      = null;
@@ -29,6 +56,7 @@ if (($_GET['acao'] ?? '') === 'buscar') {
 }
 
 $stTab = stEstadosTabela();
+$logLiberacoes = db()->query('SELECT * FROM liberacoes_am_logs ORDER BY created_at DESC LIMIT 300')->fetchAll();
 
 $fmtVal = function ($txt) {
     $txt = trim((string)$txt);
@@ -70,6 +98,12 @@ require_once LAYOUT_PATH . '/header.php';
                 <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#mdlST">
                     <i class="bi bi-table me-1"></i>Tabela de ST por estado
                 </button>
+                <a href="<?= BASE_URL ?>/admin/financeiro/campanhas-am.php" class="btn btn-outline-secondary">
+                    <i class="bi bi-megaphone me-1"></i>Campanhas
+                </a>
+                <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#mdlLogLiberacoes">
+                    <i class="bi bi-journal-text me-1"></i>Log de Liberações
+                </button>
             </div>
         </form>
         <div class="text-muted small mt-2" id="aguarde" style="display:none">
@@ -108,7 +142,7 @@ require_once LAYOUT_PATH . '/header.php';
     <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
         <button type="button" class="btn btn-sm btn-outline-primary" onclick="selTodos(true)">Marcar todos</button>
         <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selTodos(false)">Limpar seleção</button>
-        <span class="text-muted small ms-2">Pré-marcados os pedidos que atendem aos 4 requisitos (1 sem atraso · 2 dentro do limite/à vista · 3 % Descto ST ≤ tabela · 4 sem desconto diretoria).</span>
+        <span class="text-muted small ms-2">Pré-marcados os pedidos que atendem aos 4 requisitos (1 sem atraso · 2 dentro do limite/à vista · 3 % Descto ST ≤ tabela · 4 sem desconto fora de campanha).</span>
     </div>
 
     <!-- Detalhe por código -->
@@ -126,9 +160,19 @@ require_once LAYOUT_PATH . '/header.php';
                     <div class="col-md-3"><span class="text-muted">Cód. Distribuidor:</span> <b><?= e($a['codigo_distribuidor']) ?></b></div>
                     <div class="col-md-5"><span class="text-muted">Distribuidor (Conta Corrente):</span> <b><?= e($a['distribuidor_cc'] ?: '—') ?></b></div>
                     <div class="col-md-4"><span class="text-muted">Canal de Venda:</span> <b><?= e($a['canal_venda'] ?: '—') ?></b></div>
+                    <div class="col-md-4"><span class="text-muted">Supervisor:</span> <b><?= e($a['supervisor'] ?: '—') ?></b></div>
+                    <div class="col-md-4"><span class="text-muted">Segmento:</span> <b><?= e($a['segmento'] ?: '—') ?></b></div>
                     <div class="col-md-6"><span class="text-muted">Pedido Accademia (Cadastro de Distribuidores):</span>
                         <b><?= $a['accademia_cadastro'] === null ? 'não localizado' : e($a['accademia_cadastro']) ?></b>
                         <span class="text-muted">→ ST pela coluna <b><?= $a['com_academia'] ? 'c/ Academia' : 's/ Academia' ?></b></span>
+                    </div>
+                    <div class="col-md-6">
+                        <?php if (!empty($a['instrucoes'])): $ultInstr = $a['instrucoes'][0]; ?>
+                            <span class="text-muted"><i class="bi bi-chat-left-text me-1"></i>Última Instrução (<?= e($ultInstr['data']) ?> — <?= e($ultInstr['usuario']) ?>):</span>
+                            <b><?= e($ultInstr['texto']) ?></b>
+                        <?php else: ?>
+                            <span class="text-muted small"><i class="bi bi-chat-left-text me-1"></i>Sem instruções cadastradas.</span>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -154,9 +198,22 @@ require_once LAYOUT_PATH . '/header.php';
                         <?php foreach ($a['linhas'] as $l): $nid = e($a['codigo'] . '-' . $l['numero']); ?>
                             <tr>
                                 <td class="text-center">
-                                    <input type="checkbox" class="form-check-input sel-pedido" value="<?= $nid ?>" <?= !empty($l['conforme']) ? 'checked' : '' ?>>
+                                    <input type="checkbox" class="form-check-input sel-pedido" value="<?= $nid ?>"
+                                           data-sidped="<?= e($l['pedido_interno'] ?? '') ?>"
+                                           data-avista="<?= !empty($l['is_a_vista']) ? '1' : '0' ?>"
+                                           data-tipo="<?= e($l['tipo']) ?>"
+                                           data-numero="<?= e($l['numero']) ?>"
+                                           <?= !empty($l['conforme']) ? 'checked' : '' ?>>
                                 </td>
-                                <td class="fw-semibold"><?= e($l['numero']) ?></td>
+                                <td class="fw-semibold">
+                                    <?php if (!empty($l['itens_am'])): ?>
+                                        <button type="button" class="btn btn-link btn-sm p-0 fw-semibold" data-bs-toggle="modal" data-bs-target="#mdlPed-<?= $nid ?>" title="Ver detalhe do pedido">
+                                            <?= e($l['numero']) ?> <i class="bi bi-eye small"></i>
+                                        </button>
+                                    <?php else: ?>
+                                        <?= e($l['numero']) ?>
+                                    <?php endif; ?>
+                                </td>
                                 <td class="text-center">
                                     <span class="badge bg-<?= $l['tipo'] === 'V' ? 'primary' : 'warning text-dark' ?>"><?= e($l['tipo']) ?></span>
                                 </td>
@@ -174,6 +231,12 @@ require_once LAYOUT_PATH . '/header.php';
                         <?php endforeach; ?>
                         </tbody>
                     </table>
+                </div>
+                <div class="d-flex align-items-center gap-2 mb-3">
+                    <button type="button" class="btn btn-sm btn-success btn-liberar" data-codigo="<?= e($a['codigo']) ?>">
+                        <i class="bi bi-unlock me-1"></i>Liberar Selecionados
+                    </button>
+                    <span class="text-muted small">Libera no A&amp;M os pedidos marcados acima que <b>não</b> são à vista (por enquanto, à vista só libera por aqui se for Bonificação).</span>
                 </div>
 
                 <!-- Conferências da avaliação individual -->
@@ -197,16 +260,18 @@ require_once LAYOUT_PATH . '/header.php';
                             <table class="table table-sm mb-2">
                                 <tr><td>Limite de Crédito</td><td class="text-end"><?= $fmtVal($a['limite_txt']) ?></td></tr>
                                 <tr><td>Σ Tipo V que <u>não</u> é à vista <span class="text-muted">(aguardando)</span></td><td class="text-end"><?= moedaBR($a['soma_v_nao_avista']) ?></td></tr>
-                                <tr><td>+ Venda já faturada no mês <span class="text-muted">(Consulta/Reimprime, <?= (int)$a['faturado_mes_qtd'] ?> ped.)</span></td><td class="text-end"><?= moedaBR($a['faturado_mes']) ?></td></tr>
+                                <tr><td>+ Total Geral do cliente <span class="text-muted">(Pedidos + Cheques + Acordos + Cursos)</span></td><td class="text-end"><?= moedaBR($a['total_geral_cliente']) ?></td></tr>
                                 <tr class="fw-semibold border-top"><td>= Total a considerar</td><td class="text-end <?= $a['check_dentro_limite'] ? '' : 'text-danger' ?>"><?= moedaBR($a['check2_base']) ?></td></tr>
+                                <?php $limiteRestante = $a['limite_num'] - $a['check2_base']; ?>
+                                <tr class="fw-semibold"><td>Limite de Crédito − Total</td><td class="text-end <?= $limiteRestante >= 0 ? 'text-success' : 'text-danger' ?>"><?= moedaBR($limiteRestante) ?></td></tr>
                             </table>
                             <div class="small <?= $a['check_dentro_limite'] ? 'text-success' : 'text-danger' ?>">
-                                <?php if ($a['sem_financiar']): ?>Nada a considerar (pedidos V à vista/sem V e sem faturado no mês) — ok.
-                                <?php elseif ($a['check_dentro_limite']): ?>O total (aguardando + faturado no mês) cabe no limite.
+                                <?php if ($a['sem_financiar']): ?>Nada a considerar (pedidos V à vista/sem V e sem Total Geral) — ok.
+                                <?php elseif ($a['check_dentro_limite']): ?>O total (aguardando + Total Geral) cabe no limite.
                                 <?php elseif ($a['limite_num'] <= 0): ?>Limite de crédito não cadastrado.
                                 <?php else: ?>Excede o limite em <?= moedaBR($a['check2_base'] - $a['limite_num']) ?>.<?php endif; ?>
                             </div>
-                            <div class="small text-muted mt-1">Faturado somado no período <?= e($a['faturado_periodo'][0]) ?> a <?= e($a['faturado_periodo'][1]) ?> (tipo Venda, Situação “Faturado”).</div>
+                            <div class="small text-muted mt-1">"Total Geral" lido do painel da tela "Pedidos Aguardando liberação" (PD050P) do A&amp;M, filtrada pelo Codigo Distribuidor.</div>
                         </div>
                     </div>
                     <div class="col-md-6">
@@ -254,16 +319,47 @@ require_once LAYOUT_PATH . '/header.php';
                     <div class="col-md-6">
                         <div class="border rounded p-3 h-100">
                             <div class="fw-semibold mb-2">
-                                <?= $okIcon(!$a['tem_item_diretoria']) ?>
-                                4) Desconto Diretoria
+                                <?= $okIcon(!$a['tem_item_fora_campanha']) ?>
+                                4) Campanhas
                             </div>
-                            <?php if (!$a['tem_item_diretoria']): ?>
-                                <div class="small text-success">Nenhum produto com % Diretoria.</div>
+                            <?php if (!empty($a['campanhas_resumo'])):
+                                $numFmt = function ($v) { return rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ','); };
+                                $faixaLabel = function ($cr) use ($numFmt) {
+                                    if ($cr['faixa_min'] === null) return '—';
+                                    $fmt1 = $cr['criterio'] === 'valor' ? moedaBR($cr['faixa_min']) : $numFmt($cr['faixa_min']) . ' ' . $cr['unidade'];
+                                    if ($cr['faixa_max'] === null) return 'Acima de ' . $fmt1;
+                                    $fmt2 = $cr['criterio'] === 'valor' ? moedaBR($cr['faixa_max']) : $numFmt($cr['faixa_max']) . ' ' . $cr['unidade'];
+                                    return $fmt1 . ' a ' . $fmt2;
+                                };
+                            ?>
+                                <div class="small text-muted mb-1">Campanhas atingidas:</div>
+                                <div class="table-responsive">
+                                <table class="table table-sm mb-2">
+                                    <thead class="text-muted small"><tr><th class="fw-normal">Campanha</th><th class="text-end fw-normal">Atingido</th><th class="text-end fw-normal">Faixa</th><th class="text-end fw-normal">Benefício</th></tr></thead>
+                                    <tbody>
+                                    <?php foreach ($a['campanhas_resumo'] as $cr): ?>
+                                        <tr>
+                                            <td><?= e($cr['nome']) ?></td>
+                                            <td class="text-end">
+                                                <?= $cr['criterio'] === 'valor' ? moedaBR($cr['agregado']) : (int)$cr['agregado'] . ' ' . e($cr['unidade']) ?>
+                                            </td>
+                                            <td class="text-end text-muted small"><?= $faixaLabel($cr) ?></td>
+                                            <td class="text-end fw-semibold <?= $cr['percentual'] > 0 ? 'text-success' : 'text-muted' ?>"><?= $pct($cr['percentual']) ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                                </div>
+                            <?php endif; ?>
+                            <?php if (!$a['tem_item_fora_campanha']): ?>
+                                <div class="small <?= $a['campanhas_resumo'] ? 'text-success' : 'text-muted' ?>">
+                                    <?= $a['campanhas_resumo'] ? 'Descontos de campanha corretos.' : 'Nenhuma campanha aplicável nos pedidos.' ?>
+                                </div>
                             <?php else: ?>
-                                <div class="small text-danger mb-2">Pedidos com produtos que têm % Diretoria &gt; 0 (não atendem ao requisito) — clique para ver os produtos:</div>
-                                <?php foreach ($a['linhas'] as $l): $nid = e($a['codigo'] . '-' . $l['numero']); if (empty($l['tem_diretoria'])) continue; ?>
-                                    <button type="button" class="btn btn-sm btn-outline-danger py-0 me-1 mb-1" data-bs-toggle="modal" data-bs-target="#mdlDir-<?= $nid ?>">
-                                        <i class="bi bi-eye"></i> Pedido <?= e($l['numero']) ?> (<?= count($l['itens_diretoria']) ?> produto/s)
+                                <div class="small text-danger mb-2">Pedidos com desconto fora de campanha (não atendem ao requisito) — clique para ver os produtos:</div>
+                                <?php foreach ($a['linhas'] as $l): $nid = e($a['codigo'] . '-' . $l['numero']); if (!empty($l['check_campanha'])) continue; ?>
+                                    <button type="button" class="btn btn-sm btn-outline-danger py-0 me-1 mb-1" data-bs-toggle="modal" data-bs-target="#mdlCamp-<?= $nid ?>">
+                                        <i class="bi bi-eye"></i> Pedido <?= e($l['numero']) ?><?php if (!empty($l['itens_fora_campanha'])): ?> (<?= count($l['itens_fora_campanha']) ?> produto/s)<?php endif; ?>
                                     </button>
                                 <?php endforeach; ?>
                             <?php endif; ?>
@@ -275,25 +371,44 @@ require_once LAYOUT_PATH . '/header.php';
 
         <!-- Modais de produtos com desconto (por pedido) -->
         <?php foreach ($a['linhas'] as $l): $nid = e($a['codigo'] . '-' . $l['numero']); ?>
-            <?php if (!empty($l['tem_diretoria'])): ?>
-            <div class="modal fade" id="mdlDir-<?= $nid ?>" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
+            <?php if (!empty($l['itens_am'])): ?>
+            <div class="modal fade" id="mdlPed-<?= $nid ?>" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title fw-bold">Pedido <?= e($l['numero']) ?> — produtos com % Diretoria &gt; 0</h5>
+                    <h5 class="modal-title fw-bold">Pedido <?= e($l['numero']) ?> — detalhe (sistema A&amp;M)</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="modal-body p-0"><div class="table-responsive">
-                    <table class="table table-sm mb-0">
-                        <thead class="table-light"><tr><th>Código</th><th>Produto</th><th class="text-end">Qtd</th><th class="text-end">% Descto</th><th class="text-end">% Diretoria</th></tr></thead>
-                        <tbody>
-                        <?php foreach ($l['itens_diretoria'] as $it): ?>
-                            <tr><td><?= e($it['codigo']) ?></td><td><?= e($it['nome']) ?></td>
-                                <td class="text-end"><?= (int)$it['qtd'] ?></td>
-                                <td class="text-end"><?= $pct($it['pct_descto']) ?></td>
-                                <td class="text-end fw-semibold text-danger"><?= $pct($it['pct_diretoria']) ?></td></tr>
-                        <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div></div>
+                <div class="modal-body">
+                    <div class="d-flex flex-wrap gap-3 mb-3 small">
+                        <span><strong>Data:</strong> <?= e($l['data']) ?></span>
+                        <span><strong>Tipo:</strong> <?= $l['tipo'] === 'V' ? 'Venda' : 'Bonificação' ?></span>
+                        <span><strong>Valor:</strong> <?= e($l['valor']) ?></span>
+                        <span><strong>UF:</strong> <?= e($l['uf'] ?: '—') ?></span>
+                        <span><strong>Forma Pagto:</strong> <?= e($l['forma'] ?: '—') ?></span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr><th>Código</th><th>Produto</th><th class="text-end">Qtd</th>
+                                    <th class="text-end">% Descto</th><th class="text-end">% Descto ST</th>
+                                    <th class="text-end">% Negociação</th><th class="text-end">% Diretoria</th>
+                                    <th class="text-end">Valor Total</th></tr>
+                            </thead>
+                            <tbody>
+                            <?php foreach ($l['itens_am'] as $it): ?>
+                                <tr>
+                                    <td><?= e($it['codigo']) ?></td><td><?= e($it['nome']) ?></td>
+                                    <td class="text-end"><?= (int)$it['qtd'] ?></td>
+                                    <td class="text-end"><?= $pct($it['pct_descto']) ?></td>
+                                    <td class="text-end"><?= $pct($it['pct_descto_st']) ?></td>
+                                    <td class="text-end"><?= $pct($it['pct_negociacao']) ?></td>
+                                    <td class="text-end <?= $it['pct_diretoria'] > 0.005 ? 'fw-semibold text-danger' : '' ?>"><?= $pct($it['pct_diretoria']) ?></td>
+                                    <td class="text-end"><?= moedaBR($it['valor_total']) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div></div></div>
             <?php endif; ?>
             <?php if (!empty($l['tem_descto_st'])): ?>
@@ -315,6 +430,85 @@ require_once LAYOUT_PATH . '/header.php';
                         </tbody>
                     </table>
                 </div></div>
+            </div></div></div>
+            <?php endif; ?>
+            <?php if (!empty($l['tem_item_fora_campanha']) || !empty($l['campanhas_atingidas']) || !empty($l['bonificacoes_campanha'])): ?>
+            <div class="modal fade" id="mdlCamp-<?= $nid ?>" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold">Pedido <?= e($l['numero']) ?> — Campanhas</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <?php if (empty($l['eh_bf'])): ?>
+                        <div class="small text-muted mb-2">
+                            <i class="bi bi-info-circle me-1"></i>Obs deste pedido (Consulta/Reimprime) <?= $l['obs'] ? ('é "' . e($l['obs']) . '"') : 'está vazio' ?> — não começa com "BF", então nenhuma campanha se aplica.
+                        </div>
+                    <?php endif; ?>
+                    <?php if (!empty($l['itens_fora_campanha'])): ?>
+                        <div class="fw-semibold text-danger mb-2"><i class="bi bi-exclamation-triangle-fill me-1"></i>Desconto fora de campanha</div>
+                        <div class="table-responsive mb-3">
+                            <table class="table table-sm mb-0">
+                                <thead class="table-light"><tr><th>Código</th><th>Produto</th><th class="text-end">Qtd</th><th class="text-end">% Diretoria</th><th class="text-end">Esperado</th><th>Motivo</th></tr></thead>
+                                <tbody>
+                                <?php foreach ($l['itens_fora_campanha'] as $it): ?>
+                                    <tr class="table-danger">
+                                        <td><?= e($it['codigo']) ?></td><td><?= e($it['nome']) ?></td>
+                                        <td class="text-end"><?= (int)$it['qtd'] ?></td>
+                                        <td class="text-end fw-semibold text-danger"><?= $pct($it['pct_diretoria']) ?></td>
+                                        <td class="text-end"><?= $pct($it['percentual_esperado']) ?></td>
+                                        <td class="small"><?php
+                                            if ($it['motivo'] === 'sem_bf') echo 'Pedido sem "BF" no Obs — nenhuma campanha se aplica';
+                                            elseif ($it['motivo'] === 'sem_campanha') echo 'Produto não pertence a nenhuma campanha';
+                                            else echo 'Acima da faixa de ' . e($it['campanha_nome']);
+                                        ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($l['campanhas_atingidas'])): ?>
+                        <div class="fw-semibold mb-2"><i class="bi bi-check-circle text-success me-1"></i>Campanhas atingidas neste pedido</div>
+                        <div class="table-responsive mb-3">
+                            <table class="table table-sm mb-0">
+                                <thead class="table-light"><tr><th>Campanha</th><th>Critério</th><th class="text-end">Atingido</th><th class="text-end">% Diretoria esperado</th><th class="text-end">Itens</th></tr></thead>
+                                <tbody>
+                                <?php foreach ($l['campanhas_atingidas'] as $ca): ?>
+                                    <tr>
+                                        <td><?= e($ca['nome']) ?></td>
+                                        <td><?= $ca['criterio'] === 'valor' ? 'Valor' : 'Quantidade' ?></td>
+                                        <td class="text-end"><?= $ca['criterio'] === 'valor' ? moedaBR($ca['agregado']) : (int)$ca['agregado'] ?> <span class="text-muted small"><?= e($ca['unidade']) ?></span></td>
+                                        <td class="text-end fw-semibold <?= $ca['percentual_esperado'] > 0 ? 'text-success' : 'text-muted' ?>"><?= $pct($ca['percentual_esperado']) ?></td>
+                                        <td class="text-end"><?= count($ca['itens']) ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($l['bonificacoes_campanha'])): ?>
+                        <div class="fw-semibold mb-2"><i class="bi bi-gift me-1"></i>Bonificação</div>
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0">
+                                <thead class="table-light"><tr><th>Campanha</th><th class="text-end">Comprado</th><th>Produto bônus</th><th class="text-end">Esperado</th><th class="text-end">Encontrado</th><th class="text-center">OK</th></tr></thead>
+                                <tbody>
+                                <?php foreach ($l['bonificacoes_campanha'] as $b): ?>
+                                    <tr class="<?= $b['ok'] ? '' : 'table-danger' ?>">
+                                        <td><?= e($b['nome']) ?></td>
+                                        <td class="text-end"><?= (int)$b['qtd_trigger'] ?></td>
+                                        <td><?= e($b['produto_bonus_codigo']) ?> — <?= e($b['produto_bonus_nome']) ?></td>
+                                        <td class="text-end"><?= (int)$b['qtd_bonus_esperada'] ?></td>
+                                        <td class="text-end"><?= (int)$b['qtd_bonus_encontrada'] ?></td>
+                                        <td class="text-center"><?= $okIcon($b['ok']) ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+                </div>
             </div></div></div>
             <?php endif; ?>
         <?php endforeach; ?>
@@ -364,6 +558,47 @@ require_once LAYOUT_PATH . '/header.php';
     </form>
 </div></div>
 
+<!-- Modal: Log de Liberações (pedidos liberados no A&M pelo SisPed) -->
+<div class="modal fade" id="mdlLogLiberacoes" tabindex="-1"><div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h5 class="modal-title fw-bold"><i class="bi bi-journal-text me-2"></i>Log de Liberações</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-muted small">Últimas <?= count($logLiberacoes) ?> liberações tentadas pelo SisPed no sistema A&amp;M (mais recentes primeiro).</p>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light" style="position:sticky;top:0">
+                        <tr><th>Data/Hora</th><th>Pedido</th><th>Código</th><th>Usuário</th><th>Status</th><th>Resposta / Erro</th></tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($logLiberacoes as $lg):
+                        $badge = ['liberado' => 'success', 'erro' => 'danger', 'pulado_avista' => 'secondary'][$lg['status']] ?? 'secondary';
+                        $label = ['liberado' => 'Liberado', 'erro' => 'Erro', 'pulado_avista' => 'Pulado (à vista)'][$lg['status']] ?? $lg['status'];
+                    ?>
+                        <tr>
+                            <td class="small text-nowrap"><?= e(date('d/m/Y H:i', strtotime($lg['created_at']))) ?></td>
+                            <td><?= e($lg['numero_pedido'] ?: '—') ?><br><span class="text-muted small">SidPed <?= e($lg['sid_ped']) ?></span></td>
+                            <td><?= e($lg['codigo_cliente'] ?: '—') ?></td>
+                            <td class="small"><?= e($lg['usuario_nome'] ?: '—') ?></td>
+                            <td><span class="badge bg-<?= $badge ?>"><?= e($label) ?></span></td>
+                            <td class="small" style="max-width:340px;overflow:auto"><?= e(mb_strimwidth(strip_tags((string)$lg['resposta']), 0, 300, '…')) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    <?php if (!$logLiberacoes): ?>
+                        <tr><td colspan="6" class="text-center text-muted py-4">Nenhuma liberação registrada ainda.</td></tr>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Fechar</button>
+        </div>
+    </div>
+</div></div>
+
 <script>
 document.getElementById('frmBusca').addEventListener('submit', function () {
     var b = document.getElementById('btnBuscar');
@@ -382,6 +617,75 @@ function selTodos(v) {
 }
 document.addEventListener('change', function (e) {
     if (e.target && e.target.classList.contains('sel-pedido')) atualizaContagem();
+});
+
+document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.btn-liberar');
+    if (!btn) return;
+    var codigo = btn.dataset.codigo;
+    var card = document.getElementById('cod-' + codigo);
+    if (!card) return;
+
+    var itens = [];
+    var puladosAvista = 0;
+    card.querySelectorAll('.sel-pedido:checked').forEach(function (c) {
+        // À vista não libera por aqui, exceto pedido de Bonificação (tipo B) — sempre pode.
+        if (c.dataset.avista === '1' && c.dataset.tipo !== 'B') { puladosAvista++; return; }
+        itens.push({ sidped: c.dataset.sidped, numero: c.dataset.numero, tipo: c.dataset.tipo, avista: c.dataset.avista });
+    });
+    if (itens.length === 0) {
+        alert(puladosAvista > 0
+            ? 'Os pedidos marcados são todos à vista — por enquanto não são liberados por aqui.'
+            : 'Marque ao menos um pedido para liberar.');
+        return;
+    }
+    var msg = 'Confirma a liberação de ' + itens.length + ' pedido(s) no sistema A&M?\n\n'
+        + itens.map(function (i) { return '- ' + i.numero; }).join('\n')
+        + (puladosAvista > 0 ? '\n\n(' + puladosAvista + ' pedido(s) à vista marcado(s) serão ignorados.)' : '');
+    if (!confirm(msg)) return;
+
+    var orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Liberando...';
+
+    var fd = new FormData();
+    fd.append('acao', 'liberar_pedidos');
+    fd.append('codigo', codigo);
+    itens.forEach(function (i, idx) {
+        fd.append('itens[' + idx + '][sidped]', i.sidped);
+        fd.append('itens[' + idx + '][numero]', i.numero);
+        fd.append('itens[' + idx + '][tipo]', i.tipo || '');
+        fd.append('itens[' + idx + '][avista]', i.avista === '1' ? '1' : '0');
+    });
+
+    fetch(window.location.pathname + window.location.search, { method: 'POST', body: fd })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            var res = data.resultados || [];
+            var okCount  = res.filter(function (r) { return r.status === 'liberado'; }).length;
+            var errCount = res.filter(function (r) { return r.status === 'erro'; }).length;
+            var texto = okCount + ' pedido(s) liberado(s) com sucesso.';
+            if (errCount > 0) texto += ' ' + errCount + ' com erro — confira no "Log de Liberações".';
+            alert(texto);
+
+            // Tira da página os pedidos já liberados com sucesso, pra não correr o risco de
+            // alguém clicar "Liberar" de novo em cima do mesmo pedido.
+            res.forEach(function (r) {
+                if (r.status !== 'liberado') return;
+                var chk = card.querySelector('.sel-pedido[data-sidped="' + r.sidped + '"]');
+                var row = chk ? chk.closest('tr') : null;
+                if (row) row.remove();
+            });
+            atualizaContagem();
+
+            btn.disabled = false;
+            btn.innerHTML = orig;
+        })
+        .catch(function () {
+            alert('Erro de comunicação ao tentar liberar. Confira o "Log de Liberações" antes de tentar de novo.');
+            btn.disabled = false;
+            btn.innerHTML = orig;
+        });
 });
 </script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>
