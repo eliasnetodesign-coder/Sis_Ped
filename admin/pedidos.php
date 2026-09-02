@@ -69,7 +69,7 @@ if (isset($_GET['ajax_aem_preview'])) {
         ];
     }
 
-    echo json_encode([
+    $resp = [
         'ok'            => true,
         'numero'        => $r['numero'],
         'pedidoInterno' => $r['pedidoInterno'],
@@ -85,7 +85,48 @@ if (isset($_GET['ajax_aem_preview'])) {
         'pedidoAccademia' => $r['pedidoAccademia'],
         'creditoUtilizado' => $r['creditoUtilizadoAEM'],
         'itens'         => $itens,
-    ]);
+    ];
+
+    // "Importa Pedido BF" (&bf=1): confere o Obs do pedido e, quando começa com "BF",
+    // roda a análise de campanha (campanhasAmAvaliarPedido) para trazer, por item, o
+    // %Diretoria esperado pela faixa de campanha atingida.
+    if (($_GET['bf'] ?? '') === '1') {
+        $resp['ehBf'] = !empty($r['ehBf']);
+        $resp['obs']  = $r['obs'] ?? '';
+        $campItens = [];
+        foreach ($r['itens'] as $it) {
+            $campItens[] = [
+                'codigo'      => $it['codigoAEM'],
+                'nome'        => $it['nomeProduto'],
+                'qtd'         => $it['qtd'],
+                'pct_diretoria' => $it['descDiretoria'] ?? 0,
+                'valor_total' => $it['valorTotal'] ?? 0,
+            ];
+        }
+        $av = $resp['ehBf'] ? campanhasAmAvaliarPedido($campItens) : null;
+        $expByCod = [];
+        if ($av) {
+            foreach ($av['campanhas_atingidas'] as $ca) {
+                foreach ($ca['itens'] as $ci) $expByCod[$ci['codigo']] = (float)$ca['percentual_esperado'];
+            }
+        }
+        foreach ($resp['itens'] as &$ri) {
+            $ri['pctDiretoriaCampanha'] = $resp['ehBf'] ? (float)($expByCod[$ri['codigoAEM']] ?? 0) : null;
+        }
+        unset($ri);
+        $resp['campanhasAtingidas'] = $av ? array_map(function ($ca) {
+            return [
+                'nome'              => $ca['nome'],
+                'criterio'          => $ca['criterio'],
+                'unidade'           => $ca['unidade'],
+                'agregado'          => $ca['agregado'],
+                'percentualEsperado' => $ca['percentual_esperado'],
+            ];
+        }, $av['campanhas_atingidas']) : [];
+        $resp['temForaCampanha'] = $av ? $av['tem_item_fora_campanha'] : false;
+    }
+
+    echo json_encode($resp);
     exit;
 }
 
@@ -134,6 +175,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         $colPreco = colPrecoMoeda($moedaCliente, $r['tipoVenda'] === 'bonificacao');
         $competencia = date('Y-m-01');
 
+        // "Importa Pedido BF": quando marcado e o pedido tem "BF" no Obs, substitui o
+        // %Diretoria de cada item pelo percentual da faixa de campanha atingida
+        // (campanhasAmAvaliarPedido — mesma regra do módulo Análise Financeira).
+        // Item que não pertence a nenhuma campanha atingida fica com 0.
+        $bfOverrides = null;
+        if (($_POST['modo_bf'] ?? '') === '1' && ($_POST['aplicar_campanha'] ?? '') === '1' && !empty($r['ehBf'])) {
+            $campItens = [];
+            foreach ($r['itens'] as $it) {
+                $campItens[] = [
+                    'codigo'        => $it['codigoAEM'],
+                    'nome'          => $it['nomeProduto'],
+                    'qtd'           => $it['qtd'],
+                    'pct_diretoria' => $it['descDiretoria'] ?? 0,
+                    'valor_total'   => $it['valorTotal'] ?? 0,
+                ];
+            }
+            $av = campanhasAmAvaliarPedido($campItens);
+            $bfOverrides = [];
+            foreach ($av['campanhas_atingidas'] as $ca) {
+                foreach ($ca['itens'] as $ci) $bfOverrides[$ci['codigo']] = (float)$ca['percentual_esperado'];
+            }
+        }
+
         $itens = [];
         $naoMapeados = [];
         $semValor = [];
@@ -159,10 +223,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
                 $semCusto[] = $it['codigoAEM'] . ' - ' . $prod['descricao_pt'];
             }
 
+            $descDiretoria = $it['descDiretoria'] ?? 0;
+            if ($bfOverrides !== null) {
+                $descDiretoria = $bfOverrides[$it['codigoAEM']] ?? 0.0;
+            }
             $itens[] = [
                 'produto_id' => (int)$prod['id'], 'qtd' => $it['qtd'],
                 'desconto_comercial' => $it['descComercial'] ?? 0,
-                'desconto_diretoria' => $it['descDiretoria'] ?? 0,
+                'desconto_diretoria' => $descDiretoria,
             ];
         }
         if ($naoMapeados) throw new Exception('Produto(s) não encontrado(s) no SisPed pelo Código A&M: ' . implode('; ', $naoMapeados));
@@ -192,7 +260,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             $creditoMsg = ' Crédito de ' . number_format($r['creditoUtilizadoAEM'], 2, ',', '.') . ' importado do A&M e registrado em Concessão de Créditos.';
         }
 
-        flash('success', 'Pedido ' . $res['numero_pedido'] . ' importado do A&M com ' . $res['criados'] . ' item(ns)!' . $creditoMsg);
+        $bfMsg = $bfOverrides !== null ? ' Descontos de campanha (BF) aplicados no % Diretoria dos itens.' : '';
+
+        // "Importa Pedido BF" com "Gravar no A&M": aplica o % Diretoria da campanha nos itens
+        // do próprio pedido no A&M (Consulta/Reimprime > Altera > aba Itens > Validar > Conclui).
+        $amMsg = '';
+        if ($bfOverrides !== null && ($_POST['gravar_am'] ?? '') === '1') {
+            $pctPorCodigo = [];
+            foreach ($r['itens'] as $it) $pctPorCodigo[$it['codigoAEM']] = $bfOverrides[$it['codigoAEM']] ?? 0.0;
+            $am = aplicarDescontoDiretoriaAEM($_POST['numero'] ?? '', $pctPorCodigo, true);
+            try {
+                db()->prepare('INSERT INTO descontos_diretoria_am_logs (numero_pedido,sid_ped,pedido_interno,pedido_sisped,usuario_id,usuario_nome,itens,status,mensagem,resposta) VALUES (?,?,?,?,?,?,?,?,?,?)')
+                    ->execute([
+                        preg_replace('/\D/', '', (string)($_POST['numero'] ?? '')), $am['sid_ped'] ?? null, $am['pedido_interno'] ?? null,
+                        $res['primeiro_id'], $u['id'], $u['nome'],
+                        json_encode($am['itens'] ?? [], JSON_UNESCAPED_UNICODE), $am['status'] ?? 'erro',
+                        $am['erro'] ?: ($am['validacao'] ?? null), mb_substr((string)($am['resposta'] ?? ''), 0, 60000),
+                    ]);
+            } catch (Exception $eLog) { /* log é best-effort */ }
+            $amMsg = $am['ok']
+                ? ' % Diretoria gravado no pedido do A&M' . (!empty($am['concluido']) ? ' e "Conclui Pedido" executado.' : ' (sem concluir — conferir no A&M).')
+                : ' ATENÇÃO: não foi possível gravar o % Diretoria no A&M — ' . ($am['erro'] ?: 'ver Log de descontos') . '. O pedido no SisPed foi criado normalmente.';
+        }
+
+        flash('success', 'Pedido ' . $res['numero_pedido'] . ' importado do A&M com ' . $res['criados'] . ' item(ns)!' . $creditoMsg . $bfMsg . $amMsg);
         header('Location: ' . BASE_URL . '/admin/pedido.php?id=' . $res['primeiro_id']);
         exit;
     } catch (Exception $e) {
@@ -391,9 +482,14 @@ require_once LAYOUT_PATH . '/header.php';
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
     <h4 class="fw-bold mb-0"><i class="bi bi-list-check me-2"></i>Pedidos</h4>
     <?php if ($isComercial): ?>
-    <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalImportaAEM">
-        <i class="bi bi-cloud-download me-1"></i>Importa Pedido
-    </button>
+    <div class="d-flex flex-wrap gap-2">
+        <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalImportaAEM">
+            <i class="bi bi-cloud-download me-1"></i>Importa Pedido
+        </button>
+        <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalImportaAEMBF">
+            <i class="bi bi-tags me-1"></i>Importa Pedido BF
+        </button>
+    </div>
     <?php endif; ?>
 </div>
 
@@ -771,6 +867,52 @@ $cardDefs = [
     </form>
 </div>
 
+<!-- Modal: Importa Pedido BF (mesma importação do A&M + descontos de campanha "BF") -->
+<div class="modal fade" id="modalImportaAEMBF" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold"><i class="bi bi-tags me-2 text-primary"></i>Importa Pedido BF</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 align-items-end mb-3">
+                    <div class="col">
+                        <label class="form-label fw-semibold">Número do Pedido</label>
+                        <input type="text" id="aembfNumero" class="form-control" maxlength="6"
+                               placeholder="Número do pedido lançado no sistema A&amp;M" inputmode="numeric">
+                    </div>
+                    <div class="col-auto">
+                        <button type="button" class="btn btn-primary" id="aembfBuscarBtn">
+                            <i class="bi bi-search me-1"></i>Buscar
+                        </button>
+                    </div>
+                </div>
+                <p class="text-muted small mb-2">
+                    Confere o campo <strong>Obs</strong> do pedido no A&amp;M — se começar com <strong>“BF”</strong>,
+                    verifica quais campanhas se aplicam e permite gravar o <strong>% Diretoria</strong> de cada item
+                    pela faixa de campanha atingida.
+                </p>
+                <div id="aembfResultado"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                <button type="button" class="btn btn-success" id="aembfConfirmarBtn" disabled>
+                    <i class="bi bi-check2-circle me-1"></i>Confirmar Importação
+                </button>
+            </div>
+        </div>
+    </div>
+    <form method="POST" action="<?= BASE_URL ?>/admin/pedidos.php" id="aembfForm" style="display:none">
+        <input type="hidden" name="action" value="importar_aem">
+        <input type="hidden" name="modo_bf" value="1">
+        <input type="hidden" name="aplicar_campanha" id="aembfFormAplicar" value="0">
+        <input type="hidden" name="gravar_am" id="aembfFormGravarAm" value="0">
+        <input type="hidden" name="numero" id="aembfFormNumero">
+        <input type="hidden" name="cliente_id" id="aembfFormClienteId">
+    </form>
+</div>
+
 <script>
 (function() {
     function campo(label, valor, wide) {
@@ -983,6 +1125,206 @@ $cardDefs = [
         document.getElementById('aemResultado').innerHTML = '';
         document.getElementById('aemConfirmarBtn').disabled = true;
         itensAtual = []; clienteIdAtual = null;
+    });
+})();
+</script>
+
+<script>
+// "Importa Pedido BF": mesma importação do A&M, mas confere o Obs do pedido ("BF") e
+// permite gravar o % Diretoria de cada item pela faixa de campanha atingida.
+(function() {
+    var CLIENTES_IMPORT = <?= json_encode(array_map(function ($c) {
+        return ['id' => (int)$c['id'], 'label' => '[' . $c['codigo_cliente'] . '] ' . $c['razao_social']];
+    }, $clientesParaImport)) ?>;
+    var bfItens = [];
+    var bfClienteId = null;
+    var bfData = null;
+    var bfAplicar = false;
+
+    function escapeHtml(s) {
+        return (s === null || s === undefined ? '' : String(s)).replace(/[&<>"']/g, function(c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+        });
+    }
+    function pctBR(v) {
+        if (v === null || v === undefined) return '—';
+        return (Math.round(parseFloat(v) * 100) / 100).toLocaleString('pt-BR') + '%';
+    }
+    function temProblema(it) {
+        return !it.produtoId || it.temValor === false || it.temCusto === false;
+    }
+    function atualizarConfirmar() {
+        var algum = bfItens.some(temProblema);
+        document.getElementById('aembfConfirmarBtn').disabled = !bfClienteId || algum || bfItens.length === 0;
+    }
+
+    function render(d) {
+        var el = document.getElementById('aembfResultado');
+        if (!d.ok) {
+            el.innerHTML = '<div class="alert alert-danger">' + escapeHtml(d.erro || 'Erro ao buscar pedido.') + '</div>';
+            bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false;
+            document.getElementById('aembfConfirmarBtn').disabled = true;
+            return;
+        }
+        bfData = d;
+        bfItens = d.itens;
+        bfClienteId = d.clienteId;
+
+        var canalAEM = d.pedidoAccademia === 'SIM' ? 'Distribuidor' : (d.pedidoAccademia === 'NAO' ? 'Varejo' : '—');
+        var html = '<div class="mb-3">';
+        html += '<div class="small text-muted">Pedido Interno A&amp;M: <strong>' + escapeHtml(d.pedidoInterno || '—')
+              + '</strong> &middot; Tipo: <strong>' + (d.tipoVenda === 'bonificacao' ? 'Bonificação' : 'Venda')
+              + '</strong> &middot; Forma Pagto: <strong>' + escapeHtml(d.formaPagto || '—')
+              + '</strong> &middot; Canal (A&amp;M): <strong>' + canalAEM + '</strong></div>';
+        if (d.isAVista) {
+            html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-percent me-1"></i>'
+                  + 'Pagamento à vista — será aplicado desconto de 5% sobre o total do pedido.</div>';
+        }
+        if (d.creditoUtilizado > 0.001) {
+            html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-coin me-1"></i>'
+                  + 'Crédito Utilizado no A&amp;M: <strong>' + d.creditoUtilizado.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+                  + '</strong> — será lançado como concessão de crédito do cliente ao confirmar.</div>';
+        }
+        if (d.clienteId) {
+            html += '<div class="alert alert-success py-2 mb-0 mt-2"><i class="bi bi-check-circle me-1"></i>Cliente identificado: '
+                  + escapeHtml(d.clienteLabel) + '</div>';
+        } else {
+            html += '<div class="alert alert-warning py-2 mb-2 mt-2"><i class="bi bi-exclamation-triangle me-1"></i>'
+                  + 'Cliente do A&amp;M (' + escapeHtml(d.clienteNomeAEM) + ' &mdash; CNPJ ' + escapeHtml(d.clienteCnpjAEM)
+                  + ') não encontrado no SisPed. Selecione manualmente:</div>';
+            html += '<select class="form-select" id="aembfClienteSelect"><option value="">Selecione o cliente...</option>';
+            CLIENTES_IMPORT.forEach(function(c) {
+                html += '<option value="' + c.id + '">' + escapeHtml(c.label) + '</option>';
+            });
+            html += '</select>';
+        }
+        html += '</div>';
+
+        // Painel BF / campanhas
+        if (d.ehBf === false) {
+            html += '<div class="alert alert-warning py-2"><i class="bi bi-info-circle me-1"></i>'
+                  + 'Obs do pedido' + (d.obs ? ': “' + escapeHtml(d.obs) + '”' : ' vazio') + ' — não começa com “BF”. '
+                  + 'Será importado <strong>sem</strong> desconto de campanha.</div>';
+        } else {
+            html += '<div class="alert alert-info py-2"><i class="bi bi-tags me-1"></i>'
+                  + 'Pedido de campanha (Obs: “' + escapeHtml(d.obs || 'BF') + '”).</div>';
+            var camps = d.campanhasAtingidas || [];
+            if (camps.length) {
+                html += '<div class="table-responsive mb-2"><table class="table table-sm mb-1">'
+                      + '<thead class="table-light"><tr><th>Campanha</th><th>Critério</th><th class="text-end">Atingido</th>'
+                      + '<th class="text-end">% Diretoria esperado</th></tr></thead><tbody>';
+                camps.forEach(function(c) {
+                    var atg = c.criterio === 'valor'
+                        ? parseFloat(c.agregado || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+                        : (parseInt(c.agregado || 0, 10) + ' ' + escapeHtml(c.unidade || ''));
+                    html += '<tr><td>' + escapeHtml(c.nome) + '</td>'
+                          + '<td>' + (c.criterio === 'valor' ? 'Valor' : 'Quantidade') + '</td>'
+                          + '<td class="text-end">' + atg + '</td>'
+                          + '<td class="text-end fw-semibold ' + (parseFloat(c.percentualEsperado) > 0 ? 'text-success' : 'text-muted') + '">'
+                          + pctBR(c.percentualEsperado) + '</td></tr>';
+                });
+                html += '</tbody></table></div>';
+            } else {
+                html += '<div class="small text-muted mb-2">Nenhuma faixa de campanha atingida pelos itens deste pedido — '
+                      + 'aplicar zera o % Diretoria de todos os itens.</div>';
+            }
+            html += '<button type="button" class="btn btn-sm ' + (bfAplicar ? 'btn-success' : 'btn-outline-primary') + '" id="aembfAplicarBtn"'
+                  + (bfAplicar ? ' disabled' : '') + '>'
+                  + (bfAplicar ? '<i class="bi bi-check2 me-1"></i>Descontos de campanha aplicados' : '<i class="bi bi-percent me-1"></i>Aplicar descontos de campanha no % Diretoria')
+                  + '</button>';
+            html += '<div class="form-text mb-2">Substitui o % Diretoria de cada item pelo percentual da faixa de campanha atingida (itens fora de campanha ficam com 0). O valor é recalculado no servidor ao confirmar.</div>';
+            if (bfAplicar) {
+                html += '<div class="form-check mb-2">'
+                      + '<input class="form-check-input" type="checkbox" id="aembfGravarAm" checked>'
+                      + '<label class="form-check-label small" for="aembfGravarAm">'
+                      + 'Gravar o % Diretoria também no pedido do A&amp;M (Consulta/Reimprime → Altera → Itens → Validar → <strong>Conclui Pedido</strong>).'
+                      + '</label>'
+                      + '<div class="form-text text-danger">Grava de verdade no A&amp;M e conclui o pedido. Registrado no log de descontos.</div>'
+                      + '</div>';
+            }
+        }
+
+        // Tabela de itens
+        html += '<div class="table-responsive"><table class="table table-sm align-middle">'
+              + '<thead><tr><th>Código A&amp;M</th><th>Produto (A&amp;M)</th><th class="text-end">Qtd</th>'
+              + '<th class="text-end">Desc.Com%</th><th class="text-end">% Diretoria (A&amp;M)</th>'
+              + '<th class="text-end">% Diretoria campanha</th><th>Produto no SisPed</th></tr></thead><tbody>';
+        bfItens.forEach(function(it) {
+            var statusCol;
+            if (!it.produtoId) {
+                statusCol = '<span class="text-danger fw-semibold">Não mapeado</span>';
+            } else {
+                statusCol = escapeHtml(it.produtoDesc);
+                var avisos = [];
+                if (it.temValor === false) avisos.push('sem Valor');
+                if (it.temCusto === false) avisos.push('sem Custo');
+                if (avisos.length) statusCol += ' <span class="text-danger fw-semibold">(' + avisos.join(', ') + ')</span>';
+            }
+            var campCell = (it.pctDiretoriaCampanha === null || it.pctDiretoriaCampanha === undefined)
+                ? '<span class="text-muted">—</span>'
+                : pctBR(it.pctDiretoriaCampanha);
+            html += '<tr' + (temProblema(it) ? ' class="table-danger"' : (bfAplicar ? ' class="table-warning"' : '')) + '>'
+                + '<td>' + escapeHtml(it.codigoAEM) + '</td>'
+                + '<td>' + escapeHtml(it.nomeProduto) + '</td>'
+                + '<td class="text-end">' + it.qtd + '</td>'
+                + '<td class="text-end">' + (it.descComercial || 0) + '</td>'
+                + '<td class="text-end">' + pctBR(it.descDiretoria || 0) + '</td>'
+                + '<td class="text-end ' + (bfAplicar ? 'fw-bold text-success' : '') + '">' + campCell + '</td>'
+                + '<td>' + statusCol + '</td>'
+                + '</tr>';
+        });
+        html += '</tbody></table></div>';
+        el.innerHTML = html;
+
+        var sel = document.getElementById('aembfClienteSelect');
+        if (sel) {
+            sel.addEventListener('change', function() {
+                bfClienteId = sel.value ? parseInt(sel.value, 10) : null;
+                atualizarConfirmar();
+            });
+        }
+        var apl = document.getElementById('aembfAplicarBtn');
+        if (apl) {
+            apl.addEventListener('click', function() {
+                bfAplicar = true;
+                render(bfData);
+            });
+        }
+        atualizarConfirmar();
+    }
+
+    document.getElementById('aembfBuscarBtn').addEventListener('click', function() {
+        var numero = document.getElementById('aembfNumero').value.trim();
+        if (!numero) return;
+        bfAplicar = false;
+        document.getElementById('aembfResultado').innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></div>';
+        document.getElementById('aembfConfirmarBtn').disabled = true;
+        fetch('<?= BASE_URL ?>/admin/pedidos.php?ajax_aem_preview=1&bf=1&numero=' + encodeURIComponent(numero))
+            .then(function(r) { return r.json(); })
+            .then(render)
+            .catch(function() {
+                document.getElementById('aembfResultado').innerHTML = '<div class="alert alert-danger">Erro ao buscar pedido.</div>';
+            });
+    });
+
+    document.getElementById('aembfConfirmarBtn').addEventListener('click', function() {
+        if (this.disabled) return;
+        document.getElementById('aembfFormNumero').value = document.getElementById('aembfNumero').value.trim();
+        document.getElementById('aembfFormClienteId').value = bfClienteId || '';
+        var aplicar = (bfAplicar && bfData && bfData.ehBf);
+        document.getElementById('aembfFormAplicar').value = aplicar ? '1' : '0';
+        var gAm = document.getElementById('aembfGravarAm');
+        document.getElementById('aembfFormGravarAm').value = (aplicar && gAm && gAm.checked) ? '1' : '0';
+        if (aplicar && gAm && gAm.checked &&
+            !confirm('Isto vai gravar o % Diretoria nos itens do pedido no sistema A&M e concluir o pedido. Confirmar?')) return;
+        document.getElementById('aembfForm').submit();
+    });
+
+    document.getElementById('modalImportaAEMBF').addEventListener('hidden.bs.modal', function() {
+        document.getElementById('aembfNumero').value = '';
+        document.getElementById('aembfResultado').innerHTML = '';
+        document.getElementById('aembfConfirmarBtn').disabled = true;
+        bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false;
     });
 })();
 </script>

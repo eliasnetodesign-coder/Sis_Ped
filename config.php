@@ -19,7 +19,7 @@ define('WHATSAPP_CODIGO_VALIDADE', 600);        // validade do código, em segun
 // Sistema Itallian Hairtech (A&M) — usado por "Importa Pedido" para localizar
 // pedidos já lançados lá e trazer os itens (Código A&M + Qtd) para o SisPed.
 define('AEM_URL',   'https://sistema.itallianhairtech.com.br');
-define('AEM_LOGIN', 'AUT');
+define('AEM_LOGIN', 'I003');
 define('AEM_SENHA', 'Itallian142');
 
 function db() {
@@ -235,6 +235,25 @@ function db() {
                 resposta       TEXT NULL,
                 created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 KEY idx_sid_ped (sid_ped),
+                KEY idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+
+            // Log de gravação do % Diretoria de itens direto no pedido do A&M
+            // (botão "Importa Pedido BF" — ver aplicarDescontoDiretoriaAEM() em config.php).
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS descontos_diretoria_am_logs (
+                id             INT AUTO_INCREMENT PRIMARY KEY,
+                numero_pedido  VARCHAR(20) NULL,
+                sid_ped        VARCHAR(20) NULL,
+                pedido_interno VARCHAR(20) NULL,
+                pedido_sisped  INT NULL,
+                usuario_id     INT NULL,
+                usuario_nome   VARCHAR(100) NULL,
+                itens          TEXT NULL,
+                status         ENUM('gravado','parcial','erro') NOT NULL,
+                mensagem       TEXT NULL,
+                resposta       MEDIUMTEXT NULL,
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                KEY idx_numero (numero_pedido),
                 KEY idx_created (created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
 
@@ -454,7 +473,9 @@ function buscarCotacaoAPI() {
  *          'creditoUtilizadoAEM' (coluna "Credito Utilizado" do mesmo grid de busca —
  *          crédito do cliente já abatido do pedido lá no A&M; a importação lança essa
  *          quantia como concessão de crédito do cliente, já consumida por este pedido),
- *          'itens'=>[['codigoAEM','nomeProduto','qtd','descComercial','descDiretoria'],...]].
+ *          'obs' (coluna "Obs" do grid Consulta/Reimprime), 'ehBf' (true quando o Obs
+ *          começa com "BF" — pedido de campanha, usado pelo "Importa Pedido BF"),
+ *          'itens'=>[['codigoAEM','nomeProduto','qtd','descComercial','descDiretoria','valorTotal'],...]].
  */
 function buscarPedidoAEM(string $numero): array {
     $numero = preg_replace('/\D/', '', $numero);
@@ -519,6 +540,7 @@ function buscarPedidoAEM(string $numero): array {
     $formaPagto = '';
     $codigoClienteAEM = '';
     $creditoUtilizadoAEM = 0.0;
+    $obsPedido = '';
     preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $buscaHtml, $rowsBusca);
     foreach ($rowsBusca[1] as $rowHtml) {
         if (strpos($rowHtml, 'SidPed=' . $sidPed) === false) continue;
@@ -529,6 +551,11 @@ function buscarPedidoAEM(string $numero): array {
         if (isset($cellsBusca[14])) $formaPagto = $cellsBusca[14];
         if (isset($cellsBusca[7]))  $codigoClienteAEM = $cellsBusca[7];
         if (isset($cellsBusca[10])) $creditoUtilizadoAEM = $parseValorBR($cellsBusca[10]);
+        // "Obs" do pedido = célula logo após a "Forma Pagto" ("00 - A Vista", "71B - 30/60/90DD"…).
+        // Mesmo critério do módulo Análise Financeira: pedido de campanha começa com "BF".
+        foreach ($cellsBusca as $ix => $cel) {
+            if (preg_match('/^\d+[A-Za-z]?\s*-\s*\S/', $cel)) { $obsPedido = $cellsBusca[$ix + 1] ?? ''; break; }
+        }
         break;
     }
     preg_match('/^(\d+)/', $formaPagto, $mfp);
@@ -617,6 +644,8 @@ function buscarPedidoAEM(string $numero): array {
             // %Negociação (col 9) = nosso "Desc. Comercial"; %Diretoria (col 11) = nosso "Desc. Diretoria".
             'descComercial' => $parsePct($cells[9]),
             'descDiretoria' => $parsePct($cells[11]),
+            // Valor Total do item (col 14) — usado pela análise de campanha do "Importa Pedido BF".
+            'valorTotal'  => $parseValorBR($cells[14] ?? ''),
         ];
     }
     if (!$itens) return ['ok' => false, 'erro' => 'Pedido encontrado, mas sem itens no A&M.'];
@@ -635,6 +664,8 @@ function buscarPedidoAEM(string $numero): array {
         'descontoClienteAEM' => $descontoClienteAEM,
         'pedidoAccademia'    => $pedidoAccademia,
         'creditoUtilizadoAEM' => $creditoUtilizadoAEM,
+        'obs'                => $obsPedido,
+        'ehBf'               => (strtoupper(substr(trim($obsPedido), 0, 2)) === 'BF'),
         'itens'              => $itens,
     ];
 }
@@ -1465,6 +1496,181 @@ function liberarPedidoAEM(string $sidPed): array {
     $resp = @mb_convert_encoding($resp, 'UTF-8', 'ISO-8859-1') ?: $resp;
 
     return ['ok' => true, 'erro' => null, 'resposta' => $resp];
+}
+
+/**
+ * Grava o % Diretoria de itens direto no pedido do sistema A&M, reproduzindo o
+ * caminho manual: Vendas > "Consulta/Reimprime" (flag "Exibir os Pedidos Aguardando
+ * no Comercial") > "Altera" na linha do pedido > aba "Itens" (edita a coluna
+ * "% Diretoria" de cada item) > aba "Validar" > "Conclui Pedido".
+ *
+ * Endpoints revertidos da tela (2026-09):
+ *   ITF.EXE (login) -> LOGIN.EXE {TxtTransac=0163} -> PD030.EXE (abre a tela).
+ *   PD0301.EXE {TxtPedCliente=<numero>, RdbSel=V, Chk01=on} -> grid; a linha traz o
+ *     SidPed (link PD0303), o "Pedido Cliente" (PED nnn) e o link javascript:altera(SidPed).
+ *   altera(): POST CT0051.EXE {SidPed, + campos do form PD0301} -> abre o editor (form VD350).
+ *   aba Itens:  POST VD350.EXE {SubOpcao=SubTela=itens, SubKeyPedcads=SidPed, SubPedido=PED,...}
+ *     -> div#itens; cada célula editável tem onClick="alteravalor('<SidPed><seq3>','<cpo>',this)"
+ *        (cpo 01=Quantidade, 05=%Negociação, 06=%Diretoria). O HTML traz o LNKTRANSPORTE "longo".
+ *   editar campo: POST VD35012.EXE {LNKTRANSPORTE=<longo>, TxtValorAlt=<valor BR>, SubKey=<SidPed><seq3>, SubCampo='06'}.
+ *   aba Validar: POST VD350.EXE {SubOpcao=SubTela=validar,...} -> "Pedido NNN Validada com Sucesso" | erros.
+ *   Conclui Pedido: onClick="impressao('<SidPed>','02')" -> POST PD0306.EXE {+ campos VD350, HidKey=SidPed, SubLogo='02'}.
+ *
+ * IMPORTANTE: grava de verdade no A&M. `$concluir=false` para antes do "Conclui Pedido"
+ * (as edições de item já ficam salvas; só não re-submete o pedido para aprovação).
+ *
+ * @param string $numero       "Número do Pedido do Cliente" (o mesmo do Importa Pedido).
+ * @param array  $pctPorCodigo [codigoAEM => %Diretoria]; item não citado recebe 0.
+ * @param bool   $concluir     se true, executa "Conclui Pedido" ao final (quando a validação passa).
+ * @return array ['ok'=>bool,'erro'=>?string,'status'=>'gravado'|'parcial'|'erro','sid_ped'=>?string,
+ *                'pedido_interno'=>?string,'pedido_cliente'=>?string,'itens'=>[...],'validacao'=>?string,
+ *                'concluido'=>bool,'resposta'=>string]
+ */
+function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $concluir = true): array {
+    $numero = preg_replace('/\D/', '', $numero);
+    $falha = fn($msg, $extra = []) => array_merge(['ok' => false, 'erro' => $msg, 'status' => 'erro', 'sid_ped' => null,
+        'pedido_interno' => null, 'pedido_cliente' => null, 'itens' => [], 'validacao' => null, 'concluido' => false, 'resposta' => ''], $extra);
+    if ($numero === '') return $falha('Número de pedido inválido.');
+    if (!function_exists('curl_init')) return $falha('Extensão cURL indisponível no servidor.');
+
+    $log = '';
+    $chamar = function (string $path, ?array $post) use (&$log) {
+        $ch = curl_init(AEM_URL . $path);
+        $o = [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 45, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_USERAGENT => 'Mozilla/5.0'];
+        if ($post !== null) { $o[CURLOPT_POST] = true; $o[CURLOPT_POSTFIELDS] = http_build_query($post); }
+        curl_setopt_array($ch, $o);
+        $r = curl_exec($ch); $code = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
+        $r = $r === false ? '' : (@mb_convert_encoding($r, 'UTF-8', 'ISO-8859-1') ?: $r);
+        $log .= "\n### $path [$code] " . strlen($r) . "b\n";
+        return $r;
+    };
+
+    // 1) Login curto.
+    $loginHtml = $chamar('/cgi-bin/ITF/ITF.EXE', ['SubMenu' => 'FROTA', 'TxtLgloginUsuario' => AEM_LOGIN, 'PwdLgloginSenha' => AEM_SENHA]);
+    if (!preg_match('/LNKTRANSPORTE=([0-9A-Za-z]+)/', $loginHtml, $m)) return $falha('Falha ao autenticar no A&M.', ['resposta' => $log]);
+    $tok = $m[1];
+
+    // 2) Abre Vendas > Consulta/Reimprime e busca o pedido com o flag "Aguardando no Comercial" (Chk01).
+    $anoIni = (string)((int)date('Y') - 1);
+    $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $tok, 'TxtTransac' => '0163']);
+    $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $tok, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+    $grid = $chamar('/cgi-bin/ITF/PD0301.EXE', [
+        'LNKTRANSPORTE' => $tok, 'SubOpcao' => '', 'SubForm' => '',
+        'TxtPedCliente' => $numero, 'TxtNumero' => '',
+        'TxtDiaInicio' => '01', 'TxtMesInicio' => '01', 'TxtAnoInicio' => $anoIni,
+        'TxtDiaFim' => date('d'), 'TxtMesFim' => date('m'), 'TxtAnoFim' => date('Y'),
+        'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '',
+        'TxtProduto' => '', 'RdbSel' => 'V', 'Chk01' => 'on',
+    ]);
+    if (!preg_match('/<TBODY>(.*?)<\/TBODY>/is', $grid, $mb)) return $falha('Não foi possível ler o grid Consulta/Reimprime do A&M.', ['resposta' => $log]);
+    preg_match_all('/<TR\b[^>]*>(.*?)<\/TR>/is', $mb[1], $trs);
+    $sidPed = ''; $pedInterno = ''; $pedCliente = ''; $subCliente = ''; $linhasCom = 0;
+    foreach ($trs[1] as $tr) {
+        if (!preg_match("/javascript:altera\('(\d+)'\)/", $tr, $ma)) continue;   // só linhas editáveis (Aguardando Comercial)
+        $linhasCom++;
+        $sidPed = $ma[1];
+        $plain  = trim(preg_replace('/\s+/', ' ', strip_tags($tr)));
+        if (preg_match('#>\s*([\d.]+)\s*<IMG#i', $tr, $mpi)) $pedInterno = preg_replace('/\D/', '', $mpi[1]);
+        if (preg_match('/PED\s+(\d+)/i', $plain, $mpc)) $pedCliente = $mpc[1];
+        if (preg_match('/fichacadastral\(\x27?(\d+)/', $tr, $mfc)) $subCliente = $mfc[1];
+    }
+    if ($linhasCom === 0) return $falha('Pedido não está entre os "Aguardando no Comercial" do A&M (já aprovado/cancelado ou fora do período).', ['resposta' => $log]);
+    if ($linhasCom > 1) return $falha('Mais de um pedido "Aguardando no Comercial" com esse número no A&M — ajuste manualmente.', ['resposta' => $log]);
+    if ($pedCliente === '') $pedCliente = $numero;
+
+    // 3) "Altera" -> abre o editor (form VD350).
+    $chamar('/cgi-bin/ITF/CT0051.EXE', [
+        'LNKTRANSPORTE' => $tok, 'HidKey' => '', 'HidCliente' => '', 'SidPed' => $sidPed, 'SidCodigo' => '',
+        'SubKey' => '', 'SubKey2' => '', 'SubKeyCliente' => '', 'SubTela' => '', 'SubOpcao' => '',
+        'TxtDiaInicio' => '01', 'TxtMesInicio' => '01', 'TxtAnoInicio' => $anoIni,
+        'TxtDiaFim' => date('d'), 'TxtMesFim' => date('m'), 'TxtAnoFim' => date('Y'),
+        'TxtNumero' => '', 'TxtPedCliente' => $numero, 'TxtDistrib' => '', 'RdbSel' => 'V',
+        'Chk01' => 'on', 'Chk02' => '', 'Chk03' => '', 'Chk04' => '',
+        'TxtCliente' => '', 'TxtProduto' => '', 'SelVendedor' => '',
+    ]);
+
+    // 4) Aba "Itens".
+    $vd350base = [
+        'LNKTRANSPORTE' => $tok, 'SubCampo' => '', 'SubTelaAnterior' => '', 'SubCliente' => $subCliente,
+        'SubKeyAlt' => '', 'SubKeyPedcads' => $sidPed, 'SubPedido' => $pedCliente, 'SubKeyProduto' => '',
+        'SubKeyPeditem' => '', 'SubLogo' => '', 'HidKey' => '', 'SubTipo' => 'V', 'status' => '',
+    ];
+    $itensHtml = $chamar('/cgi-bin/ITF/VD350.EXE', $vd350base + ['SubOpcao' => 'itens', 'SubTela' => 'itens']);
+    if (!preg_match('/id=LNKTRANSPORTE\s+name=LNKTRANSPORTE\s+size=800\s+type=hidden\s+value="([^"]*)"/i', $itensHtml, $mlt)) {
+        return $falha('Não foi possível obter o token de sessão do editor de itens no A&M.', ['sid_ped' => $sidPed, 'pedido_interno' => $pedInterno, 'pedido_cliente' => $pedCliente, 'resposta' => $log]);
+    }
+    $longTok = $mlt[1];
+
+    // Itens: div#itens; a célula de %Diretoria tem onClick="alteravalor('<SidPed><seq3>','06',this)".
+    // Colunas: Seq,Código,Descrição,PreçoTabela,%Descto,%DesctoST,VrUnit,%Negociação,VrNegociado,%Diretoria,Qtd,...
+    $itensGrid = [];
+    $regiao = $itensHtml;
+    if (preg_match('/id="itens".*/is', $itensHtml, $mreg)) $regiao = $mreg[0];
+    preg_match_all('/<TR\b[^>]*onmouseover[^>]*>(.*?)<\/TR>/is', $regiao, $itr);
+    foreach ($itr[1] as $rowH) {
+        if (!preg_match("/alteravalor\('(\d+)','06'/", $rowH, $mk)) continue;
+        preg_match_all('/<TD\b[^>]*>(.*?)<\/TD>/is', $rowH, $tds);
+        $cells = array_map(fn($c) => trim(html_entity_decode(strip_tags($c), ENT_QUOTES, 'UTF-8')), $tds[1]);
+        $seq = '';
+        if (preg_match('/value="(\d+)"/', $tds[1][0] ?? '', $ms)) $seq = $ms[1];
+        $diretAtual = 0.0;
+        if (isset($cells[9]) && preg_match('/([\d,]+)/', $cells[9], $md)) $diretAtual = (float)str_replace(',', '.', $md[1]);
+        $itensGrid[] = ['key' => $mk[1], 'seq' => $seq, 'codigo' => $cells[1] ?? '', 'diretoria_atual' => $diretAtual];
+    }
+    if (!$itensGrid) return $falha('Não foi possível ler os itens do pedido no editor do A&M.', ['sid_ped' => $sidPed, 'pedido_interno' => $pedInterno, 'pedido_cliente' => $pedCliente, 'resposta' => $log]);
+
+    // 5) Edita o % Diretoria de cada item que precisa mudar.
+    $detItens = []; $erros = []; $mudancas = 0;
+    foreach ($itensGrid as $ig) {
+        $alvo  = round((float)($pctPorCodigo[$ig['codigo']] ?? 0), 2);
+        $mudou = abs($alvo - $ig['diretoria_atual']) > 0.01;
+        $item  = ['codigo' => $ig['codigo'], 'seq' => $ig['seq'], 'de' => $ig['diretoria_atual'], 'para' => $alvo, 'aplicado' => !$mudou, 'resposta' => $mudou ? null : 'sem alteração'];
+        if ($mudou) {
+            $mudancas++;
+            $r = $chamar('/cgi-bin/ITF/VD35012.EXE', [
+                'LNKTRANSPORTE' => $longTok, 'TxtValorAlt' => number_format($alvo, 2, ',', ''),
+                'SubKey' => $ig['key'], 'SubCampo' => '06', 'ChkAplica' => '', 'Selecionados' => '',
+            ]);
+            $rTxt   = trim(preg_replace('/\s+/', ' ', strip_tags($r)));
+            $falhou = ($r === '') || (bool)preg_match('/erro|inv[aá]lid|permiss|negad|n[aã]o\s+pode|excede|ultrapass/i', $rTxt);
+            $item['aplicado'] = !$falhou;
+            $item['resposta'] = mb_substr($rTxt, 0, 300);
+            if ($falhou) $erros[] = "Item {$ig['codigo']}: " . ($rTxt === '' ? 'sem resposta' : mb_substr($rTxt, 0, 120));
+        }
+        $detItens[] = $item;
+    }
+
+    // 6) Aba "Validar".
+    $valHtml   = $chamar('/cgi-bin/ITF/VD350.EXE', $vd350base + ['SubOpcao' => 'validar', 'SubTela' => 'validar']);
+    $validado  = (bool)preg_match('/Validad[ao]\s+com\s+Sucesso/i', $valHtml);
+    $valResumo = mb_substr(trim(preg_replace('/\s+/', ' ', strip_tags($valHtml))), 0, 500);
+
+    // 7) "Conclui Pedido" (só se pediu, a validação passou e nenhuma edição falhou).
+    $concluido = false; $concluiResp = '';
+    if ($concluir && $validado && !$erros) {
+        $concluiResp = $chamar('/cgi-bin/ITF/PD0306.EXE', $vd350base + [
+            'SubOpcao' => 'validar', 'SubTela' => 'validar', 'HidKey' => $sidPed, 'SubLogo' => '02',
+        ]);
+        $concluido = ($concluiResp !== '') && !preg_match('/erro|inv[aá]lid|permiss/i', trim(strip_tags($concluiResp)));
+    }
+
+    $aplicadosOk = count(array_filter($detItens, fn($d) => $d['de'] != $d['para'] && $d['aplicado']));
+    if (!$erros && $validado) $status = 'gravado';
+    elseif ($aplicadosOk > 0)  $status = 'parcial';
+    else                       $status = 'erro';
+
+    return [
+        'ok'             => ($status === 'gravado'),
+        'erro'           => $erros ? implode(' | ', $erros) : ($validado ? null : 'Validação do pedido no A&M não passou: ' . $valResumo),
+        'status'         => $status,
+        'sid_ped'        => $sidPed,
+        'pedido_interno' => $pedInterno,
+        'pedido_cliente' => $pedCliente,
+        'itens'          => $detItens,
+        'validacao'      => $valResumo,
+        'concluido'      => $concluido,
+        'resposta'       => $log . "\n\n=== VALIDAR ===\n" . $valResumo . "\n\n=== CONCLUI ===\n" . mb_substr(trim(strip_tags($concluiResp)), 0, 3000),
+    ];
 }
 
 /**
