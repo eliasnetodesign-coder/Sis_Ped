@@ -7,6 +7,7 @@ $fim = $_GET['fim'] ?? date('Y-m-t');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ini)) $ini = date('Y-m-01');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fim)) $fim = date('Y-m-t');
 $clienteId = (int)($_GET['cliente_id'] ?? 0);
+$bf = in_array($_GET['bf'] ?? '', ['1', '0'], true) ? $_GET['bf'] : '';
 
 // Clientes que já tiveram algum pedido importado do A&M (para o filtro).
 $clientesFiltro = db()->query("
@@ -32,8 +33,13 @@ $q->execute($params);
 $pedidos = $q->fetchAll();
 
 $linhas = [];
-$tot = ['produtos'=>0,'descontos'=>0,'credito'=>0,'impostos'=>0,'mp'=>0,'despesas'=>0,'margem'=>0];
+$tot = ['produtos'=>0,'descontos'=>0,'credito'=>0,'impostos'=>0,'mp'=>0,'despesas'=>0,'margem'=>0,
+        'canal'=>0,'cliente'=>0,'comercial'=>0,'campanha'=>0,'financeiro'=>0];
 foreach ($pedidos as $p) {
+    $ehBf = strpos((string)$p['observacoes'], '(BF)') !== false;
+    if ($bf === '1' && !$ehBf) continue;
+    if ($bf === '0' && $ehBf) continue;
+
     $m = calcularMargemPedido((int)$p['pedido_id']);
     if (!$m) continue;
 
@@ -45,6 +51,11 @@ foreach ($pedidos as $p) {
     $despesas  = -(float)$m['impDeltaDespesas'];
     $margem    = (float)$m['impTotalFinal'];
     $margemPct = (float)$m['impMargemPct'];
+    $canal      = -(float)$m['impDeltaCanal'];
+    $cliente    = -(float)$m['impDeltaCliente'];
+    $comercial  = -(float)$m['impDeltaComercial'];
+    $campanha   = -(float)$m['impDeltaCampanha'];
+    $financeiro = -(float)$m['impDeltaFinanceiro'];
 
     $numAM = preg_match('/Pedido N[ºo°]\s*([^\s—-]+)/u', (string)$p['observacoes'], $mm) ? $mm[1] : '—';
 
@@ -52,7 +63,7 @@ foreach ($pedidos as $p) {
         'pedido_id' => (int)$p['pedido_id'],
         'numero'    => $p['numero_pedido'],
         'num_am'    => $numAM,
-        'eh_bf'     => strpos((string)$p['observacoes'], '(BF)') !== false,
+        'eh_bf'     => $ehBf,
         'cliente'   => $p['razao_social'],
         'data'      => $p['data_pedido'],
         'produtos'  => $produtos,
@@ -71,6 +82,11 @@ foreach ($pedidos as $p) {
     $tot['impostos']  += $impostos;
     $tot['mp']        += $mp;
     $tot['despesas']  += $despesas;
+    $tot['canal']      += $canal;
+    $tot['cliente']    += $cliente;
+    $tot['comercial']  += $comercial;
+    $tot['campanha']   += $campanha;
+    $tot['financeiro'] += $financeiro;
     $tot['margem']    += $margem;
 }
 $totMargemPct   = $tot['produtos'] > 0 ? $tot['margem'] / $tot['produtos'] * 100 : 0;
@@ -98,11 +114,11 @@ require_once LAYOUT_PATH . '/header.php';
 
 <form class="card shadow-sm border-0 mb-4 p-3">
     <div class="row g-2 align-items-end">
-        <div class="col-6 col-md-3">
+        <div class="col-6 col-md-2">
             <label class="form-label fw-semibold small mb-1">Data inicial</label>
             <input type="date" name="ini" value="<?= e($ini) ?>" class="form-control form-control-sm">
         </div>
-        <div class="col-6 col-md-3">
+        <div class="col-6 col-md-2">
             <label class="form-label fw-semibold small mb-1">Data final</label>
             <input type="date" name="fim" value="<?= e($fim) ?>" class="form-control form-control-sm">
         </div>
@@ -115,7 +131,15 @@ require_once LAYOUT_PATH . '/header.php';
                 <?php endforeach; ?>
             </select>
         </div>
-        <div class="col-12 col-md-2">
+        <div class="col-6 col-md-2">
+            <label class="form-label fw-semibold small mb-1">BF</label>
+            <select name="bf" class="form-select form-select-sm">
+                <option value="" <?= $bf === '' ? 'selected' : '' ?>>Todos</option>
+                <option value="1" <?= $bf === '1' ? 'selected' : '' ?>>Só BF</option>
+                <option value="0" <?= $bf === '0' ? 'selected' : '' ?>>Só não-BF</option>
+            </select>
+        </div>
+        <div class="col-6 col-md-2">
             <button class="btn btn-primary btn-sm w-100"><i class="bi bi-funnel me-1"></i>Filtrar</button>
         </div>
     </div>
@@ -123,15 +147,33 @@ require_once LAYOUT_PATH . '/header.php';
 
 <div class="row g-3 mb-4">
     <?php
+    // "Descontos Aplicados" = descontos em cascata (canal + cliente + comercial/diretoria +
+    // campanha) + crédito — as duas etapas do waterfall entre o preço de tabela e os impostos.
+    // O desconto financeiro (Pix) fica em "Custo MP + Despesas", junto com o custo fixo.
+    $totDescontos    = $tot['descontos'] + $tot['credito'];
+    $totDescontosPct = $tot['produtos'] > 0 ? $totDescontos / $tot['produtos'] * 100 : 0;
+    // Abertura por tipo, no title do card (passe o mouse para ver).
+    $descontosDet = [
+        'Canal'               => $tot['canal'],
+        'Cliente'             => $tot['cliente'],
+        'Comercial/Diretoria' => $tot['comercial'],
+        'Campanha'            => $tot['campanha'],
+        'Crédito aplicado'    => $tot['credito'],
+    ];
+    $tituloDescontos = implode("\n", array_map(
+        fn($k, $v) => $k . ': ' . moedaBR($v),
+        array_keys($descontosDet), $descontosDet
+    ));
     $resumo = [
         ['Valor de Tabela', $tot['produtos'], 'secondary'],
+        ['Descontos Aplicados', $totDescontos, 'danger', $totDescontosPct, $tituloDescontos],
         ['Carga de Impostos', $tot['impostos'], 'warning', $totImpostosPct],
         ['Custo MP + Despesas', $tot['mp'] + $tot['despesas'], 'info'],
         ['Margem Final', $tot['margem'], $corMargem($totMargemPct), $totMargemPct],
     ];
     foreach ($resumo as $r): ?>
-    <div class="col-6 col-xl-3">
-        <div class="card shadow-sm border-0 border-start border-4 border-<?= $r[2] ?> h-100">
+    <div class="col-6 col-md-4 col-xl">
+        <div class="card shadow-sm border-0 border-start border-4 border-<?= $r[2] ?> h-100"<?= isset($r[4]) ? ' title="' . e($r[4]) . '"' : '' ?>>
             <div class="card-body py-3">
                 <div class="text-muted small fw-semibold text-uppercase"><?= e($r[0]) ?></div>
                 <div class="fs-4 fw-bold text-<?= $r[2] ?>"><?= moedaBR($r[1]) ?></div>

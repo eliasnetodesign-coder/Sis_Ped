@@ -18,9 +18,39 @@ define('WHATSAPP_CODIGO_VALIDADE', 600);        // validade do código, em segun
 
 // Sistema Itallian Hairtech (A&M) — usado por "Importa Pedido" para localizar
 // pedidos já lançados lá e trazer os itens (Código A&M + Qtd) para o SisPed.
-define('AEM_URL',   'https://sistema.itallianhairtech.com.br');
+// AEM_URL_ALT é o endereço alternativo (DDNS direto no servidor), usado automaticamente
+// via aemBaseUrl() quando o endereço principal não responde.
+define('AEM_URL',     'https://sistema.itallianhairtech.com.br');
+define('AEM_URL_ALT', 'http://italliansp.ddns.com.br:3000');
 define('AEM_LOGIN', 'I003');
 define('AEM_SENHA', 'Itallian142');
+
+/**
+ * Base da URL do sistema A&M a usar nesta requisição: testa AEM_URL (endereço principal) com
+ * timeout curto e, se não responder (fora do ar, rede etc.), cai para AEM_URL_ALT (DDNS direto
+ * no servidor). Resultado cacheado em memória (static) — só testa uma vez por requisição, mesmo
+ * chamando as funções do A&M várias vezes (ex.: analiseFinanceiraAEM faz dezenas de chamadas).
+ */
+function aemBaseUrl(): string {
+    static $resolvida = null;
+    if ($resolvida !== null) return $resolvida;
+    if (!function_exists('curl_init')) return AEM_URL;
+
+    $ch = curl_init(AEM_URL . '/cgi-bin/ITF/ITF.EXE');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_NOBODY         => true,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT        => 6,
+        CURLOPT_SSL_VERIFYPEER => true,
+    ]);
+    curl_exec($ch);
+    $semErro = (curl_errno($ch) === 0);
+    curl_close($ch);
+
+    $resolvida = $semErro ? AEM_URL : AEM_URL_ALT;
+    return $resolvida;
+}
 
 function db() {
     static $pdo = null;
@@ -483,7 +513,7 @@ function buscarPedidoAEM(string $numero): array {
     if (!function_exists('curl_init')) return ['ok' => false, 'erro' => 'Extensão cURL indisponível no servidor.'];
 
     $chamar = function (string $path, ?array $postFields) {
-        $ch = curl_init(AEM_URL . $path);
+        $ch = curl_init(aemBaseUrl() . $path);
         $opts = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => 20,
@@ -980,7 +1010,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
     $datPix     = date('01/m/Y', strtotime('first day of next month'));
 
     $chamar = function (string $path, ?array $postFields) {
-        $ch = curl_init(AEM_URL . $path);
+        $ch = curl_init(aemBaseUrl() . $path);
         $opts = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => 45,
@@ -1437,7 +1467,7 @@ function liberarPedidoAEM(string $sidPed): array {
     if (!function_exists('curl_init')) return ['ok' => false, 'erro' => 'Extensão cURL indisponível no servidor.', 'resposta' => null];
 
     $chamar = function (string $path, ?array $postFields) {
-        $ch = curl_init(AEM_URL . $path);
+        $ch = curl_init(aemBaseUrl() . $path);
         $opts = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => 30,
@@ -1535,7 +1565,7 @@ function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $
 
     $log = '';
     $chamar = function (string $path, ?array $post) use (&$log) {
-        $ch = curl_init(AEM_URL . $path);
+        $ch = curl_init(aemBaseUrl() . $path);
         $o = [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 45, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_USERAGENT => 'Mozilla/5.0'];
         if ($post !== null) { $o[CURLOPT_POST] = true; $o[CURLOPT_POSTFIELDS] = http_build_query($post); }
         curl_setopt_array($ch, $o);
@@ -2703,6 +2733,14 @@ function calcularMargemPedido(int $pedidoId): array {
     $impDeltaImpostos  = -array_sum(array_map(fn($it) => array_sum(array_column($it['blocosOutros'], 'total')) * $it['qtd'], $impItens));
     $impDeltaMP        = -array_sum(array_map(fn($it) => $it['custoMP'] * $it['qtd'], $impItens));
     $impDeltaDespesas  = -array_sum(array_map(fn($it) => ($it['vCF'] + $it['vDescFinanceiro']) * $it['qtd'], $impItens));
+    // Abertura de "impDeltaDescontos" por tipo (Canal/Cliente/Comercial+Diretoria/Campanha) e do
+    // Desconto Financeiro isolado de "impDeltaDespesas" (que também soma custo fixo) — usado no
+    // bloco "Descontos Aplicados" do relatório de margem.
+    $impDeltaCanal      = -array_sum(array_map(fn($it) => $it['vCanal']    * $it['qtd'], $impItens));
+    $impDeltaCliente    = -array_sum(array_map(fn($it) => $it['vCliente']  * $it['qtd'], $impItens));
+    $impDeltaComercial  = -array_sum(array_map(fn($it) => $it['vPedido']   * $it['qtd'], $impItens));
+    $impDeltaCampanha   = -array_sum(array_map(fn($it) => $it['vCampanha'] * $it['qtd'], $impItens));
+    $impDeltaFinanceiro = -array_sum(array_map(fn($it) => $it['vDescFinanceiro'] * $it['qtd'], $impItens));
 
     return compact(
         'clienteUF', 'clienteRegime', 'ufNome', 'ehLocal', 'icmsTipoLabel', 'UF_NOME',
@@ -2712,7 +2750,8 @@ function calcularMargemPedido(int $pedidoId): array {
         'impRaw', 'impEmpresas', 'custosMP', 'custoFixoPct', 'empNet', 'outrasEmpresas', 'temAccademia',
         'impPre', 'impTotalAposDescontos', 'pctCreditoGeral', 'impItens',
         'impTotalFinal', 'impTotalBase', 'impMargemPct',
-        'impTotalProdutos', 'impDeltaDescontos', 'impDeltaCredito', 'impDeltaNet', 'impDeltaImpostos', 'impDeltaMP', 'impDeltaDespesas'
+        'impTotalProdutos', 'impDeltaDescontos', 'impDeltaCredito', 'impDeltaNet', 'impDeltaImpostos', 'impDeltaMP', 'impDeltaDespesas',
+        'impDeltaCanal', 'impDeltaCliente', 'impDeltaComercial', 'impDeltaCampanha', 'impDeltaFinanceiro'
     );
 }
 
