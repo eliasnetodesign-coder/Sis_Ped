@@ -272,36 +272,50 @@ $foraProdutos = [
     ['405660', 'SACHE ITALLIAN DESCOLORANTE 50G'],
 ];
 
+// Listas compartilhadas entre a versão Distribuidor e a versão Varejo das campanhas 2 e 4.
+$camp2Produtos = [
+    ['405740', 'Oxidante 02 vol'],
+    ['405506', 'Oxidante 06 vol'],
+    ['405507', 'Oxidante 20 vol'],
+    ['405508', 'Oxidante 30 vol'],
+    ['405509', 'Oxidante 40 vol'],
+];
+$camp4Produtos = [
+    ['405518', 'Shampoo 2,5L'],
+    ['405519', 'Condicionador 2,5L'],
+    ['405593', 'Hidratação 2Kg'],
+];
+$camp1Faixas = [[500, 1000, 13], [1000, 1500, 16], [1500, 2300, 19], [2300, 3500, 22], [3500, null, 25]];
+$camp2Faixas = [[42, 83, 13], [83, 125, 16], [125, 192, 19], [192, 292, 22], [292, null, 25]];
+$camp4Faixas = [[1, null, 20]];
+
 return [
     'campanhas' => [
         [
             'nome' => 'Camp 1 - Coloração',
             'tipo' => 'desconto',
             'criterio' => 'quantidade',
+            'canal' => 'distribuidor',
             'unidade' => 'tubos',
             'observacoes' => null,
-            'faixas' => [[500, 1000, 13], [1000, 1500, 16], [1500, 2300, 19], [2300, 3500, 22], [3500, null, 25]],
+            'faixas' => $camp1Faixas,
             'produtos' => $camp1Produtos,
         ],
         [
             'nome' => 'Camp 2 - Oxidante',
             'tipo' => 'desconto',
             'criterio' => 'quantidade',
+            'canal' => 'distribuidor',
             'unidade' => 'un',
             'observacoes' => 'Faixa aplicada sobre a soma da quantidade de qualquer combinação dos 5 oxidantes (qualquer volume) comprados no pedido.',
-            'faixas' => [[42, 83, 13], [83, 125, 16], [125, 192, 19], [192, 292, 22], [292, null, 25]],
-            'produtos' => [
-                ['405740', 'Oxidante 02 vol'],
-                ['405506', 'Oxidante 06 vol'],
-                ['405507', 'Oxidante 20 vol'],
-                ['405508', 'Oxidante 30 vol'],
-                ['405509', 'Oxidante 40 vol'],
-            ],
+            'faixas' => $camp2Faixas,
+            'produtos' => $camp2Produtos,
         ],
         [
             'nome' => 'Camp 3 - Pó Descolorante Itallian Color 400g Pouch',
             'tipo' => 'desconto',
             'criterio' => 'quantidade',
+            'canal' => 'todos',
             'unidade' => 'un',
             'observacoes' => null,
             'faixas' => [[60, 120, 10], [120, 180, 12], [180, null, 15]],
@@ -313,19 +327,17 @@ return [
             'nome' => 'Camp 4 - Shampoo/Condicionador/Hidratação 2,5L',
             'tipo' => 'desconto',
             'criterio' => 'quantidade',
+            'canal' => 'distribuidor',
             'unidade' => 'un',
             'observacoes' => 'Planilha original: desconto vale só comprando a MESMA quantidade dos 3 produtos — essa condição não é conferida automaticamente, ajuste a faixa/observação se necessário.',
-            'faixas' => [[1, null, 20]],
-            'produtos' => [
-                ['405518', 'Shampoo 2,5L'],
-                ['405519', 'Condicionador 2,5L'],
-                ['405593', 'Hidratação 2Kg'],
-            ],
+            'faixas' => $camp4Faixas,
+            'produtos' => $camp4Produtos,
         ],
         [
             'nome' => 'Camp 5 - Home Care',
             'tipo' => 'desconto',
             'criterio' => 'valor',
+            'canal' => 'todos',
             'unidade' => 'R$',
             'observacoes' => null,
             'faixas' => [[10000, 20000, 5], [20000, 30000, 8], [30000, null, 10]],
@@ -335,6 +347,7 @@ return [
             'nome' => 'Camp 6 - Kit Travel Size Trivitt',
             'tipo' => 'bonificacao',
             'criterio' => 'quantidade',
+            'canal' => 'todos',
             'unidade' => 'un',
             'observacoes' => null,
             'faixas' => [],
@@ -344,6 +357,37 @@ return [
             'bonificacao' => [
                 ['qtd_base' => 24, 'produto_bonus_codigo' => '405754', 'produto_bonus_nome' => 'Fluido P/ Escova Trivitt 30ml', 'qtd_bonus' => 24],
             ],
+        ],
+        // Mesmas campanhas 1, 2 e 4, para o canal Varejo.
+        [
+            'nome' => 'Camp 1 - Coloração (Varejo)',
+            'tipo' => 'desconto',
+            'criterio' => 'quantidade',
+            'canal' => 'varejo',
+            'unidade' => 'tubos',
+            'observacoes' => null,
+            'faixas' => $camp1Faixas,
+            'produtos' => $camp1Produtos,
+        ],
+        [
+            'nome' => 'Camp 2 - Oxidante (Varejo)',
+            'tipo' => 'desconto',
+            'criterio' => 'quantidade',
+            'canal' => 'varejo',
+            'unidade' => 'un',
+            'observacoes' => 'Faixa aplicada sobre a soma da quantidade de qualquer combinação dos 5 oxidantes (qualquer volume) comprados no pedido.',
+            'faixas' => $camp2Faixas,
+            'produtos' => $camp2Produtos,
+        ],
+        [
+            'nome' => 'Camp 4 - Shampoo/Condicionador/Hidratação 2,5L (Varejo)',
+            'tipo' => 'desconto',
+            'criterio' => 'quantidade',
+            'canal' => 'varejo',
+            'unidade' => 'un',
+            'observacoes' => 'Varejo: sem a condição de comprar a mesma quantidade dos 3 produtos — o desconto vale comprando qualquer um deles.',
+            'faixas' => $camp4Faixas,
+            'produtos' => $camp4Produtos,
         ],
     ],
     'fora_campanha' => $foraProdutos,

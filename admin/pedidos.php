@@ -103,7 +103,9 @@ if (isset($_GET['ajax_aem_preview'])) {
                 'valor_total' => $it['valorTotal'] ?? 0,
             ];
         }
-        $av = $resp['ehBf'] ? campanhasAmAvaliarPedido($campItens) : null;
+        // Canal do cliente no A&M: "Pedido Accademia = SIM" é Distribuidor; NAO/não localizado é Varejo.
+        $canalCamp = (($r['pedidoAccademia'] ?? '') === 'SIM') ? 'distribuidor' : 'varejo';
+        $av = $resp['ehBf'] ? campanhasAmAvaliarPedido($campItens, $canalCamp) : null;
         $expByCod = [];
         if ($av) {
             foreach ($av['campanhas_atingidas'] as $ca) {
@@ -191,7 +193,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
                     'valor_total'   => $it['valorTotal'] ?? 0,
                 ];
             }
-            $av = campanhasAmAvaliarPedido($campItens);
+            // Canal do cliente no A&M: "Pedido Accademia = SIM" é Distribuidor; NAO/não localizado é Varejo.
+            $av = campanhasAmAvaliarPedido($campItens, (($r['pedidoAccademia'] ?? '') === 'SIM') ? 'distribuidor' : 'varejo');
             $bfOverrides = [];
             foreach ($av['campanhas_atingidas'] as $ca) {
                 foreach ($ca['itens'] as $ci) $bfOverrides[$ci['codigo']] = (float)$ca['percentual_esperado'];

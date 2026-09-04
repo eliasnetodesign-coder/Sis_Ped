@@ -11,14 +11,15 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fim)) $fim = date('Y-m-t');
 $q = db()->prepare("
     SELECT COALESCE(p.lote_id, CAST(p.id AS CHAR)) AS grp,
            MIN(p.id) AS pedido_id, p.lote_id, p.numero_pedido, p.observacoes,
-           p.cliente_id, c.razao_social,
+           p.cliente_id, c.razao_social, cv.canal,
            COALESCE(c.desconto_cliente, 0) AS desconto_cliente,
            COALESCE(c.desconto_canal, 0)   AS desconto_canal,
            MIN(p.data_pedido) AS data_pedido
     FROM pedidos p JOIN clientes c ON c.id = p.cliente_id
+    LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id
     WHERE p.observacoes LIKE 'Importado do sistema A&M (BF)%'
       AND DATE(p.data_pedido) BETWEEN ? AND ?
-    GROUP BY grp, p.lote_id, p.numero_pedido, p.observacoes, p.cliente_id, c.razao_social,
+    GROUP BY grp, p.lote_id, p.numero_pedido, p.observacoes, p.cliente_id, c.razao_social, cv.canal,
              c.desconto_cliente, c.desconto_canal
     ORDER BY data_pedido DESC, p.numero_pedido DESC");
 $q->execute([$ini, $fim]);
@@ -77,7 +78,8 @@ foreach ($pedidos as $p) {
         $sPedido['liquido']  += $valorComCamp;
     }
 
-    $av = campanhasAmAvaliarPedido($campItens);
+    // Campanhas do canal de venda do cliente (as de canal "todos" valem para os dois).
+    $av = campanhasAmAvaliarPedido($campItens, stripos((string)$p['canal'], 'distribuidor') !== false ? 'distribuidor' : 'varejo');
 
     $numAM = preg_match('/Pedido N[ºo°]\s*([^\s—-]+)/u', (string)$p['observacoes'], $mm) ? $mm[1] : '—';
 

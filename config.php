@@ -300,6 +300,9 @@ function db() {
                 ordem         INT NOT NULL DEFAULT 0,
                 created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Canal de venda a que a campanha se aplica (Distribuidor = "Pedido Accademia SIM"
+            // no Cadastro de Distribuidores do A&M; Varejo = NAO; "todos" vale para os dois).
+            try { $pdo->exec("ALTER TABLE campanhas_am ADD COLUMN canal ENUM('todos','distribuidor','varejo') NOT NULL DEFAULT 'todos'"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanhas_am_produtos (
                 id             INT AUTO_INCREMENT PRIMARY KEY,
                 campanha_id    INT NOT NULL,
@@ -781,13 +784,13 @@ function campanhasAmSeedInicial(PDO $pdo): void {
     $dados = require $arq;
     if (!is_array($dados) || empty($dados['campanhas'])) return;
 
-    $insCamp  = $pdo->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,unidade,observacoes,ativo,ordem) VALUES (?,?,?,?,?,1,?)');
+    $insCamp  = $pdo->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,canal,unidade,observacoes,ativo,ordem) VALUES (?,?,?,?,?,?,1,?)');
     $insFaixa = $pdo->prepare('INSERT INTO campanhas_am_faixas (campanha_id,minimo,maximo,percentual) VALUES (?,?,?,?)');
     $insProd  = $pdo->prepare('INSERT INTO campanhas_am_produtos (campanha_id,codigo_produto,produto_nome) VALUES (?,?,?)');
     $insBonif = $pdo->prepare('INSERT INTO campanhas_am_bonificacao (campanha_id,qtd_base,produto_bonus_codigo,produto_bonus_nome,qtd_bonus) VALUES (?,?,?,?,?)');
 
     foreach ($dados['campanhas'] as $ordem => $c) {
-        $insCamp->execute([$c['nome'], $c['tipo'], $c['criterio'], $c['unidade'] ?? null, $c['observacoes'] ?? null, $ordem]);
+        $insCamp->execute([$c['nome'], $c['tipo'], $c['criterio'], $c['canal'] ?? 'todos', $c['unidade'] ?? null, $c['observacoes'] ?? null, $ordem]);
         $campId = (int)$pdo->lastInsertId();
         foreach ($c['faixas'] ?? [] as $f) $insFaixa->execute([$campId, $f[0], $f[1], $f[2]]);
         foreach ($c['produtos'] ?? [] as $p) $insProd->execute([$campId, $p[0], $p[1]]);
@@ -855,20 +858,34 @@ function campanhasAmFaixaPara(array $faixas, float $valor): ?array {
  *    MESMO pedido, confere se a quantidade correspondente do produto de bonificação também
  *    está presente no pedido.
  *
- * @param array $itens itens do pedido (PD0303): [['codigo','nome','qtd','pct_diretoria','valor_total',...], ...]
+ * @param array  $itens itens do pedido (PD0303): [['codigo','nome','qtd','pct_diretoria','valor_total',...], ...]
+ * @param string $canal canal do cliente ('distribuidor'|'varejo'); só entram as campanhas desse
+ *                      canal e as marcadas como 'todos'.
  * @return array ['campanhas_atingidas'=>[...], 'itens_fora_campanha'=>[...], 'tem_item_fora_campanha'=>bool,
  *                'bonificacoes'=>[...], 'check_campanha'=>bool]
  */
-function campanhasAmAvaliarPedido(array $itens): array {
-    static $campanhas = null, $mapaCampanha = null;
-    if ($campanhas === null) {
-        $campanhas = campanhasAmListar();
-        $mapaCampanha = [];
+function campanhasAmAvaliarPedido(array $itens, string $canal = 'todos'): array {
+    static $todas = null, $porCanal = [];
+    if ($todas === null) $todas = campanhasAmListar();
+
+    // Campanhas válidas para o canal do pedido (as de canal "todos" valem sempre) + mapa
+    // codigo_produto => campanha_id desse canal — cacheados por canal, já que o mesmo produto
+    // pode estar em campanhas diferentes de Distribuidor e Varejo.
+    if (!isset($porCanal[$canal])) {
+        $campanhas = array_values(array_filter($todas, function ($c) use ($canal) {
+            $cc = $c['canal'] ?? 'todos';
+            return $cc === 'todos' || $cc === $canal;
+        }));
+        $mapa = [];
         foreach ($campanhas as $c) {
             if (empty($c['ativo'])) continue;
-            foreach ($c['produtos'] as $p) $mapaCampanha[$p['codigo_produto']] = $c['id'];
+            foreach ($c['produtos'] as $p) $mapa[$p['codigo_produto']] = $c['id'];
         }
+        $porCanal[$canal] = ['campanhas' => $campanhas, 'mapa' => $mapa];
     }
+    $campanhas    = $porCanal[$canal]['campanhas'];
+    $mapaCampanha = $porCanal[$canal]['mapa'];
+
     $porId = [];
     foreach ($campanhas as $c) $porId[$c['id']] = $c;
 
@@ -1331,7 +1348,9 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             // qualquer %Diretoria > 0 é desconto não previsto — sinalizado em vermelho igual ao
             // check 4 (não fica "certo"), não fica neutro/informativo.
             if ($ehBf) {
-                $avCampanha = campanhasAmAvaliarPedido($itensTodos);
+                // Canal do cliente: "Pedido Accademia = SIM" no Cadastro de Distribuidores é
+                // Distribuidor; NAO (ou não localizado) é Varejo — mesma leitura usada no ST.
+                $avCampanha = campanhasAmAvaliarPedido($itensTodos, $comAcademia ? 'distribuidor' : 'varejo');
             } else {
                 $itensSemBf = array_map(fn($it) => $it + ['motivo' => 'sem_bf', 'percentual_esperado' => 0.0, 'campanha_nome' => null], $itensDiretoria);
                 $avCampanha = [

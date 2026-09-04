@@ -12,6 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'campanh
     $nome     = trim($_POST['nome'] ?? '');
     $tipo     = in_array($_POST['tipo'] ?? '', ['desconto', 'bonificacao'], true) ? $_POST['tipo'] : 'desconto';
     $criterio = in_array($_POST['criterio'] ?? '', ['quantidade', 'valor'], true) ? $_POST['criterio'] : 'quantidade';
+    $canal    = in_array($_POST['canal'] ?? '', ['todos', 'distribuidor', 'varejo'], true) ? $_POST['canal'] : 'todos';
     $unidade  = trim($_POST['unidade'] ?? '') ?: null;
     $obs      = trim($_POST['observacoes'] ?? '') ?: null;
     $ativo    = isset($_POST['ativo']) ? 1 : 0;
@@ -22,11 +23,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'campanh
     } else {
         $numBR = function ($v) { $v = trim((string)$v); return $v === '' ? null : (float)str_replace(',', '.', $v); };
         if ($id) {
-            db()->prepare('UPDATE campanhas_am SET nome=?,tipo=?,criterio=?,unidade=?,observacoes=?,ativo=?,ordem=? WHERE id=?')
-                ->execute([$nome, $tipo, $criterio, $unidade, $obs, $ativo, $ordem, $id]);
+            db()->prepare('UPDATE campanhas_am SET nome=?,tipo=?,criterio=?,canal=?,unidade=?,observacoes=?,ativo=?,ordem=? WHERE id=?')
+                ->execute([$nome, $tipo, $criterio, $canal, $unidade, $obs, $ativo, $ordem, $id]);
         } else {
-            db()->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,unidade,observacoes,ativo,ordem) VALUES (?,?,?,?,?,?,?)')
-                ->execute([$nome, $tipo, $criterio, $unidade, $obs, $ativo, $ordem]);
+            db()->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,canal,unidade,observacoes,ativo,ordem) VALUES (?,?,?,?,?,?,?,?)')
+                ->execute([$nome, $tipo, $criterio, $canal, $unidade, $obs, $ativo, $ordem]);
             $id = (int)db()->lastInsertId();
         }
 
@@ -142,7 +143,7 @@ require_once LAYOUT_PATH . '/header.php';
         <table class="table table-sm table-bordered align-middle bg-white">
             <thead class="table-light">
                 <tr>
-                    <th>Nome</th><th>Tipo</th><th>Critério</th><th>Unidade</th>
+                    <th>Nome</th><th>Tipo</th><th>Canal</th><th>Critério</th><th>Unidade</th>
                     <th class="text-center">Faixas</th><th class="text-center">Produtos</th>
                     <th class="text-center">Ativa</th><th style="width:120px"></th>
                 </tr>
@@ -152,6 +153,12 @@ require_once LAYOUT_PATH . '/header.php';
                 <tr>
                     <td class="fw-semibold"><?= e($c['nome']) ?><?php if ($c['observacoes']): ?><br><span class="text-muted small"><?= e($c['observacoes']) ?></span><?php endif; ?></td>
                     <td><span class="badge bg-<?= $c['tipo'] === 'bonificacao' ? 'info text-dark' : 'primary' ?>"><?= $c['tipo'] === 'bonificacao' ? 'Bonificação' : 'Desconto' ?></span></td>
+                    <?php
+                    $canalC   = $c['canal'] ?? 'todos';
+                    $canalCor = ['todos' => 'secondary', 'distribuidor' => 'dark', 'varejo' => 'success'][$canalC] ?? 'secondary';
+                    $canalTxt = ['todos' => 'Todos', 'distribuidor' => 'Distribuidor', 'varejo' => 'Varejo'][$canalC] ?? $canalC;
+                    ?>
+                    <td><span class="badge bg-<?= $canalCor ?>"><?= e($canalTxt) ?></span></td>
                     <td><?= $c['tipo'] === 'bonificacao' ? '—' : e(ucfirst($c['criterio'])) ?></td>
                     <td><?= e($c['unidade'] ?: '—') ?></td>
                     <td class="text-center"><?= $c['tipo'] === 'bonificacao' ? count($c['bonificacao']) . ' bônus' : count($c['faixas']) ?></td>
@@ -168,7 +175,7 @@ require_once LAYOUT_PATH . '/header.php';
                 </tr>
             <?php endforeach; ?>
             <?php if (!$campanhas): ?>
-                <tr><td colspan="8" class="text-center text-muted py-4">Nenhuma campanha cadastrada.</td></tr>
+                <tr><td colspan="9" class="text-center text-muted py-4">Nenhuma campanha cadastrada.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -178,6 +185,7 @@ require_once LAYOUT_PATH . '/header.php';
     // Modal de edição (uma por campanha) + modal de criação — mesmo corpo de formulário.
     $renderModalCampanha = function ($id, $c) use ($numFmt) {
         $nome = $c['nome'] ?? ''; $tipo = $c['tipo'] ?? 'desconto'; $criterio = $c['criterio'] ?? 'quantidade';
+        $canal = $c['canal'] ?? 'todos';
         $unidade = $c['unidade'] ?? ''; $obs = $c['observacoes'] ?? ''; $ativo = $c['ativo'] ?? 1; $ordem = $c['ordem'] ?? 0;
         $faixas = $c['faixas'] ?? []; $bonif = $c['bonificacao'] ?? [];
         $mid = 'mdlCamp-' . ($id ?: 'Nova');
@@ -201,14 +209,20 @@ require_once LAYOUT_PATH . '/header.php';
                             </select></div>
                         <div class="col-md-3"><label class="form-label small fw-semibold">Ordem</label>
                             <input type="number" name="ordem" class="form-control" value="<?= (int)$ordem ?>"></div>
-                        <div class="col-md-4"><label class="form-label small fw-semibold">Critério da faixa</label>
+                        <div class="col-md-3"><label class="form-label small fw-semibold">Canal</label>
+                            <select name="canal" class="form-select">
+                                <option value="todos" <?= $canal === 'todos' ? 'selected' : '' ?>>Todos</option>
+                                <option value="distribuidor" <?= $canal === 'distribuidor' ? 'selected' : '' ?>>Distribuidor</option>
+                                <option value="varejo" <?= $canal === 'varejo' ? 'selected' : '' ?>>Varejo</option>
+                            </select></div>
+                        <div class="col-md-3"><label class="form-label small fw-semibold">Critério da faixa</label>
                             <select name="criterio" class="form-select">
                                 <option value="quantidade" <?= $criterio === 'quantidade' ? 'selected' : '' ?>>Quantidade</option>
                                 <option value="valor" <?= $criterio === 'valor' ? 'selected' : '' ?>>Valor (R$)</option>
                             </select></div>
-                        <div class="col-md-4"><label class="form-label small fw-semibold">Unidade (rótulo)</label>
+                        <div class="col-md-3"><label class="form-label small fw-semibold">Unidade (rótulo)</label>
                             <input type="text" name="unidade" class="form-control" placeholder="tubos, un, R$..." value="<?= e($unidade) ?>"></div>
-                        <div class="col-md-4 d-flex align-items-end">
+                        <div class="col-md-3 d-flex align-items-end">
                             <div class="form-check">
                                 <input type="checkbox" class="form-check-input" name="ativo" id="ativo-<?= $mid ?>" <?= $ativo ? 'checked' : '' ?>>
                                 <label class="form-check-label" for="ativo-<?= $mid ?>">Campanha ativa</label>
@@ -270,7 +284,7 @@ require_once LAYOUT_PATH . '/header.php';
         <?php
     };
     foreach ($campanhas as $c) $renderModalCampanha((int)$c['id'], $c);
-    $renderModalCampanha(0, ['nome' => '', 'tipo' => 'desconto', 'criterio' => 'quantidade', 'unidade' => '', 'observacoes' => '', 'ativo' => 1, 'ordem' => count($campanhas), 'faixas' => [], 'bonificacao' => []]);
+    $renderModalCampanha(0, ['nome' => '', 'tipo' => 'desconto', 'criterio' => 'quantidade', 'canal' => 'todos', 'unidade' => '', 'observacoes' => '', 'ativo' => 1, 'ordem' => count($campanhas), 'faixas' => [], 'bonificacao' => []]);
     ?>
     <script>
     function campAddFaixa(mid) {
