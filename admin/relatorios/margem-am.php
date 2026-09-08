@@ -8,6 +8,17 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ini)) $ini = date('Y-m-01');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fim)) $fim = date('Y-m-t');
 $clienteId = (int)($_GET['cliente_id'] ?? 0);
 $bf = in_array($_GET['bf'] ?? '', ['1', '0'], true) ? $_GET['bf'] : '';
+// Status do pedido: por padrão só os que estão aguardando o comercial ('' = todos).
+$statusLabels = [
+    'comercial'   => 'Aguardando Comercial',
+    'financeiro'  => 'Aguardando Financeiro',
+    'faturamento' => 'Aguardando Faturamento',
+    'faturado'    => 'Faturado',
+    'reprovado'   => 'Cancelado',
+];
+$status = $_GET['status'] ?? 'comercial';
+if ($status === 'cancelado') $status = 'reprovado';           // enum legado, mesmo rótulo
+if (!isset($statusLabels[$status])) $status = '';
 
 // Clientes que já tiveram algum pedido importado do A&M (para o filtro).
 $clientesFiltro = db()->query("
@@ -20,14 +31,20 @@ $clientesFiltro = db()->query("
 $sql = "
     SELECT COALESCE(p.lote_id, CAST(p.id AS CHAR)) AS grp,
            MIN(p.id) AS pedido_id, p.numero_pedido, p.observacoes,
-           p.cliente_id, c.razao_social, MIN(p.data_pedido) AS data_pedido
+           p.cliente_id, c.razao_social, MIN(p.data_pedido) AS data_pedido,
+           MIN(p.status) AS status
     FROM pedidos p JOIN clientes c ON c.id = p.cliente_id
     WHERE p.observacoes LIKE 'Importado do sistema A&M%'
       AND DATE(p.data_pedido) BETWEEN ? AND ?";
 $params = [$ini, $fim];
 if ($clienteId) { $sql .= " AND p.cliente_id = ?"; $params[] = $clienteId; }
-$sql .= " GROUP BY grp, p.numero_pedido, p.observacoes, p.cliente_id, c.razao_social
-          ORDER BY data_pedido DESC, p.numero_pedido DESC";
+$sql .= " GROUP BY grp, p.numero_pedido, p.observacoes, p.cliente_id, c.razao_social";
+if ($status === 'reprovado') {                                  // 'cancelado' e 'reprovado' = mesmo status
+    $sql .= " HAVING MIN(p.status) IN ('cancelado','reprovado')";
+} elseif ($status) {
+    $sql .= " HAVING MIN(p.status) = ?"; $params[] = $status;
+}
+$sql .= " ORDER BY data_pedido DESC, p.numero_pedido DESC";
 $q = db()->prepare($sql);
 $q->execute($params);
 $pedidos = $q->fetchAll();
@@ -64,6 +81,7 @@ foreach ($pedidos as $p) {
         'numero'    => $p['numero_pedido'],
         'num_am'    => $numAM,
         'eh_bf'     => $ehBf,
+        'status'    => $p['status'],
         'cliente'   => $p['razao_social'],
         'data'      => $p['data_pedido'],
         'produtos'  => $produtos,
@@ -122,12 +140,21 @@ require_once LAYOUT_PATH . '/header.php';
             <label class="form-label fw-semibold small mb-1">Data final</label>
             <input type="date" name="fim" value="<?= e($fim) ?>" class="form-control form-control-sm">
         </div>
-        <div class="col-12 col-md-4">
+        <div class="col-12 col-md-3">
             <label class="form-label fw-semibold small mb-1">Cliente</label>
             <select name="cliente_id" class="form-select form-select-sm">
                 <option value="0">Todos</option>
                 <?php foreach ($clientesFiltro as $c): ?>
                 <option value="<?= (int)$c['id'] ?>" <?= $clienteId === (int)$c['id'] ? 'selected' : '' ?>><?= e($c['razao_social']) ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="col-6 col-md-2">
+            <label class="form-label fw-semibold small mb-1">Status</label>
+            <select name="status" class="form-select form-select-sm">
+                <option value="" <?= $status === '' ? 'selected' : '' ?>>Todos</option>
+                <?php foreach ($statusLabels as $st => $lbl): ?>
+                <option value="<?= $st ?>" <?= $status === $st ? 'selected' : '' ?>><?= e($lbl) ?></option>
                 <?php endforeach; ?>
             </select>
         </div>
@@ -139,8 +166,8 @@ require_once LAYOUT_PATH . '/header.php';
                 <option value="0" <?= $bf === '0' ? 'selected' : '' ?>>Só não-BF</option>
             </select>
         </div>
-        <div class="col-6 col-md-2">
-            <button class="btn btn-primary btn-sm w-100"><i class="bi bi-funnel me-1"></i>Filtrar</button>
+        <div class="col-6 col-md-1">
+            <button class="btn btn-primary btn-sm w-100" title="Filtrar"><i class="bi bi-funnel"></i></button>
         </div>
     </div>
 </form>
@@ -215,7 +242,10 @@ require_once LAYOUT_PATH . '/header.php';
                     <?= e($l['num_am']) ?>
                     <?php if ($l['eh_bf']): ?><span class="badge bg-primary ms-1">BF</span><?php endif; ?>
                 </td>
-                <td><?= e($l['numero']) ?></td>
+                <td>
+                    <?= e($l['numero']) ?>
+                    <span class="d-block mt-1" style="font-size:.7rem"><?= statusBadge($l['status']) ?></span>
+                </td>
                 <td class="text-truncate" style="max-width:190px" title="<?= e($l['cliente']) ?>"><?= e($l['cliente']) ?></td>
                 <td class="text-nowrap"><?= dataBR($l['data']) ?></td>
                 <td class="text-end"><?= moedaBR($l['produtos']) ?></td>
@@ -238,7 +268,7 @@ require_once LAYOUT_PATH . '/header.php';
                 </td>
             </tr>
         <?php endforeach; else: ?>
-            <tr><td colspan="12" class="text-center text-muted py-4">Nenhum pedido importado do A&amp;M no período.</td></tr>
+            <tr><td colspan="12" class="text-center text-muted py-4">Nenhum pedido importado do A&amp;M no período<?= $status ? ' com status “' . e($statusLabels[$status]) . '”' : '' ?>.</td></tr>
         <?php endif; ?>
         </tbody>
         <?php if ($linhas): ?>
