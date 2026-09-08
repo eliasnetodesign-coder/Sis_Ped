@@ -303,6 +303,12 @@ function db() {
             // Canal de venda a que a campanha se aplica (Distribuidor = "Pedido Accademia SIM"
             // no Cadastro de Distribuidores do A&M; Varejo = NAO; "todos" vale para os dois).
             try { $pdo->exec("ALTER TABLE campanhas_am ADD COLUMN canal ENUM('todos','distribuidor','varejo') NOT NULL DEFAULT 'todos'"); } catch (PDOException $e) {}
+            // Sigla usada no campo "Obs" do pedido no A&M quando a campanha é atingida
+            // (ex.: "color" -> "Desc 13% color"). Vazio = campanha não entra no Obs.
+            try { $pdo->exec("ALTER TABLE campanhas_am ADD COLUMN sigla_obs VARCHAR(30) NULL"); } catch (PDOException $e) {}
+            // 1 = só concede o desconto quando TODOS os produtos da campanha estão no pedido
+            // (qualquer quantidade de cada um); 0 = basta um deles.
+            try { $pdo->exec("ALTER TABLE campanhas_am ADD COLUMN exige_todos_produtos TINYINT NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanhas_am_produtos (
                 id             INT AUTO_INCREMENT PRIMARY KEY,
                 campanha_id    INT NOT NULL,
@@ -784,13 +790,13 @@ function campanhasAmSeedInicial(PDO $pdo): void {
     $dados = require $arq;
     if (!is_array($dados) || empty($dados['campanhas'])) return;
 
-    $insCamp  = $pdo->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,canal,unidade,observacoes,ativo,ordem) VALUES (?,?,?,?,?,?,1,?)');
+    $insCamp  = $pdo->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,canal,unidade,sigla_obs,exige_todos_produtos,observacoes,ativo,ordem) VALUES (?,?,?,?,?,?,?,?,1,?)');
     $insFaixa = $pdo->prepare('INSERT INTO campanhas_am_faixas (campanha_id,minimo,maximo,percentual) VALUES (?,?,?,?)');
     $insProd  = $pdo->prepare('INSERT INTO campanhas_am_produtos (campanha_id,codigo_produto,produto_nome) VALUES (?,?,?)');
     $insBonif = $pdo->prepare('INSERT INTO campanhas_am_bonificacao (campanha_id,qtd_base,produto_bonus_codigo,produto_bonus_nome,qtd_bonus) VALUES (?,?,?,?,?)');
 
     foreach ($dados['campanhas'] as $ordem => $c) {
-        $insCamp->execute([$c['nome'], $c['tipo'], $c['criterio'], $c['canal'] ?? 'todos', $c['unidade'] ?? null, $c['observacoes'] ?? null, $ordem]);
+        $insCamp->execute([$c['nome'], $c['tipo'], $c['criterio'], $c['canal'] ?? 'todos', $c['unidade'] ?? null, $c['sigla_obs'] ?? null, (int)($c['exige_todos_produtos'] ?? 0), $c['observacoes'] ?? null, $ordem]);
         $campId = (int)$pdo->lastInsertId();
         foreach ($c['faixas'] ?? [] as $f) $insFaixa->execute([$campId, $f[0], $f[1], $f[2]]);
         foreach ($c['produtos'] ?? [] as $p) $insProd->execute([$campId, $p[0], $p[1]]);
@@ -832,6 +838,31 @@ function campanhasAmListar(): array {
 /** Lista os produtos cadastrados como "fora de campanha" (campanhas_am_fora). */
 function campanhasAmForaLista(): array {
     return db()->query('SELECT * FROM campanhas_am_fora ORDER BY produto_nome')->fetchAll();
+}
+
+/**
+ * Monta o texto do campo "Obs" do pedido no A&M a partir das campanhas atingidas, no formato
+ * "BF-Desc 13% color, Desc 10% Desco": o prefixo "BF" seguido de uma entrada por campanha que
+ * concedeu desconto, usando a "Sigla no Obs" cadastrada na campanha (campanhas_am.sigla_obs).
+ * Campanha sem sigla, ou que não atingiu faixa nenhuma (0%), fica de fora.
+ *
+ * @param array  $campanhasAtingidas saída de campanhasAmAvaliarPedido()['campanhas_atingidas']
+ * @param string $prefixo            prefixo do Obs (padrão "BF")
+ * @return string texto pronto para o Obs; só o prefixo quando nenhuma campanha rendeu desconto.
+ */
+function campanhasAmTextoObs(array $campanhasAtingidas, string $prefixo = 'BF'): string {
+    $siglas = [];
+    foreach (campanhasAmListar() as $c) $siglas[(int)$c['id']] = trim((string)($c['sigla_obs'] ?? ''));
+
+    $partes = [];
+    foreach ($campanhasAtingidas as $ca) {
+        $pct = (float)($ca['percentual_esperado'] ?? 0);
+        if ($pct <= 0.005) continue;                                  // campanha sem faixa atingida
+        $sigla = $siglas[(int)($ca['campanha_id'] ?? 0)] ?? '';
+        if ($sigla === '') continue;                                  // campanha sem sigla cadastrada
+        $partes[] = 'Desc ' . rtrim(rtrim(number_format($pct, 2, ',', ''), '0'), ',') . '% ' . $sigla;
+    }
+    return $partes ? $prefixo . '-' . implode(', ', $partes) : $prefixo;
 }
 
 /** Acha, entre as faixas de uma campanha ([id,minimo,maximo,percentual]), a de maior "minimo" que $valor ainda atinge (null = nenhuma faixa atingida). */
@@ -900,15 +931,38 @@ function campanhasAmAvaliarPedido(array $itens, string $canal = 'todos'): array 
     }
 
     // 2) Para cada campanha com item presente, acha a faixa atingida e o % esperado.
+    // Campanha com "exige todos os produtos" (ex.: Camp 4 Distribuidor) só concede desconto
+    // quando TODOS os produtos da lista estão no pedido — a quantidade de cada um não importa.
     $percEsperado = []; $campanhasAtingidas = [];
     foreach ($itensPorCampanha as $campId => $itensC) {
         $c = $porId[$campId];
         $agregado = $c['criterio'] === 'valor' ? ($agValor[$campId] ?? 0) : ($agQtd[$campId] ?? 0);
-        $faixa = campanhasAmFaixaPara($c['faixas'], $agregado);
+
+        // Falta produto -> não concede. Quantidades diferentes entre os produtos -> concede
+        // assim mesmo, só marca o alerta (quem confere decide se aceita).
+        $faltantes = []; $qtdPorProduto = []; $qtdsDiferentes = false;
+        if (!empty($c['exige_todos_produtos'])) {
+            foreach ($itensC as $ic) {
+                $q = (int)($ic['qtd'] ?? 0);
+                if ($q > 0) $qtdPorProduto[$ic['codigo']] = ($qtdPorProduto[$ic['codigo']] ?? 0) + $q;
+            }
+            foreach ($c['produtos'] as $p) {
+                if (empty($qtdPorProduto[$p['codigo_produto']])) {
+                    $faltantes[] = $p['produto_nome'] ? $p['codigo_produto'] . ' - ' . $p['produto_nome'] : $p['codigo_produto'];
+                }
+            }
+            if (!$faltantes) $qtdsDiferentes = (count(array_unique($qtdPorProduto)) > 1);
+        }
+
+        $faixa = $faltantes ? null : campanhasAmFaixaPara($c['faixas'], $agregado);
         $percEsperado[$campId] = $faixa ? (float)$faixa['percentual'] : 0.0;
         $campanhasAtingidas[] = [
             'campanha_id' => $campId, 'nome' => $c['nome'], 'unidade' => $c['unidade'], 'criterio' => $c['criterio'],
             'agregado' => $agregado, 'percentual_esperado' => $percEsperado[$campId], 'faixa' => $faixa, 'itens' => $itensC,
+            'exige_todos_produtos'  => !empty($c['exige_todos_produtos']),
+            'produtos_faltantes'    => $faltantes,
+            'qtd_por_produto'       => $qtdPorProduto,
+            'quantidades_diferentes'=> $qtdsDiferentes,
         ];
     }
 
@@ -1568,17 +1622,23 @@ function liberarPedidoAEM(string $sidPed): array {
  * IMPORTANTE: grava de verdade no A&M. `$concluir=false` para antes do "Conclui Pedido"
  * (as edições de item já ficam salvas; só não re-submete o pedido para aprovação).
  *
- * @param string $numero       "Número do Pedido do Cliente" (o mesmo do Importa Pedido).
- * @param array  $pctPorCodigo [codigoAEM => %Diretoria]; item não citado recebe 0.
- * @param bool   $concluir     se true, executa "Conclui Pedido" ao final (quando a validação passa).
+ * Quando $obsNova é informado, grava também o campo "Obs" do pedido (célula "Obs" do grid
+ * Consulta/Reimprime: onClick exibe2('<SidPed>') -> obs() -> POST PD0311.EXE {SubKey=<SidPed>,
+ * AreaObs=<texto>}). O A&M SUBSTITUI o conteúdo do campo pelo texto enviado (não acrescenta).
+ *
+ * @param string  $numero       "Número do Pedido do Cliente" (o mesmo do Importa Pedido).
+ * @param array   $pctPorCodigo [codigoAEM => %Diretoria]; item não citado recebe 0.
+ * @param bool    $concluir     se true, executa "Conclui Pedido" ao final (quando a validação passa).
+ * @param ?string $obsNova      novo texto do campo "Obs" no A&M (null = não mexe no Obs).
  * @return array ['ok'=>bool,'erro'=>?string,'status'=>'gravado'|'parcial'|'erro','sid_ped'=>?string,
  *                'pedido_interno'=>?string,'pedido_cliente'=>?string,'itens'=>[...],'validacao'=>?string,
- *                'concluido'=>bool,'resposta'=>string]
+ *                'concluido'=>bool,'obs_gravada'=>?bool,'obs_texto'=>?string,'resposta'=>string]
  */
-function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $concluir = true): array {
+function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $concluir = true, ?string $obsNova = null): array {
     $numero = preg_replace('/\D/', '', $numero);
     $falha = fn($msg, $extra = []) => array_merge(['ok' => false, 'erro' => $msg, 'status' => 'erro', 'sid_ped' => null,
-        'pedido_interno' => null, 'pedido_cliente' => null, 'itens' => [], 'validacao' => null, 'concluido' => false, 'resposta' => ''], $extra);
+        'pedido_interno' => null, 'pedido_cliente' => null, 'itens' => [], 'validacao' => null, 'concluido' => false,
+        'obs_gravada' => null, 'obs_texto' => $obsNova, 'resposta' => ''], $extra);
     if ($numero === '') return $falha('Número de pedido inválido.');
     if (!function_exists('curl_init')) return $falha('Extensão cURL indisponível no servidor.');
 
@@ -1626,6 +1686,16 @@ function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $
     if ($linhasCom === 0) return $falha('Pedido não está entre os "Aguardando no Comercial" do A&M (já aprovado/cancelado ou fora do período).', ['resposta' => $log]);
     if ($linhasCom > 1) return $falha('Mais de um pedido "Aguardando no Comercial" com esse número no A&M — ajuste manualmente.', ['resposta' => $log]);
     if ($pedCliente === '') $pedCliente = $numero;
+
+    // 2.1) Campo "Obs" do pedido — feito aqui, antes de validar/concluir, enquanto o pedido
+    // ainda está "Aguardando no Comercial". O A&M substitui o texto inteiro pelo enviado.
+    $obsGravada = null;
+    if ($obsNova !== null && $obsNova !== '') {
+        $rObs = $chamar('/cgi-bin/ITF/PD0311.EXE', ['LNKTRANSPORTE' => $tok, 'SubKey' => $sidPed, 'AreaObs' => $obsNova]);
+        $rObsTxt = trim(preg_replace('/\s+/', ' ', strip_tags($rObs)));
+        $obsGravada = ($rObs !== '') && !preg_match('/erro|inv[aá]lid|permiss|negad/i', $rObsTxt);
+        $log .= "\n### OBS enviada: {$obsNova}\n### OBS resposta: " . mb_substr($rObsTxt, 0, 300) . "\n";
+    }
 
     // 3) "Altera" -> abre o editor (form VD350).
     $chamar('/cgi-bin/ITF/CT0051.EXE', [
@@ -1718,6 +1788,8 @@ function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $
         'itens'          => $detItens,
         'validacao'      => $valResumo,
         'concluido'      => $concluido,
+        'obs_gravada'    => $obsGravada,
+        'obs_texto'      => $obsNova,
         'resposta'       => $log . "\n\n=== VALIDAR ===\n" . $valResumo . "\n\n=== CONCLUI ===\n" . mb_substr(trim(strip_tags($concluiResp)), 0, 3000),
     ];
 }

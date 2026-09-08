@@ -123,6 +123,9 @@ if (isset($_GET['ajax_aem_preview'])) {
                 'unidade'           => $ca['unidade'],
                 'agregado'          => $ca['agregado'],
                 'percentualEsperado' => $ca['percentual_esperado'],
+                'produtosFaltantes' => $ca['produtos_faltantes'] ?? [],
+                'qtdsDiferentes'    => !empty($ca['quantidades_diferentes']),
+                'qtdPorProduto'     => $ca['qtd_por_produto'] ?? [],
             ];
         }, $av['campanhas_atingidas']) : [];
         $resp['temForaCampanha'] = $av ? $av['tem_item_fora_campanha'] : false;
@@ -182,6 +185,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         // (campanhasAmAvaliarPedido — mesma regra do módulo Análise Financeira).
         // Item que não pertence a nenhuma campanha atingida fica com 0.
         $bfOverrides = null;
+        $bfObsAM     = null;   // texto do campo "Obs" a gravar no A&M (ex.: "BF-Desc 13% color, Desc 10% Desco")
         if (($_POST['modo_bf'] ?? '') === '1' && ($_POST['aplicar_campanha'] ?? '') === '1' && !empty($r['ehBf'])) {
             $campItens = [];
             foreach ($r['itens'] as $it) {
@@ -199,6 +203,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             foreach ($av['campanhas_atingidas'] as $ca) {
                 foreach ($ca['itens'] as $ci) $bfOverrides[$ci['codigo']] = (float)$ca['percentual_esperado'];
             }
+            // Obs do pedido no A&M: "BF" + as campanhas que renderam desconto.
+            $bfObsAM = campanhasAmTextoObs($av['campanhas_atingidas']);
         }
 
         $itens = [];
@@ -274,7 +280,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         if ($bfOverrides !== null && ($_POST['gravar_am'] ?? '') === '1') {
             $pctPorCodigo = [];
             foreach ($r['itens'] as $it) $pctPorCodigo[$it['codigoAEM']] = $bfOverrides[$it['codigoAEM']] ?? 0.0;
-            $am = aplicarDescontoDiretoriaAEM($_POST['numero'] ?? '', $pctPorCodigo, true);
+            $am = aplicarDescontoDiretoriaAEM($_POST['numero'] ?? '', $pctPorCodigo, true, $bfObsAM);
             try {
                 db()->prepare('INSERT INTO descontos_diretoria_am_logs (numero_pedido,sid_ped,pedido_interno,pedido_sisped,usuario_id,usuario_nome,itens,status,mensagem,resposta) VALUES (?,?,?,?,?,?,?,?,?,?)')
                     ->execute([
@@ -287,6 +293,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             $amMsg = $am['ok']
                 ? ' % Diretoria gravado no pedido do A&M' . (!empty($am['concluido']) ? ' e "Conclui Pedido" executado.' : ' (sem concluir — conferir no A&M).')
                 : ' ATENÇÃO: não foi possível gravar o % Diretoria no A&M — ' . ($am['erro'] ?: 'ver Log de descontos') . '. O pedido no SisPed foi criado normalmente.';
+            if (isset($am['obs_gravada'])) {
+                $amMsg .= $am['obs_gravada']
+                    ? ' Obs do A&M atualizado para "' . $am['obs_texto'] . '".'
+                    : ' ATENÇÃO: não foi possível gravar o Obs "' . $am['obs_texto'] . '" no A&M.';
+            }
         }
 
         flash('success', 'Pedido ' . $res['numero_pedido'] . ' importado do A&M com ' . $res['criados'] . ' item(ns)!' . $creditoMsg . $bfMsg . $amMsg);
@@ -1223,7 +1234,19 @@ $cardDefs = [
                     var atg = c.criterio === 'valor'
                         ? parseFloat(c.agregado || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
                         : (parseInt(c.agregado || 0, 10) + ' ' + escapeHtml(c.unidade || ''));
-                    html += '<tr><td>' + escapeHtml(c.nome) + '</td>'
+                    var aviso = '';
+                    if (c.produtosFaltantes && c.produtosFaltantes.length) {
+                        aviso = '<div class="small text-danger"><i class="bi bi-exclamation-triangle me-1"></i>'
+                              + 'Exige todos os produtos da campanha — falta(m): '
+                              + escapeHtml(c.produtosFaltantes.join('; ')) + '</div>';
+                    } else if (c.qtdsDiferentes) {
+                        var qs = [];
+                        Object.keys(c.qtdPorProduto || {}).forEach(function (cod) { qs.push(cod + ' = ' + c.qtdPorProduto[cod]); });
+                        aviso = '<div class="small text-danger"><i class="bi bi-exclamation-triangle me-1"></i>'
+                              + 'Quantidades diferentes entre os produtos (desconto aplicado assim mesmo): '
+                              + escapeHtml(qs.join(', ')) + '</div>';
+                    }
+                    html += '<tr' + (aviso ? ' class="table-danger"' : '') + '><td>' + escapeHtml(c.nome) + aviso + '</td>'
                           + '<td>' + (c.criterio === 'valor' ? 'Valor' : 'Quantidade') + '</td>'
                           + '<td class="text-end">' + atg + '</td>'
                           + '<td class="text-end fw-semibold ' + (parseFloat(c.percentualEsperado) > 0 ? 'text-success' : 'text-muted') + '">'
@@ -1245,7 +1268,7 @@ $cardDefs = [
                       + '<label class="form-check-label small" for="aembfGravarAm">'
                       + 'Gravar o % Diretoria também no pedido do A&amp;M (Consulta/Reimprime → Altera → Itens → Validar → <strong>Conclui Pedido</strong>).'
                       + '</label>'
-                      + '<div class="form-text text-danger">Grava de verdade no A&amp;M e conclui o pedido. Registrado no log de descontos.</div>'
+                      + '<div class="form-text text-danger">Grava de verdade no A&amp;M e conclui o pedido. Também <strong>substitui o campo Obs</strong> por "BF-" + as campanhas atingidas (ex.: <code>BF-Desc 13% color, Desc 10% Desco</code>). Registrado no log de descontos.</div>'
                       + '</div>';
             }
         }

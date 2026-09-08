@@ -14,6 +14,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'campanh
     $criterio = in_array($_POST['criterio'] ?? '', ['quantidade', 'valor'], true) ? $_POST['criterio'] : 'quantidade';
     $canal    = in_array($_POST['canal'] ?? '', ['todos', 'distribuidor', 'varejo'], true) ? $_POST['canal'] : 'todos';
     $unidade  = trim($_POST['unidade'] ?? '') ?: null;
+    $siglaObs = trim($_POST['sigla_obs'] ?? '') ?: null;
+    $exigeTodos = isset($_POST['exige_todos_produtos']) ? 1 : 0;
     $obs      = trim($_POST['observacoes'] ?? '') ?: null;
     $ativo    = isset($_POST['ativo']) ? 1 : 0;
     $ordem    = (int)($_POST['ordem'] ?? 0);
@@ -23,11 +25,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'campanh
     } else {
         $numBR = function ($v) { $v = trim((string)$v); return $v === '' ? null : (float)str_replace(',', '.', $v); };
         if ($id) {
-            db()->prepare('UPDATE campanhas_am SET nome=?,tipo=?,criterio=?,canal=?,unidade=?,observacoes=?,ativo=?,ordem=? WHERE id=?')
-                ->execute([$nome, $tipo, $criterio, $canal, $unidade, $obs, $ativo, $ordem, $id]);
+            db()->prepare('UPDATE campanhas_am SET nome=?,tipo=?,criterio=?,canal=?,unidade=?,sigla_obs=?,exige_todos_produtos=?,observacoes=?,ativo=?,ordem=? WHERE id=?')
+                ->execute([$nome, $tipo, $criterio, $canal, $unidade, $siglaObs, $exigeTodos, $obs, $ativo, $ordem, $id]);
         } else {
-            db()->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,canal,unidade,observacoes,ativo,ordem) VALUES (?,?,?,?,?,?,?,?)')
-                ->execute([$nome, $tipo, $criterio, $canal, $unidade, $obs, $ativo, $ordem]);
+            db()->prepare('INSERT INTO campanhas_am (nome,tipo,criterio,canal,unidade,sigla_obs,exige_todos_produtos,observacoes,ativo,ordem) VALUES (?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$nome, $tipo, $criterio, $canal, $unidade, $siglaObs, $exigeTodos, $obs, $ativo, $ordem]);
             $id = (int)db()->lastInsertId();
         }
 
@@ -143,7 +145,7 @@ require_once LAYOUT_PATH . '/header.php';
         <table class="table table-sm table-bordered align-middle bg-white">
             <thead class="table-light">
                 <tr>
-                    <th>Nome</th><th>Tipo</th><th>Canal</th><th>Critério</th><th>Unidade</th>
+                    <th>Nome</th><th>Tipo</th><th>Canal</th><th>Critério</th><th>Unidade</th><th>Sigla no Obs</th>
                     <th class="text-center">Faixas</th><th class="text-center">Produtos</th>
                     <th class="text-center">Ativa</th><th style="width:120px"></th>
                 </tr>
@@ -161,8 +163,14 @@ require_once LAYOUT_PATH . '/header.php';
                     <td><span class="badge bg-<?= $canalCor ?>"><?= e($canalTxt) ?></span></td>
                     <td><?= $c['tipo'] === 'bonificacao' ? '—' : e(ucfirst($c['criterio'])) ?></td>
                     <td><?= e($c['unidade'] ?: '—') ?></td>
+                    <td><?= $c['sigla_obs'] ? '<code>' . e($c['sigla_obs']) . '</code>' : '<span class="text-muted">—</span>' ?></td>
                     <td class="text-center"><?= $c['tipo'] === 'bonificacao' ? count($c['bonificacao']) . ' bônus' : count($c['faixas']) ?></td>
-                    <td class="text-center"><a href="?tab=produtos&campanha=<?= (int)$c['id'] ?>"><?= count($c['produtos']) ?></a></td>
+                    <td class="text-center">
+                        <a href="?tab=produtos&campanha=<?= (int)$c['id'] ?>"><?= count($c['produtos']) ?></a>
+                        <?php if (!empty($c['exige_todos_produtos'])): ?>
+                            <span class="badge bg-warning text-dark" title="Só concede o desconto se todos os produtos da campanha estiverem no pedido">todos</span>
+                        <?php endif; ?>
+                    </td>
                     <td class="text-center"><?= $c['ativo'] ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-dash-circle text-muted"></i>' ?></td>
                     <td>
                         <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#mdlCamp-<?= (int)$c['id'] ?>"><i class="bi bi-pencil"></i></button>
@@ -175,7 +183,7 @@ require_once LAYOUT_PATH . '/header.php';
                 </tr>
             <?php endforeach; ?>
             <?php if (!$campanhas): ?>
-                <tr><td colspan="9" class="text-center text-muted py-4">Nenhuma campanha cadastrada.</td></tr>
+                <tr><td colspan="10" class="text-center text-muted py-4">Nenhuma campanha cadastrada.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -186,7 +194,8 @@ require_once LAYOUT_PATH . '/header.php';
     $renderModalCampanha = function ($id, $c) use ($numFmt) {
         $nome = $c['nome'] ?? ''; $tipo = $c['tipo'] ?? 'desconto'; $criterio = $c['criterio'] ?? 'quantidade';
         $canal = $c['canal'] ?? 'todos';
-        $unidade = $c['unidade'] ?? ''; $obs = $c['observacoes'] ?? ''; $ativo = $c['ativo'] ?? 1; $ordem = $c['ordem'] ?? 0;
+        $unidade = $c['unidade'] ?? ''; $siglaObsC = $c['sigla_obs'] ?? ''; $exigeTodosC = !empty($c['exige_todos_produtos']);
+        $obs = $c['observacoes'] ?? ''; $ativo = $c['ativo'] ?? 1; $ordem = $c['ordem'] ?? 0;
         $faixas = $c['faixas'] ?? []; $bonif = $c['bonificacao'] ?? [];
         $mid = 'mdlCamp-' . ($id ?: 'Nova');
         ?>
@@ -226,6 +235,16 @@ require_once LAYOUT_PATH . '/header.php';
                             <div class="form-check">
                                 <input type="checkbox" class="form-check-input" name="ativo" id="ativo-<?= $mid ?>" <?= $ativo ? 'checked' : '' ?>>
                                 <label class="form-check-label" for="ativo-<?= $mid ?>">Campanha ativa</label>
+                            </div>
+                        </div>
+                        <div class="col-md-4"><label class="form-label small fw-semibold">Sigla no Obs (A&amp;M)</label>
+                            <input type="text" name="sigla_obs" class="form-control" maxlength="30" placeholder="color, oxis, Desco, Lav, Selec..." value="<?= e($siglaObsC) ?>">
+                            <div class="form-text">Vira "Desc 13% <em>sigla</em>" no campo Obs do pedido no A&amp;M quando a campanha é atingida. Vazio = não entra no Obs.</div></div>
+                        <div class="col-md-8 d-flex align-items-end">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" name="exige_todos_produtos" id="exigetodos-<?= $mid ?>" <?= $exigeTodosC ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="exigetodos-<?= $mid ?>">Exigir <strong>todos</strong> os produtos da campanha no pedido</label>
+                                <div class="form-text">Marcado: só concede o desconto se todos os produtos da lista estiverem no pedido (qualquer quantidade de cada). Desmarcado: basta um deles.</div>
                             </div>
                         </div>
                         <div class="col-12"><label class="form-label small fw-semibold">Observações</label>
@@ -284,7 +303,7 @@ require_once LAYOUT_PATH . '/header.php';
         <?php
     };
     foreach ($campanhas as $c) $renderModalCampanha((int)$c['id'], $c);
-    $renderModalCampanha(0, ['nome' => '', 'tipo' => 'desconto', 'criterio' => 'quantidade', 'canal' => 'todos', 'unidade' => '', 'observacoes' => '', 'ativo' => 1, 'ordem' => count($campanhas), 'faixas' => [], 'bonificacao' => []]);
+    $renderModalCampanha(0, ['nome' => '', 'tipo' => 'desconto', 'criterio' => 'quantidade', 'canal' => 'todos', 'unidade' => '', 'sigla_obs' => '', 'exige_todos_produtos' => 0, 'observacoes' => '', 'ativo' => 1, 'ordem' => count($campanhas), 'faixas' => [], 'bonificacao' => []]);
     ?>
     <script>
     function campAddFaixa(mid) {

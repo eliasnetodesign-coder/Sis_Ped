@@ -476,7 +476,21 @@ require_once LAYOUT_PATH . '/header.php';
                                 <tbody>
                                 <?php foreach ($l['campanhas_atingidas'] as $ca): ?>
                                     <tr>
-                                        <td><?= e($ca['nome']) ?></td>
+                                        <td>
+                                            <?= e($ca['nome']) ?>
+                                            <?php if (!empty($ca['produtos_faltantes'])): ?>
+                                                <div class="small text-danger">
+                                                    <i class="bi bi-exclamation-triangle me-1"></i>Exige todos os produtos da campanha — falta(m) no pedido:
+                                                    <?= e(implode('; ', $ca['produtos_faltantes'])) ?>
+                                                </div>
+                                            <?php elseif (!empty($ca['quantidades_diferentes'])): ?>
+                                                <div class="small text-danger">
+                                                    <i class="bi bi-exclamation-triangle me-1"></i>Quantidades diferentes entre os produtos (desconto aplicado assim mesmo):
+                                                    <?php $qs = []; foreach ($ca['qtd_por_produto'] as $cod => $q) $qs[] = $cod . ' = ' . (int)$q; ?>
+                                                    <?= e(implode(', ', $qs)) ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </td>
                                         <td><?= $ca['criterio'] === 'valor' ? 'Valor' : 'Quantidade' ?></td>
                                         <td class="text-end"><?= $ca['criterio'] === 'valor' ? moedaBR($ca['agregado']) : (int)$ca['agregado'] ?> <span class="text-muted small"><?= e($ca['unidade']) ?></span></td>
                                         <td class="text-end fw-semibold <?= $ca['percentual_esperado'] > 0 ? 'text-success' : 'text-muted' ?>"><?= $pct($ca['percentual_esperado']) ?></td>
