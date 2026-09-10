@@ -103,11 +103,12 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
             if ((float)$camp['desconto'] > $bestDisc) $bestDisc = (float)$camp['desconto'];
         }
         $descCliCanal = min(100, $dCliente + $dCanal);
-        $descComDir   = min(100, (float)($item['desconto_comercial'] ?? 0) + (float)($item['desconto_diretoria'] ?? 0));
+        $fatorComDir  = (1 - min(100, (float)($item['desconto_comercial'] ?? 0)) / 100)
+                      * (1 - min(100, (float)($item['desconto_diretoria'] ?? 0)) / 100);
         $valor = $item['tipo_venda'] === 'bonificacao' ? 0.0
                : (float)$item['quantidade_total'] * (float)($item['preco'] ?? 0)
                  * (1 - $descCliCanal / 100)
-                 * (1 - $descComDir / 100)
+                 * $fatorComDir
                  * (1 - $bestDisc / 100);
         db()->prepare('UPDATE pedidos SET desconto_campanha = ?, valor_total = ? WHERE id = ?')
             ->execute([$bestDisc ?: null, $valor, $item['id']]);
@@ -140,8 +141,9 @@ function melhorCampanhaItem(array $prod, int $qtd, int $canalVendaId): float {
 }
 
 // Recalcula o valor_total de UM item de pedido (sem lote) aplicando os descontos em cascata:
-// (cliente + canal) sobre o preço de tabela, depois (comercial + diretoria) sobre esse resultado,
-// e por fim a campanha multiplicativamente.
+// (cliente + canal) sobre o preço de tabela, depois o comercial sobre esse resultado, depois o
+// da diretoria sobre o resultado do comercial, e por fim a campanha multiplicativamente.
+// Cliente e canal continuam somados entre si (35% = 5% + 30%); comercial e diretoria, não.
 function recalcularValorItem(int $id): void {
     $row = db()->prepare('SELECT p.*, c.desconto_cliente, c.desconto_canal, c.canal_venda_id
                           FROM pedidos p LEFT JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?');
@@ -157,9 +159,10 @@ function recalcularValorItem(int $id): void {
     $qtd      = (int)$row['quantidade_total'];
     $campDesc     = melhorCampanhaItem($prod, $qtd, (int)($row['canal_venda_id'] ?? 0));
     $descCliCanal = min(100, (float)($row['desconto_cliente'] ?? 0) + (float)($row['desconto_canal'] ?? 0));
-    $descComDir   = min(100, (float)($row['desconto_comercial'] ?? 0) + (float)($row['desconto_diretoria'] ?? 0));
+    $fatorComDir  = (1 - min(100, (float)($row['desconto_comercial'] ?? 0)) / 100)
+                  * (1 - min(100, (float)($row['desconto_diretoria'] ?? 0)) / 100);
     $valor = $row['tipo_venda'] === 'bonificacao' ? 0.0
-           : $qtd * (float)$prod['preco'] * (1 - $descCliCanal / 100) * (1 - $descComDir / 100) * (1 - $campDesc / 100);
+           : $qtd * (float)$prod['preco'] * (1 - $descCliCanal / 100) * $fatorComDir * (1 - $campDesc / 100);
     db()->prepare('UPDATE pedidos SET valor_total = ?, desconto_campanha = ? WHERE id = ?')
         ->execute([$valor, $campDesc ?: null, $id]);
 }

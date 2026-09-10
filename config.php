@@ -2438,9 +2438,10 @@ function criarPedidoImportadoAEM(int $clienteId, string $tipoVenda, array $itens
         if (!$prod) continue;
         $dComercial  = (float)($it['desconto_comercial'] ?? 0);
         $dDiretoria  = (float)($it['desconto_diretoria'] ?? 0);
-        $descComDir  = min(100, $dComercial + $dDiretoria);
+        // Comercial e Diretoria entram em cascata (um sobre o resultado do outro), não somados.
+        $fatorComDir = (1 - min(100, $dComercial) / 100) * (1 - min(100, $dDiretoria) / 100);
         $valor_total = $tipoVenda === 'bonificacao' ? 0.0
-                     : $qtd * (float)$prod['preco'] * (1 - $descCliCanal / 100) * (1 - $descComDir / 100);
+                     : $qtd * (float)$prod['preco'] * (1 - $descCliCanal / 100) * $fatorComDir;
         $ins->execute([$numero_pedido, $tipoVenda, $data, $clienteId, $produtoId, $supervisor, $prod['codigo_barra'], $prod['descricao_pt'], $qtd, $valor_total, $obs, $multiLote ? $lote_id : null, $moeda, $dComercial, $dDiretoria, $formaPagto]);
         $criados[] = (int)db()->lastInsertId();
     }
@@ -2689,7 +2690,9 @@ function calcularMargemPedido(int $pedidoId): array {
         $vCanal   = $precoPadrao * $descCanal / 100;
         $vCliente = $precoPadrao * $descCliente / 100;
         $resAposCliCanal = $precoPadrao - $vCanal - $vCliente;
-        $descPedidoPct = (float)$r['desconto_comercial'] + (float)$r['desconto_diretoria'];
+        // % efetivo de comercial + diretoria em cascata (ex.: 5% e 10% => 14,5%, não 15%)
+        $descPedidoPct = (1 - (1 - min(100, (float)$r['desconto_comercial']) / 100)
+                            * (1 - min(100, (float)$r['desconto_diretoria']) / 100)) * 100;
         $vPedido  = $resAposCliCanal * $descPedidoPct / 100;
         $resDescCascata = $resAposCliCanal - $vPedido;
         $descCampanhaPct = (float)($r['desconto_campanha'] ?? 0);

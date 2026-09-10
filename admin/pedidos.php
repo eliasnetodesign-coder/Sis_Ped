@@ -62,6 +62,8 @@ if (isset($_GET['ajax_aem_preview'])) {
             'qtd'         => $it['qtd'],
             'descComercial' => $it['descComercial'] ?? 0,
             'descDiretoria' => $it['descDiretoria'] ?? 0,
+            // "Valor Total" do item no A&M — já líquido dos descontos (%Descto, ST, Negociação e Diretoria).
+            'valorTotal'  => $it['valorTotal'] ?? 0,
             'produtoId'   => $prod['id'] ?? null,
             'produtoDesc' => $prod['descricao_pt'] ?? null,
             'temValor'    => $temValor,
@@ -106,14 +108,19 @@ if (isset($_GET['ajax_aem_preview'])) {
         // Canal do cliente no A&M: "Pedido Accademia = SIM" é Distribuidor; NAO/não localizado é Varejo.
         $canalCamp = (($r['pedidoAccademia'] ?? '') === 'SIM') ? 'distribuidor' : 'varejo';
         $av = $resp['ehBf'] ? campanhasAmAvaliarPedido($campItens, $canalCamp) : null;
-        $expByCod = [];
+        $expByCod = []; $campByCod = [];
         if ($av) {
             foreach ($av['campanhas_atingidas'] as $ca) {
-                foreach ($ca['itens'] as $ci) $expByCod[$ci['codigo']] = (float)$ca['percentual_esperado'];
+                foreach ($ca['itens'] as $ci) {
+                    $expByCod[$ci['codigo']]  = (float)$ca['percentual_esperado'];
+                    $campByCod[$ci['codigo']] = $ca['nome'];
+                }
             }
         }
         foreach ($resp['itens'] as &$ri) {
             $ri['pctDiretoriaCampanha'] = $resp['ehBf'] ? (float)($expByCod[$ri['codigoAEM']] ?? 0) : null;
+            // Campanha de que o item participa (null = não participa de nenhuma).
+            $ri['campanhaNome'] = $resp['ehBf'] ? ($campByCod[$ri['codigoAEM']] ?? null) : null;
         }
         unset($ri);
         $resp['campanhasAtingidas'] = $av ? array_map(function ($ca) {
@@ -885,8 +892,24 @@ $cardDefs = [
 </div>
 
 <!-- Modal: Importa Pedido BF (mesma importação do A&M + descontos de campanha "BF") -->
+<style>
+/* Tabela de itens do "Importa Pedido BF": mais densa, sem quebras feias de número/cabeçalho. */
+#aembfResultado .tbl-bf { font-size: .8rem; }
+#aembfResultado .tbl-bf th,
+#aembfResultado .tbl-bf td.num { white-space: nowrap; }
+#aembfResultado .tbl-bf th     { vertical-align: bottom; }
+#aembfResultado .tbl-bf td.num { text-align: right; font-variant-numeric: tabular-nums; }
+#aembfResultado .tbl-bf th.num { text-align: right; }
+/* Nomes longos ficam em uma linha só, com "..." — o texto completo vai no title. */
+#aembfResultado .tbl-bf .prod {
+    max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#aembfResultado .tbl-bf .camp { white-space: nowrap; }
+#aembfResultado .tbl-bf > :not(caption) > * > * { padding: .35rem .5rem; }
+@media (max-width: 991.98px) { #aembfResultado .tbl-bf .prod { max-width: 150px; } }
+</style>
 <div class="modal fade" id="modalImportaAEMBF" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-dialog modal-fullscreen-xl-down modal-xl modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title fw-bold"><i class="bi bi-tags me-2 text-primary"></i>Importa Pedido BF</h5>
@@ -1158,6 +1181,41 @@ $cardDefs = [
     var bfData = null;
     var bfAplicar = false;
 
+    // Colunas da tabela de itens; o cabeçalho é clicável para reordenar a visualização.
+    var bfCols = [
+        {campo: 'codigoAEM',            titulo: 'Cód. A&amp;M',       tipo: 'txt', cls: 'num'},
+        {campo: 'nomeProduto',          titulo: 'Produto (A&amp;M)',  tipo: 'txt', cls: 'prod'},
+        {campo: 'qtd',                  titulo: 'Qtd',                tipo: 'num', cls: 'num'},
+        {campo: 'valorTotal',           titulo: 'Valor',              tipo: 'num', cls: 'num'},
+        {campo: 'descComercial',        titulo: 'Desc.Com',           tipo: 'num', cls: 'num'},
+        {campo: 'descDiretoria',        titulo: '% Dir. A&amp;M',     tipo: 'num', cls: 'num'},
+        {campo: 'campanhaNome',         titulo: 'Campanha',           tipo: 'txt', cls: 'camp'},
+        {campo: 'pctDiretoriaCampanha', titulo: '% Dir. camp.',       tipo: 'num', cls: 'num'},
+        {campo: 'produtoDesc',          titulo: 'Produto no SisPed',  tipo: 'txt', cls: 'prod'}
+    ];
+    var bfSortCol = null;   // campo ordenado no momento
+    var bfSortDir = 1;      // 1 = crescente, -1 = decrescente
+
+    // Reordena só a visualização — a importação relê os itens do A&M no servidor.
+    function bfOrdenar(campo) {
+        var col = bfCols.filter(function (c) { return c.campo === campo; })[0];
+        if (!col || !bfItens.length) return;
+        if (bfSortCol === campo) bfSortDir = -bfSortDir; else { bfSortCol = campo; bfSortDir = 1; }
+        bfItens.sort(function (a, b) {
+            var va = a[campo], vb = b[campo];
+            if (col.tipo === 'num') {
+                va = parseFloat(va); vb = parseFloat(vb);
+                if (isNaN(va)) va = -Infinity;
+                if (isNaN(vb)) vb = -Infinity;
+                return (va === vb ? 0 : (va < vb ? -1 : 1)) * bfSortDir;
+            }
+            va = (va === null || va === undefined) ? '' : String(va);
+            vb = (vb === null || vb === undefined) ? '' : String(vb);
+            return va.localeCompare(vb, 'pt-BR', {numeric: true}) * bfSortDir;
+        });
+        render(bfData);
+    }
+
     function escapeHtml(s) {
         return (s === null || s === undefined ? '' : String(s)).replace(/[&<>"']/g, function(c) {
             return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
@@ -1166,6 +1224,11 @@ $cardDefs = [
     function pctBR(v) {
         if (v === null || v === undefined) return '—';
         return (Math.round(parseFloat(v) * 100) / 100).toLocaleString('pt-BR') + '%';
+    }
+    function moedaBR(v) {
+        var n = parseFloat(v);
+        if (v === null || v === undefined || isNaN(n)) return '—';
+        return 'R$ ' + n.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     }
     function temProblema(it) {
         return !it.produtoId || it.temValor === false || it.temCusto === false;
@@ -1189,23 +1252,28 @@ $cardDefs = [
 
         var canalAEM = d.pedidoAccademia === 'SIM' ? 'Distribuidor' : (d.pedidoAccademia === 'NAO' ? 'Varejo' : '—');
         var html = '<div class="mb-3">';
-        html += '<div class="small text-muted">Pedido Interno A&amp;M: <strong>' + escapeHtml(d.pedidoInterno || '—')
+        html += '<div class="small text-muted mb-2">Pedido Interno A&amp;M: <strong>' + escapeHtml(d.pedidoInterno || '—')
               + '</strong> &middot; Tipo: <strong>' + (d.tipoVenda === 'bonificacao' ? 'Bonificação' : 'Venda')
               + '</strong> &middot; Forma Pagto: <strong>' + escapeHtml(d.formaPagto || '—')
               + '</strong> &middot; Canal (A&amp;M): <strong>' + canalAEM + '</strong></div>';
-        if (d.isAVista) {
-            html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-percent me-1"></i>'
-                  + 'Pagamento à vista — será aplicado desconto de 5% sobre o total do pedido.</div>';
+
+        // Avisos informativos numa linha compacta de "chips", em vez de blocos empilhados.
+        function chip(cor, icone, txt) {
+            return '<span class="badge bg-' + cor + '-subtle text-' + cor + '-emphasis border border-' + cor
+                 + '-subtle fw-normal py-2"><i class="bi bi-' + icone + ' me-1"></i>' + txt + '</span>';
         }
+        var chips = [];
+        if (d.clienteId) chips.push(chip('success', 'check-circle', 'Cliente: <strong>' + escapeHtml(d.clienteLabel) + '</strong>'));
+        if (d.ehBf)      chips.push(chip('primary', 'tags', 'Campanha (Obs: “' + escapeHtml(d.obs || 'BF') + '”)'));
+        if (d.isAVista)  chips.push(chip('info', 'percent', 'À vista — 5% sobre o total'));
         if (d.creditoUtilizado > 0.001) {
-            html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-coin me-1"></i>'
-                  + 'Crédito Utilizado no A&amp;M: <strong>' + d.creditoUtilizado.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
-                  + '</strong> — será lançado como concessão de crédito do cliente ao confirmar.</div>';
+            chips.push(chip('info', 'coin', 'Crédito A&amp;M: <strong>'
+                + d.creditoUtilizado.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+                + '</strong> — vira concessão de crédito'));
         }
-        if (d.clienteId) {
-            html += '<div class="alert alert-success py-2 mb-0 mt-2"><i class="bi bi-check-circle me-1"></i>Cliente identificado: '
-                  + escapeHtml(d.clienteLabel) + '</div>';
-        } else {
+        if (chips.length) html += '<div class="d-flex flex-wrap gap-2">' + chips.join('') + '</div>';
+
+        if (!d.clienteId) {
             html += '<div class="alert alert-warning py-2 mb-2 mt-2"><i class="bi bi-exclamation-triangle me-1"></i>'
                   + 'Cliente do A&amp;M (' + escapeHtml(d.clienteNomeAEM) + ' &mdash; CNPJ ' + escapeHtml(d.clienteCnpjAEM)
                   + ') não encontrado no SisPed. Selecione manualmente:</div>';
@@ -1223,13 +1291,14 @@ $cardDefs = [
                   + 'Obs do pedido' + (d.obs ? ': “' + escapeHtml(d.obs) + '”' : ' vazio') + ' — não começa com “BF”. '
                   + 'Será importado <strong>sem</strong> desconto de campanha.</div>';
         } else {
-            html += '<div class="alert alert-info py-2"><i class="bi bi-tags me-1"></i>'
-                  + 'Pedido de campanha (Obs: “' + escapeHtml(d.obs || 'BF') + '”).</div>';
             var camps = d.campanhasAtingidas || [];
+            html += '<div class="border rounded p-2 mb-3 bg-body-tertiary">'
+                  + '<div class="fw-semibold small text-uppercase text-muted mb-2">'
+                  + '<i class="bi bi-tags me-1"></i>Campanhas atingidas</div>';
             if (camps.length) {
-                html += '<div class="table-responsive mb-2"><table class="table table-sm mb-1">'
-                      + '<thead class="table-light"><tr><th>Campanha</th><th>Critério</th><th class="text-end">Atingido</th>'
-                      + '<th class="text-end">% Diretoria esperado</th></tr></thead><tbody>';
+                html += '<div class="table-responsive mb-2"><table class="table table-sm tbl-bf mb-1">'
+                      + '<thead class="table-light"><tr><th>Campanha</th><th>Critério</th><th class="num">Atingido</th>'
+                      + '<th class="num">% Dir. esperado</th></tr></thead><tbody>';
                 camps.forEach(function(c) {
                     var atg = c.criterio === 'valor'
                         ? parseFloat(c.agregado || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
@@ -1248,8 +1317,8 @@ $cardDefs = [
                     }
                     html += '<tr' + (aviso ? ' class="table-danger"' : '') + '><td>' + escapeHtml(c.nome) + aviso + '</td>'
                           + '<td>' + (c.criterio === 'valor' ? 'Valor' : 'Quantidade') + '</td>'
-                          + '<td class="text-end">' + atg + '</td>'
-                          + '<td class="text-end fw-semibold ' + (parseFloat(c.percentualEsperado) > 0 ? 'text-success' : 'text-muted') + '">'
+                          + '<td class="num">' + atg + '</td>'
+                          + '<td class="num fw-semibold ' + (parseFloat(c.percentualEsperado) > 0 ? 'text-success' : 'text-muted') + '">'
                           + pctBR(c.percentualEsperado) + '</td></tr>';
                 });
                 html += '</tbody></table></div>';
@@ -1271,19 +1340,31 @@ $cardDefs = [
                       + '<div class="form-text text-danger">Grava de verdade no A&amp;M e conclui o pedido. Também <strong>substitui o campo Obs</strong> por "BF-" + as campanhas atingidas (ex.: <code>BF-Desc 13% color, Desc 10% Desco</code>). Registrado no log de descontos.</div>'
                       + '</div>';
             }
+            html += '</div>';
         }
 
-        // Tabela de itens
-        html += '<div class="table-responsive"><table class="table table-sm align-middle">'
-              + '<thead><tr><th>Código A&amp;M</th><th>Produto (A&amp;M)</th><th class="text-end">Qtd</th>'
-              + '<th class="text-end">Desc.Com%</th><th class="text-end">% Diretoria (A&amp;M)</th>'
-              + '<th class="text-end">% Diretoria campanha</th><th>Produto no SisPed</th></tr></thead><tbody>';
+        // Tabela de itens — cabeçalho clicável para ordenar (ex.: agrupar por campanha).
+        var thead = bfCols.map(function (col) {
+            var ativa = (bfSortCol === col.campo);
+            var seta  = ativa
+                ? ' <i class="bi bi-caret-' + (bfSortDir > 0 ? 'up' : 'down') + '-fill"></i>'
+                : ' <i class="bi bi-arrow-down-up text-muted opacity-50" style="font-size:.7em"></i>';
+            return '<th class="bf-th-sort ' + col.cls + (ativa ? ' table-active' : '') + '"'
+                 + ' data-campo="' + col.campo + '" style="cursor:pointer;user-select:none"'
+                 + ' title="Clique para ordenar por ' + col.titulo.replace(/&amp;/g, '&') + '">'
+                 + col.titulo + seta + '</th>';
+        }).join('');
+        html += '<div class="table-responsive"><table class="table table-sm align-middle tbl-bf mb-0">'
+              + '<thead class="table-light"><tr>' + thead + '</tr></thead><tbody>';
+        var somaValor = 0, somaQtd = 0;
         bfItens.forEach(function(it) {
+            somaValor += parseFloat(it.valorTotal) || 0;
+            somaQtd   += parseInt(it.qtd, 10) || 0;
             var statusCol;
             if (!it.produtoId) {
                 statusCol = '<span class="text-danger fw-semibold">Não mapeado</span>';
             } else {
-                statusCol = escapeHtml(it.produtoDesc);
+                statusCol = '<span title="' + escapeHtml(it.produtoDesc) + '">' + escapeHtml(it.produtoDesc) + '</span>';
                 var avisos = [];
                 if (it.temValor === false) avisos.push('sem Valor');
                 if (it.temCusto === false) avisos.push('sem Custo');
@@ -1292,17 +1373,27 @@ $cardDefs = [
             var campCell = (it.pctDiretoriaCampanha === null || it.pctDiretoriaCampanha === undefined)
                 ? '<span class="text-muted">—</span>'
                 : pctBR(it.pctDiretoriaCampanha);
+            var campNomeCell = it.campanhaNome
+                ? '<span class="badge bg-primary-subtle text-primary-emphasis border border-primary-subtle text-truncate mw-100">' + escapeHtml(it.campanhaNome) + '</span>'
+                : '<span class="text-muted">Fora de campanha</span>';
             html += '<tr' + (temProblema(it) ? ' class="table-danger"' : (bfAplicar ? ' class="table-warning"' : '')) + '>'
-                + '<td>' + escapeHtml(it.codigoAEM) + '</td>'
-                + '<td>' + escapeHtml(it.nomeProduto) + '</td>'
-                + '<td class="text-end">' + it.qtd + '</td>'
-                + '<td class="text-end">' + (it.descComercial || 0) + '</td>'
-                + '<td class="text-end">' + pctBR(it.descDiretoria || 0) + '</td>'
-                + '<td class="text-end ' + (bfAplicar ? 'fw-bold text-success' : '') + '">' + campCell + '</td>'
-                + '<td>' + statusCol + '</td>'
+                + '<td class="num">' + escapeHtml(it.codigoAEM) + '</td>'
+                + '<td class="prod" title="' + escapeHtml(it.nomeProduto) + '">' + escapeHtml(it.nomeProduto) + '</td>'
+                + '<td class="num">' + it.qtd + '</td>'
+                + '<td class="num">' + moedaBR(it.valorTotal) + '</td>'
+                + '<td class="num">' + pctBR(it.descComercial || 0) + '</td>'
+                + '<td class="num">' + pctBR(it.descDiretoria || 0) + '</td>'
+                + '<td class="camp">' + campNomeCell + '</td>'
+                + '<td class="num ' + (bfAplicar ? 'fw-bold text-success' : '') + '">' + campCell + '</td>'
+                + '<td class="prod">' + statusCol + '</td>'
                 + '</tr>';
         });
-        html += '</tbody></table></div>';
+        html += '</tbody><tfoot class="table-light fw-semibold"><tr>'
+              + '<td colspan="2">' + bfItens.length + ' item(ns)</td>'
+              + '<td class="num">' + somaQtd + '</td>'
+              + '<td class="num">' + moedaBR(somaValor) + '</td>'
+              + '<td colspan="5"></td>'
+              + '</tr></tfoot></table></div>';
         el.innerHTML = html;
 
         var sel = document.getElementById('aembfClienteSelect');
@@ -1322,10 +1413,17 @@ $cardDefs = [
         atualizarConfirmar();
     }
 
+    // Clique no cabeçalho da tabela de itens = reordena (o conteúdo é redesenhado a cada render).
+    document.getElementById('aembfResultado').addEventListener('click', function (e) {
+        var th = e.target.closest('.bf-th-sort');
+        if (th) bfOrdenar(th.dataset.campo);
+    });
+
     document.getElementById('aembfBuscarBtn').addEventListener('click', function() {
         var numero = document.getElementById('aembfNumero').value.trim();
         if (!numero) return;
         bfAplicar = false;
+        bfSortCol = null; bfSortDir = 1;   // nova busca volta à ordem original do A&M
         document.getElementById('aembfResultado').innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></div>';
         document.getElementById('aembfConfirmarBtn').disabled = true;
         fetch('<?= BASE_URL ?>/admin/pedidos.php?ajax_aem_preview=1&bf=1&numero=' + encodeURIComponent(numero))
@@ -1354,6 +1452,7 @@ $cardDefs = [
         document.getElementById('aembfResultado').innerHTML = '';
         document.getElementById('aembfConfirmarBtn').disabled = true;
         bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false;
+        bfSortCol = null; bfSortDir = 1;
     });
 })();
 </script>
