@@ -5,31 +5,34 @@ requireAdmin();
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $a = $_POST['action'] ?? '';
     try {
-        $d = [
-            $_POST['codigo_cliente'], $_POST['cnpj'], $_POST['cpf'], $_POST['razao_social'],
-            $_POST['cep'], $_POST['endereco'], $_POST['numero'], $_POST['complemento'],
-            $_POST['bairro'], $_POST['cidade'], $_POST['estado'], $_POST['pais'],
-            $_POST['telefone1'], $_POST['telefone2'], $_POST['email'],
-            $_POST['supervisor'] ?? '', $_POST['canal_venda_id'] ?: null,
-            (float)$_POST['desconto_cliente'], (float)$_POST['limite_credito'],
-            $_POST['idioma'], $_POST['moeda'], $_POST['status'],
-            min(4.0, max(0.0, (float)($_POST['bonus_desempenho'] ?? 0))),
-            min(5,   max(0,   (int)  ($_POST['material_apoio']   ?? 0))),
-            $_POST['regime_tributario'] ?: null,
-        ];
-        // Cap desconto_canal to canal's maximum
-        $descanal = (float)($_POST['desconto_canal'] ?? 0);
-        $canalId  = intval($_POST['canal_venda_id'] ?? 0);
-        if ($canalId) {
-            $capRow = db()->prepare('SELECT desconto FROM canal_venda WHERE id = ?');
-            $capRow->execute([$canalId]);
-            $capRow = $capRow->fetch();
-            if ($capRow && $descanal > (float)$capRow['desconto']) {
-                $descanal = (float)$capRow['desconto'];
+        // Campos do formulário de cadastro — só existem em criar/editar
+        if ($a === 'criar' || $a === 'editar') {
+            $d = [
+                $_POST['codigo_cliente'], $_POST['cnpj'], $_POST['cpf'], $_POST['razao_social'],
+                $_POST['cep'], $_POST['endereco'], $_POST['numero'], $_POST['complemento'],
+                $_POST['bairro'], $_POST['cidade'], $_POST['estado'], $_POST['pais'],
+                $_POST['telefone1'], $_POST['telefone2'], $_POST['email'],
+                $_POST['supervisor'] ?? '', $_POST['canal_venda_id'] ?: null,
+                (float)$_POST['desconto_cliente'], (float)$_POST['limite_credito'],
+                $_POST['idioma'], $_POST['moeda'], $_POST['status'],
+                min(4.0, max(0.0, (float)($_POST['bonus_desempenho'] ?? 0))),
+                min(5,   max(0,   (int)  ($_POST['material_apoio']   ?? 0))),
+                $_POST['regime_tributario'] ?: null,
+            ];
+            // Cap desconto_canal to canal's maximum
+            $descanal = (float)($_POST['desconto_canal'] ?? 0);
+            $canalId  = intval($_POST['canal_venda_id'] ?? 0);
+            if ($canalId) {
+                $capRow = db()->prepare('SELECT desconto FROM canal_venda WHERE id = ?');
+                $capRow->execute([$canalId]);
+                $capRow = $capRow->fetch();
+                if ($capRow && $descanal > (float)$capRow['desconto']) {
+                    $descanal = (float)$capRow['desconto'];
+                }
             }
+            // Insert desconto_canal at position 18 (after desconto_cliente)
+            array_splice($d, 18, 0, [$descanal]);
         }
-        // Insert desconto_canal at position 18 (after desconto_cliente)
-        array_splice($d, 18, 0, [$descanal]);
         if ($a === 'criar') {
             if (!$_POST['senha']) throw new Exception('Senha obrigatória.');
             $d[] = $_POST['senha'];
@@ -102,6 +105,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'email'          => $email ?: null,
                     'supervisor'     => trim($row['supervisor'] ?? $row['vendedor'] ?? ''),
                     'status'         => $status,
+                    'regime_tributario' => ($row['regime_tributario'] ?? '') === 'Simples Nacional' ? 'Simples Nacional' : 'Lucro Real',
                 ];
                 if ($existing) {
                     $cols = array_map(function($k){ return "$k=?"; }, array_keys($f));
@@ -110,17 +114,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $upd++;
                 } else {
                     $senha = str_pad(rand(0, 9999999), 8, '0', STR_PAD_LEFT);
-                    db()->prepare('INSERT INTO clientes (codigo_cliente,cnpj,cpf,razao_social,cep,endereco,numero,complemento,bairro,cidade,estado,pais,telefone1,telefone2,email,supervisor,canal_venda_id,desconto_cliente,limite_credito,idioma,moeda,status,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                        ->execute([$f['codigo_cliente'],$f['cnpj'],'',$f['razao_social'],$f['cep'],$f['endereco'],$f['numero'],$f['complemento'],$f['bairro'],$f['cidade'],$f['estado'],$f['pais'],$f['telefone1'],'',$f['email'],$f['supervisor'],null,0,0,'pt','BRL',$f['status'],$senha]);
+                    db()->prepare('INSERT INTO clientes (codigo_cliente,cnpj,cpf,razao_social,cep,endereco,numero,complemento,bairro,cidade,estado,pais,telefone1,telefone2,email,supervisor,canal_venda_id,desconto_cliente,limite_credito,idioma,moeda,status,regime_tributario,senha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                        ->execute([$f['codigo_cliente'],$f['cnpj'],'',$f['razao_social'],$f['cep'],$f['endereco'],$f['numero'],$f['complemento'],$f['bairro'],$f['cidade'],$f['estado'],$f['pais'],$f['telefone1'],'',$f['email'],$f['supervisor'],null,0,0,'pt','BRL',$f['status'],$f['regime_tributario'],$senha]);
                     $ins++;
                 }
             }
-            $msg = "Importação concluída: $ins inserido(s), $upd atualizado(s)";
-            if ($skip > 0)           $msg .= ", $skip linha(s) sem Razão Social ignorada(s)";
-            if ($emailConflitos > 0) $msg .= ", $emailConflitos e-mail(s) duplicado(s) ignorado(s)";
-            flash('success', $msg . '.');
+            // A importação chega em lotes via AJAX (uma requisição única estoura o timeout de 60s do proxy).
+            // Os totais são acumulados na sessão e o flash só é gerado no último lote.
+            if ((int)($_POST['lote'] ?? 0) === 0 || !isset($_SESSION['import_clientes'])) {
+                $_SESSION['import_clientes'] = ['ins' => 0, 'upd' => 0, 'skip' => 0, 'conf' => 0];
+            }
+            $t = &$_SESSION['import_clientes'];
+            $t['ins'] += $ins; $t['upd'] += $upd; $t['skip'] += $skip; $t['conf'] += $emailConflitos;
+            if (!empty($_POST['ultimo'])) {
+                $msg = "Importação concluída: {$t['ins']} inserido(s), {$t['upd']} atualizado(s)";
+                if ($t['skip'] > 0) $msg .= ", {$t['skip']} linha(s) sem Razão Social ignorada(s)";
+                if ($t['conf'] > 0) $msg .= ", {$t['conf']} e-mail(s) duplicado(s) ignorado(s)";
+                flash('success', $msg . '.');
+                unset($t, $_SESSION['import_clientes']);
+            }
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => true, 'ins' => $ins, 'upd' => $upd]);
+            exit;
         }
     } catch (Exception $e) {
+        if ($a === 'importar') {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => false, 'erro' => $e->getMessage()]);
+            exit;
+        }
         flash('danger', 'Erro: ' . $e->getMessage());
     }
     $rp = array_filter([
@@ -361,7 +383,7 @@ require_once LAYOUT_PATH . '/header.php';
                                 'H'=>'Endereço','I'=>'Número','J'=>'Complemento',
                                 'K'=>'Bairro','L'=>'Cidade','N'=>'Estado','O'=>'País',
                                 'P'=>'CEP','Q'=>'Telefone 1','Y'=>'E-mail',
-                                'AC'=>'Supervisor','BW'=>'Status'
+                                'AC'=>'Supervisor','BN/BO'=>'Regime Tributário (algum "Sim" = Simples Nacional, senão Lucro Real)','BW'=>'Status'
                             ] as $col => $label): ?>
                             <span class="badge bg-light text-dark border">
                                 <span class="fw-bold text-primary"><?= $col ?></span> → <?= $label ?>
@@ -409,6 +431,7 @@ require_once LAYOUT_PATH . '/header.php';
                                     <th>Telefone</th>
                                     <th>E-mail</th>
                                     <th>Supervisor</th>
+                                    <th>Regime</th>
                                     <th>Status</th>
                                 </tr>
                             </thead>
@@ -424,15 +447,10 @@ require_once LAYOUT_PATH . '/header.php';
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" onclick="resetImport()">Cancelar</button>
-                <form method="POST" id="formImport" style="display:contents">
-                    <input type="hidden" name="action" value="importar">
-                    <input type="hidden" name="dados" id="imp-dados">
-                    <button type="submit" class="btn btn-success d-none" id="imp-btn-submit"
-                            onclick="document.getElementById('imp-dados').value=JSON.stringify(importData)">
-                        <i class="bi bi-upload me-1"></i>
-                        <span id="imp-btn-label">Importar</span>
-                    </button>
-                </form>
+                <button type="button" class="btn btn-success d-none" id="imp-btn-submit" onclick="importarEmLotes()">
+                    <i class="bi bi-upload me-1"></i>
+                    <span id="imp-btn-label">Importar</span>
+                </button>
             </div>
         </div>
     </div>
@@ -498,6 +516,8 @@ var IMP_MAP = {
     16: 'telefone1',
     24: 'email',
     28: 'supervisor',
+    65: 'simples_bn', // BN — informativo p/ regime tributário
+    66: 'simples_bo', // BO — informativo p/ regime tributário
     74: 'status'
 };
 
@@ -543,6 +563,11 @@ function primeiroEmail(raw) {
     return m ? m[0].toLowerCase() : '';
 }
 
+function ehSim(v) {
+    v = String(v || '').trim().toLowerCase();
+    return v === 'sim' || v === 's';
+}
+
 function processarLinhas(rows) {
     importData = [];
     var skipped = 0;
@@ -553,6 +578,10 @@ function processarLinhas(rows) {
             obj[IMP_MAP[col]] = (row[col] !== undefined && row[col] !== null) ? String(row[col]).trim() : '';
         }
         obj.email = primeiroEmail(obj.email);
+        // BN ou BO = "Sim" → Simples Nacional; caso contrário (ambos "Não") → Lucro Real
+        obj.regime_tributario = (ehSim(obj.simples_bn) || ehSim(obj.simples_bo)) ? 'Simples Nacional' : 'Lucro Real';
+        delete obj.simples_bn;
+        delete obj.simples_bo;
         if (!obj.razao_social) { skipped++; continue; }
         importData.push(obj);
     }
@@ -583,6 +612,7 @@ function processarLinhas(rows) {
             '<td><small>' + esc(obj.telefone1) + '</small></td>' +
             '<td><small>' + esc(obj.email) + '</small></td>' +
             '<td><small>' + esc(obj.supervisor) + '</small></td>' +
+            '<td><small>' + esc(obj.regime_tributario) + '</small></td>' +
             '<td><span class="badge bg-' + (obj.status.toLowerCase() === 'inativo' ? 'secondary' : 'success') + '">' + (obj.status || 'Ativo') + '</span></td>';
         body.appendChild(tr);
     });
@@ -592,6 +622,40 @@ function processarLinhas(rows) {
         document.getElementById('imp-warn-text').textContent =
             'Exibindo apenas os primeiros 200 registros. Todos os ' + importData.length + ' serão importados.';
     }
+}
+
+// Envia em lotes: uma requisição única com a planilha inteira estoura o timeout (60s) do proxy
+var IMP_LOTE = 250;
+async function importarEmLotes() {
+    var btn   = document.getElementById('imp-btn-submit');
+    var label = document.getElementById('imp-btn-label');
+    var total = importData.length;
+    if (!total) return;
+    btn.disabled = true;
+    var nLotes = Math.ceil(total / IMP_LOTE);
+    for (var i = 0; i < nLotes; i++) {
+        label.textContent = 'Importando ' + Math.min((i + 1) * IMP_LOTE, total) + ' de ' + total + '...';
+        var fd = new FormData();
+        fd.append('action', 'importar');
+        fd.append('dados', JSON.stringify(importData.slice(i * IMP_LOTE, (i + 1) * IMP_LOTE)));
+        fd.append('lote', i);
+        if (i === nLotes - 1) fd.append('ultimo', '1');
+        var res;
+        try {
+            var resp = await fetch(location.pathname, {method: 'POST', body: fd, credentials: 'same-origin'});
+            res = await resp.json();
+        } catch (err) {
+            res = {ok: false, erro: 'falha na comunicação com o servidor (a sessão pode ter expirado).'};
+        }
+        if (!res.ok) {
+            alert('Erro no lote ' + (i + 1) + ' de ' + nLotes + ': ' + res.erro +
+                  '\n' + (i * IMP_LOTE) + ' registro(s) já tinham sido importados antes do erro.');
+            btn.disabled = false;
+            label.textContent = 'Importar ' + total + ' registro(s)';
+            return;
+        }
+    }
+    location.href = location.pathname + location.search;
 }
 
 function esc(s) {
