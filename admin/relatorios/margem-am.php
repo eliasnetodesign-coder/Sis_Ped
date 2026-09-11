@@ -6,7 +6,10 @@ $ini = $_GET['ini'] ?? date('Y-m-01');
 $fim = $_GET['fim'] ?? date('Y-m-t');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ini)) $ini = date('Y-m-01');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fim)) $fim = date('Y-m-t');
-$clienteId = (int)($_GET['cliente_id'] ?? 0);
+// Busca de cliente: sugestão escolhida ("código — razão social") = código exato;
+// texto livre = LIKE em código, razão social ou CNPJ.
+$buscaCli = trim($_GET['cli'] ?? '');
+$codCli   = preg_match('/^(\S+) — /u', $buscaCli, $mc) ? $mc[1] : '';
 $bf = in_array($_GET['bf'] ?? '', ['1', '0'], true) ? $_GET['bf'] : '';
 // Status do pedido: por padrão só os que estão aguardando o comercial ('' = todos).
 $statusLabels = [
@@ -22,7 +25,7 @@ if (!isset($statusLabels[$status])) $status = '';
 
 // Clientes que já tiveram algum pedido importado do A&M (para o filtro).
 $clientesFiltro = db()->query("
-    SELECT DISTINCT c.id, c.razao_social
+    SELECT DISTINCT c.codigo_cliente, c.razao_social
     FROM pedidos p JOIN clientes c ON c.id = p.cliente_id
     WHERE p.observacoes LIKE 'Importado do sistema A&M%'
     ORDER BY c.razao_social")->fetchAll();
@@ -31,14 +34,19 @@ $clientesFiltro = db()->query("
 $sql = "
     SELECT COALESCE(p.lote_id, CAST(p.id AS CHAR)) AS grp,
            MIN(p.id) AS pedido_id, p.numero_pedido, p.observacoes,
-           p.cliente_id, c.razao_social, MIN(p.data_pedido) AS data_pedido,
+           p.cliente_id, c.razao_social, c.codigo_cliente, MIN(p.data_pedido) AS data_pedido,
            MIN(p.status) AS status
     FROM pedidos p JOIN clientes c ON c.id = p.cliente_id
     WHERE p.observacoes LIKE 'Importado do sistema A&M%'
       AND DATE(p.data_pedido) BETWEEN ? AND ?";
 $params = [$ini, $fim];
-if ($clienteId) { $sql .= " AND p.cliente_id = ?"; $params[] = $clienteId; }
-$sql .= " GROUP BY grp, p.numero_pedido, p.observacoes, p.cliente_id, c.razao_social";
+if ($codCli !== '') {
+    $sql .= " AND c.codigo_cliente = ?"; $params[] = $codCli;
+} elseif ($buscaCli !== '') {
+    $sql .= " AND (c.razao_social LIKE ? OR c.codigo_cliente LIKE ? OR c.cnpj LIKE ?)";
+    $params[] = "%$buscaCli%"; $params[] = "%$buscaCli%"; $params[] = "%$buscaCli%";
+}
+$sql .= " GROUP BY grp, p.numero_pedido, p.observacoes, p.cliente_id, c.razao_social, c.codigo_cliente";
 if ($status === 'reprovado') {                                  // 'cancelado' e 'reprovado' = mesmo status
     $sql .= " HAVING MIN(p.status) IN ('cancelado','reprovado')";
 } elseif ($status) {
@@ -83,7 +91,8 @@ foreach ($pedidos as $p) {
         'eh_bf'     => $ehBf,
         'status'    => $p['status'],
         'cliente'   => $p['razao_social'],
-        'data'      => $p['data_pedido'],
+        'cod_cli'   => (string)$p['codigo_cliente'],
+        'data'    => $p['data_pedido'],
         'produtos'  => $produtos,
         'descontos' => $descontos,
         'credito'   => $credito,
@@ -142,12 +151,14 @@ require_once LAYOUT_PATH . '/header.php';
         </div>
         <div class="col-12 col-md-3">
             <label class="form-label fw-semibold small mb-1">Cliente</label>
-            <select name="cliente_id" class="form-select form-select-sm">
-                <option value="0">Todos</option>
-                <?php foreach ($clientesFiltro as $c): ?>
-                <option value="<?= (int)$c['id'] ?>" <?= $clienteId === (int)$c['id'] ? 'selected' : '' ?>><?= e($c['razao_social']) ?></option>
+            <input type="search" name="cli" id="filtroCli" value="<?= e($buscaCli) ?>" list="listaClientes"
+                   class="form-control form-control-sm" autocomplete="off"
+                   placeholder="Todos — digite código, nome ou CNPJ" title="Código, razão social ou CNPJ">
+            <datalist id="listaClientes">
+                <?php foreach ($clientesFiltro as $c): if ((string)$c['codigo_cliente'] === '') continue; ?>
+                <option value="<?= e($c['codigo_cliente'] . ' — ' . $c['razao_social']) ?>"></option>
                 <?php endforeach; ?>
-            </select>
+            </datalist>
         </div>
         <div class="col-6 col-md-2">
             <label class="form-label fw-semibold small mb-1">Status</label>
@@ -215,49 +226,52 @@ require_once LAYOUT_PATH . '/header.php';
 .tbl-fixa-wrap{max-height:70vh;overflow:auto}
 .tbl-fixa thead th{position:sticky;top:0;z-index:3;background:var(--bs-tertiary-bg)!important;box-shadow:inset 0 -1px 0 var(--bs-border-color)}
 .tbl-fixa tfoot td{position:sticky;bottom:0;z-index:3;background:var(--bs-tertiary-bg)!important;box-shadow:inset 0 1px 0 var(--bs-border-color)}
+.th-sort{cursor:pointer;user-select:none;white-space:nowrap}
 </style>
 <div class="card shadow-sm border-0">
     <div class="card-body p-0"><div class="table-responsive tbl-fixa-wrap">
     <table class="table table-hover table-sm align-middle mb-0 tbl-fixa" style="font-size:.85rem">
         <thead class="table-light">
             <tr>
-                <th>Nº A&amp;M</th>
-                <th>Pedido</th>
-                <th>Cliente</th>
-                <th>Data</th>
-                <th class="text-end">Valor Tabela</th>
-                <th class="text-end">Descontos</th>
-                <th class="text-end">Crédito</th>
-                <th class="text-end">Carga Impostos</th>
-                <th class="text-end">Custo MP</th>
-                <th class="text-end">Despesas</th>
-                <th class="text-end">Margem</th>
+                <th class="th-sort" data-tipo="num">Nº A&amp;M</th>
+                <th class="th-sort">Pedido</th>
+                <th class="th-sort">Cód. Cliente</th>
+                <th class="th-sort">Cliente</th>
+                <th class="th-sort">Data</th>
+                <th class="th-sort text-end" data-tipo="num">Valor Tabela</th>
+                <th class="th-sort text-end" data-tipo="num">Descontos</th>
+                <th class="th-sort text-end" data-tipo="num">Crédito</th>
+                <th class="th-sort text-end" data-tipo="num">Carga Impostos</th>
+                <th class="th-sort text-end" data-tipo="num">Custo MP</th>
+                <th class="th-sort text-end" data-tipo="num">Despesas</th>
+                <th class="th-sort text-end" data-tipo="num">Margem</th>
                 <th></th>
             </tr>
         </thead>
         <tbody>
         <?php if ($linhas): foreach ($linhas as $l): ?>
             <tr>
-                <td class="fw-semibold">
+                <td class="fw-semibold" data-v="<?= e($l['num_am']) ?>">
                     <?= e($l['num_am']) ?>
                     <?php if ($l['eh_bf']): ?><span class="badge bg-primary ms-1">BF</span><?php endif; ?>
                 </td>
-                <td>
+                <td data-v="<?= e($l['numero']) ?>">
                     <?= e($l['numero']) ?>
                     <span class="d-block mt-1" style="font-size:.7rem"><?= statusBadge($l['status']) ?></span>
                 </td>
+                <td class="text-nowrap"><?= $l['cod_cli'] !== '' ? e($l['cod_cli']) : '—' ?></td>
                 <td class="text-truncate" style="max-width:190px" title="<?= e($l['cliente']) ?>"><?= e($l['cliente']) ?></td>
-                <td class="text-nowrap"><?= dataBR($l['data']) ?></td>
-                <td class="text-end"><?= moedaBR($l['produtos']) ?></td>
-                <td class="text-end text-danger"><?= $l['descontos'] ? '− ' . moedaBR($l['descontos']) : '—' ?></td>
-                <td class="text-end text-danger"><?= $l['credito'] ? '− ' . moedaBR($l['credito']) : '—' ?></td>
-                <td class="text-end text-danger">
+                <td class="text-nowrap" data-v="<?= e($l['data']) ?>"><?= dataBR($l['data']) ?></td>
+                <td class="text-end" data-v="<?= $l['produtos'] ?>"><?= moedaBR($l['produtos']) ?></td>
+                <td class="text-end text-danger" data-v="<?= $l['descontos'] ?>"><?= $l['descontos'] ? '− ' . moedaBR($l['descontos']) : '—' ?></td>
+                <td class="text-end text-danger" data-v="<?= $l['credito'] ?>"><?= $l['credito'] ? '− ' . moedaBR($l['credito']) : '—' ?></td>
+                <td class="text-end text-danger" data-v="<?= $l['impostos'] ?>">
                     − <?= moedaBR($l['impostos']) ?>
                     <span class="text-muted d-block" style="font-size:.75rem"><?= $pctFmt($l['impostos_pct']) ?></span>
                 </td>
-                <td class="text-end text-danger"><?= $l['mp'] ? '− ' . moedaBR($l['mp']) : '—' ?></td>
-                <td class="text-end text-danger"><?= $l['despesas'] ? '− ' . moedaBR($l['despesas']) : '—' ?></td>
-                <td class="text-end fw-bold">
+                <td class="text-end text-danger" data-v="<?= $l['mp'] ?>"><?= $l['mp'] ? '− ' . moedaBR($l['mp']) : '—' ?></td>
+                <td class="text-end text-danger" data-v="<?= $l['despesas'] ?>"><?= $l['despesas'] ? '− ' . moedaBR($l['despesas']) : '—' ?></td>
+                <td class="text-end fw-bold" data-v="<?= $l['margem'] ?>">
                     <span class="text-<?= $corMargem($l['margem_pct']) ?>"><?= moedaBR($l['margem']) ?></span>
                     <span class="badge bg-<?= $corMargem($l['margem_pct']) ?> d-block mt-1"><?= $pctFmt($l['margem_pct']) ?></span>
                 </td>
@@ -268,13 +282,13 @@ require_once LAYOUT_PATH . '/header.php';
                 </td>
             </tr>
         <?php endforeach; else: ?>
-            <tr><td colspan="12" class="text-center text-muted py-4">Nenhum pedido importado do A&amp;M no período<?= $status ? ' com status “' . e($statusLabels[$status]) . '”' : '' ?>.</td></tr>
+            <tr><td colspan="13" class="text-center text-muted py-4">Nenhum pedido importado do A&amp;M no período<?= $status ? ' com status “' . e($statusLabels[$status]) . '”' : '' ?>.</td></tr>
         <?php endif; ?>
         </tbody>
         <?php if ($linhas): ?>
         <tfoot class="table-light fw-semibold">
             <tr>
-                <td colspan="4">Total — <?= count($linhas) ?> pedido(s)</td>
+                <td colspan="5">Total — <?= count($linhas) ?> pedido(s)</td>
                 <td class="text-end"><?= moedaBR($tot['produtos']) ?></td>
                 <td class="text-end text-danger"><?= $tot['descontos'] ? '− ' . moedaBR($tot['descontos']) : '—' ?></td>
                 <td class="text-end text-danger"><?= $tot['credito'] ? '− ' . moedaBR($tot['credito']) : '—' ?></td>
@@ -297,4 +311,53 @@ require_once LAYOUT_PATH . '/header.php';
     (ICMS, IPI, PIS, COFINS, IRPJ, CSLL, ISS). “Despesas” = custos fixos (%) + desconto financeiro.
     O cálculo é o mesmo do modal “Margem” do pedido — clique em <i class="bi bi-eye"></i> para conferir o detalhamento.
 </p>
+<script>
+// Filtro de cliente: escolher uma sugestão já aplica o filtro.
+(function () {
+    var inp = document.getElementById('filtroCli');
+    var opcoes = Array.prototype.map.call(document.querySelectorAll('#listaClientes option'), function (o) { return o.value; });
+    inp.addEventListener('input', function () {
+        if (opcoes.indexOf(inp.value) !== -1) inp.form.submit();
+    });
+})();
+
+// Cabeçalho clicável = ordena as linhas do tbody (o tfoot de totais fica fixo).
+// Usa data-v da célula quando existe (valores numéricos/datas crus); senão, o texto.
+(function () {
+    var tabela = document.querySelector('.tbl-fixa');
+    if (!tabela) return;
+    var ths = Array.prototype.slice.call(tabela.querySelectorAll('thead th'));
+    var col = null, dir = 1;
+    ths.forEach(function (th, i) {
+        if (!th.classList.contains('th-sort')) return;
+        th.title = 'Clique para ordenar';
+        th.insertAdjacentHTML('beforeend', ' <i class="bi bi-arrow-down-up text-muted opacity-50" style="font-size:.7em"></i>');
+        th.addEventListener('click', function () {
+            dir = (col === i) ? -dir : 1;
+            col = i;
+            var num = th.dataset.tipo === 'num';
+            var tbody = tabela.tBodies[0];
+            var linhas = Array.prototype.slice.call(tbody.rows).filter(function (r) { return r.cells.length > 1; });
+            var val = function (r) {
+                var c = r.cells[i];
+                var v = c.dataset.v !== undefined ? c.dataset.v : c.textContent.trim();
+                return num ? (parseFloat(v) || 0) : v.toLocaleLowerCase('pt-BR');
+            };
+            linhas.sort(function (a, b) {
+                var va = val(a), vb = val(b);
+                return (num ? va - vb : va.localeCompare(vb, 'pt-BR', { numeric: true })) * dir;
+            });
+            linhas.forEach(function (r) { tbody.appendChild(r); });
+            ths.forEach(function (h) {
+                var ic = h.querySelector('i.bi');
+                if (!ic) return;
+                h.classList.toggle('table-active', h === th);
+                ic.className = h === th
+                    ? 'bi bi-caret-' + (dir > 0 ? 'up' : 'down') + '-fill'
+                    : 'bi bi-arrow-down-up text-muted opacity-50';
+            });
+        });
+    });
+})();
+</script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>

@@ -51,7 +51,8 @@ $fimGet    = $_GET['fim'] ?? date('Y-12-31');
 if (($_GET['acao'] ?? '') === 'buscar') {
     $toBR = function ($iso) { $t = strtotime($iso); return $t ? date('d/m/Y', $t) : ''; };
     set_time_limit(300);
-    $resultado = analiseFinanceiraAEM($toBR($iniGet), $toBR($fimGet));
+    // 6 conexões simultâneas ao A&M — sequencial passava dos 120s do nginx com o ano inteiro.
+    $resultado = analiseFinanceiraAEM($toBR($iniGet), $toBR($fimGet), 6);
     if (!$resultado['ok']) { $erro = $resultado['erro'] ?: 'Falha ao consultar o A&M.'; $resultado = null; }
 }
 

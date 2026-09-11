@@ -710,6 +710,197 @@ function buscarPedidoAEM(string $numero): array {
 }
 
 /**
+ * Pedidos do A&M no período nas situações pedidas (padrão só "FC - Faturado"; também "AB - Liberado
+ * para o faturamento", "AC - Liberado para o financeiro", "SA - Bloqueado"…) — mesma busca manual de Vendas >
+ * "Consulta/Reimprime" > "Pesquisar Pedidos" (PD030 -> PD0301, RdbSel=V) — mais o detalhe de cada
+ * pedido (PD0303: cliente, CNPJ, UF e itens). Somente leitura; usado pelo relatório
+ * admin/relatorios/margem-am-faturados.php, que calcula a margem sem gravar nada no SisPed.
+ *
+ * Colunas do grid (THEAD): S, PedidoCliente ("PED nnn"), PedidoInterno (link PD0303 SidPed=), Data,
+ * Emis, VendPed, Tipo, Codigo, Cliente, ValorPedido, CreditoUtilizado, Situação, Altera, Forma Pagto,
+ * Obs, MA. As posições são contadas a partir da célula "PED nnn": a 1ª célula de algumas linhas traz
+ * um onclick com HTML dentro, que desloca a contagem.
+ *
+ * @param string $dataIni aaaa-mm-dd
+ * @param string $dataFim aaaa-mm-dd (limitada a hoje)
+ * @param array  $filtros 'cliente' => trecho do nome ou código do A&M; 'bf' => '1' só BF | '0' só não-BF;
+ *                        'situacoes' => códigos de 2 letras da coluna Situação (padrão ['FC'])
+ * @return array ['ok'=>bool,'erro'=>?string,'pedidos'=>[['numero','pedido_interno','sid_ped','data',
+ *               'codigo','cliente','cliente_nome','cnpj','uf','cidade','valor_pedido','credito_utilizado',
+ *               'situacao','situacao_cod','forma','is_a_vista','obs','eh_bf','pedido_accademia',
+ *               'itens'=>[['codigo','nome','pct_descto','pct_descto_st','pct_negociacao','pct_diretoria',
+ *               'qtd','valor_total'],...],'erro'=>?string], ...]]  — mais recentes primeiro.
+ */
+function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = []): array {
+    $falha = fn($msg) => ['ok' => false, 'erro' => $msg, 'pedidos' => []];
+    if (!function_exists('curl_init')) return $falha('Extensão cURL indisponível no servidor.');
+    $ti = strtotime($dataIni);
+    $tf = strtotime($dataFim);
+    if (!$ti || !$tf || $ti > $tf) return $falha('Período inválido.');
+    $tf = min($tf, strtotime(date('Y-m-d')));
+    if ($ti > $tf) return ['ok' => true, 'erro' => null, 'pedidos' => []];
+    $filtroCliente = mb_strtolower(trim((string)($filtros['cliente'] ?? '')));
+    $filtroBf      = (string)($filtros['bf'] ?? '');
+    // Situações a trazer = código de 2 letras antes do " - " na coluna Situação ("FC - Faturado" -> FC).
+    $situacoes = array_values(array_filter(array_map('strtoupper', (array)($filtros['situacoes'] ?? ['FC'])),
+        fn($s) => preg_match('/^[A-Z]{2}$/', $s)));
+    if (!$situacoes) $situacoes = ['FC'];
+
+    $chamar = function (string $path, array $post) {
+        $ch = curl_init(aemBaseUrl() . $path);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 45, CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_USERAGENT => 'Mozilla/5.0', CURLOPT_POST => true, CURLOPT_POSTFIELDS => http_build_query($post),
+        ]);
+        $r = curl_exec($ch);
+        curl_close($ch);
+        return $r === false ? '' : (@mb_convert_encoding($r, 'UTF-8', 'ISO-8859-1') ?: $r);
+    };
+    $txt = function ($h) {
+        $s = str_replace("\xC2\xA0", ' ', html_entity_decode(strip_tags((string)$h), ENT_QUOTES, 'UTF-8'));
+        return trim(preg_replace('/\s+/', ' ', $s));
+    };
+    $num = function ($s) {
+        $s = preg_replace('/[^\d.,-]/', '', (string)$s);
+        return $s === '' ? 0.0 : (float)str_replace(['.', ','], ['', '.'], $s);
+    };
+
+    // 1) Login + abre Vendas > Consulta/Reimprime.
+    $loginHtml = $chamar('/cgi-bin/ITF/ITF.EXE', ['SubMenu' => 'FROTA', 'TxtLgloginUsuario' => AEM_LOGIN, 'PwdLgloginSenha' => AEM_SENHA]);
+    if (!preg_match('/LNKTRANSPORTE=([0-9A-Za-z]+)/', $loginHtml, $m)) return $falha('Não foi possível autenticar no sistema A&M.');
+    $token = $m[1];
+    $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0163']);
+    $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+
+    // 2) "Pesquisar Pedidos" (PD0301) no período — só vendas (RdbSel=V), sem os flags de "Aguardando…".
+    $grid = $chamar('/cgi-bin/ITF/PD0301.EXE', [
+        'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '', 'TxtPedCliente' => '', 'TxtNumero' => '',
+        'TxtDiaInicio' => date('d', $ti), 'TxtMesInicio' => date('m', $ti), 'TxtAnoInicio' => date('Y', $ti),
+        'TxtDiaFim' => date('d', $tf), 'TxtMesFim' => date('m', $tf), 'TxtAnoFim' => date('Y', $tf),
+        'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '', 'TxtProduto' => '', 'RdbSel' => 'V',
+    ]);
+    // Página grande (centenas de linhas) — limites do <TBODY> por strpos, não regex (backtrack limit do PCRE).
+    $posB = stripos($grid, '<TBODY>');
+    $posE = $posB !== false ? stripos($grid, '</TBODY>', $posB) : false;
+    if ($posB === false || $posE === false) {
+        if (stripos($grid, 'PedidoCliente') !== false) return ['ok' => true, 'erro' => null, 'pedidos' => []];
+        return $falha('Não foi possível ler o grid Consulta/Reimprime do A&M.');
+    }
+    preg_match_all('/<TR\b[^>]*>(.*?)<\/TR>/is', substr($grid, $posB + 7, $posE - $posB - 7), $trs);
+
+    $pedidos = [];
+    foreach ($trs[1] as $tr) {
+        if (!preg_match('/SidPed=(\d+)/', $tr, $ms)) continue;
+        preg_match_all('/<TD\b[^>]*>(.*?)<\/TD>/is', $tr, $tds);
+        $c = array_map($txt, $tds[1]);
+        $a = null;
+        foreach ($c as $ix => $cel) {
+            if (preg_match('/^PED\s*\d+/i', $cel)) { $a = $ix; break; }
+        }
+        if ($a === null) continue;
+        $situacao = $c[$a + 10] ?? '';
+        if (!preg_match('/^([A-Z]{2})\s*-/i', $situacao, $msit) || !in_array(strtoupper($msit[1]), $situacoes, true)) continue;
+
+        $codigo      = $c[$a + 6] ?? '';
+        $clienteGrid = $c[$a + 7] ?? '';
+        if ($filtroCliente !== '' && mb_strpos(mb_strtolower($codigo . ' ' . $clienteGrid), $filtroCliente) === false) continue;
+
+        // Forma Pagto = 1ª célula após a Situação no formato "00 - A Vista" / "71B - 30/60/90DD"; Obs = a seguinte.
+        $forma = ''; $obs = '';
+        for ($k = $a + 11, $n = count($c); $k < $n; $k++) {
+            if (preg_match('/^\d+[A-Za-z]?\s*-\s*\S/', $c[$k])) { $forma = $c[$k]; $obs = $c[$k + 1] ?? ''; break; }
+        }
+        $ehBf = strtoupper(substr(trim($obs), 0, 2)) === 'BF';
+        if ($filtroBf === '1' && !$ehBf) continue;
+        if ($filtroBf === '0' && $ehBf) continue;
+
+        preg_match('/(\d{2})\/(\d{2})\/(\d{4})/', $c[$a + 2] ?? '', $md);
+        preg_match('/^(\d+)/', $forma, $mfp);
+        $pedidos[] = [
+            'numero'            => preg_replace('/\D/', '', $c[$a]),
+            'pedido_interno'    => $c[$a + 1] ?? '',
+            'sid_ped'           => $ms[1],
+            'data'              => $md ? "{$md[3]}-{$md[2]}-{$md[1]}" : null,
+            'codigo'            => $codigo,
+            'cliente'           => $clienteGrid,
+            'cliente_nome'      => '', 'cnpj' => '', 'uf' => '', 'cidade' => '',
+            'valor_pedido'      => $num($c[$a + 8] ?? ''),
+            'credito_utilizado' => $num($c[$a + 9] ?? ''),
+            'situacao'          => $situacao,
+            'situacao_cod'      => strtoupper($msit[1]),
+            'forma'             => $forma,
+            'is_a_vista'        => (($mfp[1] ?? '') === '00') && stripos($forma, 'vista') !== false,
+            'obs'               => $obs,
+            'eh_bf'             => $ehBf,
+            'pedido_accademia'  => null,
+            'itens'             => [],
+            'erro'              => null,
+        ];
+    }
+    if (!$pedidos) return ['ok' => true, 'erro' => null, 'pedidos' => []];
+
+    // 3) Cadastro de Distribuidores (CL200) — "Pedido Accademia" (SIM/NAO) por Codigo (5 primeiros
+    //    dígitos): define o canal do cálculo (Distribuidor/Varejo), mesma regra do "Importa Pedido".
+    $mapAccademia = [];
+    $distribHtml = $chamar('/cgi-bin/ITF/CL200.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'CLMENU.EXE', 'SubMenu' => 'FROTA']);
+    $posTab = strpos($distribHtml, 'id="tabela"');
+    if ($posTab === false) $posTab = strpos($distribHtml, "id='tabela'");
+    $posDB = $posTab !== false ? strpos($distribHtml, '<TBODY>', $posTab) : false;
+    $posDE = $posDB !== false ? strpos($distribHtml, '</TBODY>', $posDB) : false;
+    if ($posDB !== false && $posDE !== false) {
+        preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', substr($distribHtml, $posDB + 7, $posDE - $posDB - 7), $dRows);
+        foreach ($dRows[1] as $rowHtml) {
+            preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $rowHtml, $dc);
+            $cd = array_map($txt, $dc[1]);
+            if (count($cd) < 18) continue;
+            $key = substr($cd[1], 0, 5);
+            if ($key !== '') $mapAccademia[$key] = strtoupper($cd[17]);
+        }
+    }
+
+    // 4) Detalhe de cada pedido (PD0303): cliente, CNPJ, UF e itens.
+    foreach ($pedidos as &$p) {
+        $p['pedido_accademia'] = $mapAccademia[substr($p['codigo'], 0, 5)] ?? null;
+        $det = $chamar('/cgi-bin/ITF/PD0303.EXE', ['LNKTRANSPORTE' => $token, 'SidPed' => $p['sid_ped']]);
+        if (!preg_match('/id=["\']itens["\'].*?<TBODY>(.*?)<\/TBODY>/is', $det, $mBody)) {
+            $p['erro'] = 'detalhe do pedido não lido';
+            continue;
+        }
+        if (preg_match('/Cliente:\s*<\/FONT>\s*<\/TD>\s*<TD[^>]*>\s*<FONT[^>]*>\s*<b>\s*([^<]*?)\s*<\/b>/is', $det, $mc)) {
+            $p['cliente_nome'] = trim(preg_replace('/^\d+\s+/', '', $txt($mc[1])));
+        }
+        if (preg_match('/CNPJ:\s*<\/FONT>\s*<\/TD>\s*<TD[^>]*>\s*<FONT[^>]*>\s*<b>\s*([^<]*?)\s*<\/b>/is', $det, $mj)) {
+            $p['cnpj'] = $txt($mj[1]);
+        }
+        if (preg_match('/CEP\/Cidade\/UF:\s*<\/FONT>\s*<\/TD>\s*<TD[^>]*>\s*<FONT[^>]*>\s*<b>\s*(\d*)\s*(.*?)\s+([A-Z]{2})\s*<\/b>/is', $det, $mu)) {
+            $p['cidade'] = $txt($mu[2]);
+            $p['uf']     = strtoupper($mu[3]);
+        }
+        preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mBody[1], $itrs);
+        foreach ($itrs[1] as $itrHtml) {
+            preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $itrHtml, $itds);
+            $ic = array_map($txt, $itds[1]);
+            if (count($ic) < 13) continue;
+            $p['itens'][] = [
+                'codigo'         => $ic[1],
+                'nome'           => $ic[3],
+                'pct_descto'     => $num($ic[6]),
+                'pct_descto_st'  => $num($ic[7]),
+                'pct_negociacao' => $num($ic[9]),
+                'pct_diretoria'  => $num($ic[11]),
+                'qtd'            => (int)preg_replace('/\D/', '', $ic[12]),
+                'valor_total'    => $num($ic[14] ?? 0),
+            ];
+        }
+        if (!$p['itens']) $p['erro'] = 'pedido sem itens no A&M';
+    }
+    unset($p);
+
+    usort($pedidos, fn($x, $y) => [$y['data'], $y['pedido_interno']] <=> [$x['data'], $x['pedido_interno']]);
+    return ['ok' => true, 'erro' => null, 'pedidos' => $pedidos];
+}
+
+/**
  * Tabela "Estados com ST" (percentual de ST por UF) usada na análise financeira.
  * Guardada em `configuracoes` (chave `st_estados`, JSON) e editável pela tela
  * Financeiro > Análise Financeira. Cada item: UF => [nome, com_academia, sem_academia].
@@ -1070,7 +1261,7 @@ function campanhasAmAvaliarPedido(array $itens, string $canal = 'todos'): array 
  * @return array ['ok'=>bool,'erro'=>?string,'gerado_em'=>string,'periodo'=>[ini,fim],
  *                'linhas'=>[...grid...],'analises'=>[codigo=>[...dados+checks...]]]
  */
-function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = null): array {
+function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = null, int $concorrencia = 1): array {
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'erro' => 'Extensão cURL indisponível no servidor.'];
     }
@@ -1195,6 +1386,110 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
     $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0163']);
     $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
 
+    // Várias chamadas ao A&M em paralelo (curl_multi, até $conc conexões abertas ao mesmo tempo).
+    // $reqs = [chave => [path, postFields]] → [chave => html]. Resposta vazia (falha de rede/timeout)
+    // ou que não passa em $valido(chave, html) é refeita uma vez de forma sequencial.
+    $chamarVarios = function (array $reqs, int $conc, ?callable $valido = null) use ($chamar) {
+        $out = []; $fila = $reqs; $ativos = [];
+        $mh = curl_multi_init();
+        $hid = function ($ch) { return is_object($ch) ? spl_object_id($ch) : (int)$ch; };
+        $add = function () use (&$fila, &$ativos, $mh, $hid) {
+            $k = array_key_first($fila);
+            [$path, $post] = $fila[$k];
+            unset($fila[$k]);
+            $ch = curl_init(aemBaseUrl() . $path);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 45,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_USERAGENT      => 'Mozilla/5.0',
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => http_build_query($post),
+            ]);
+            curl_multi_add_handle($mh, $ch);
+            $ativos[$hid($ch)] = $k;
+        };
+        while ($fila && count($ativos) < max(1, $conc)) $add();
+        while ($ativos) {
+            curl_multi_exec($mh, $rodando);
+            while ($info = curl_multi_info_read($mh)) {
+                $ch = $info['handle'];
+                $k  = $ativos[$hid($ch)];
+                $resp = curl_multi_getcontent($ch);
+                $out[$k] = ($info['result'] === CURLE_OK && $resp !== null) ? (string)$resp : '';
+                curl_multi_remove_handle($mh, $ch);
+                curl_close($ch);
+                unset($ativos[$hid($ch)]);
+                if ($fila) $add();
+            }
+            if ($ativos && curl_multi_select($mh, 1.0) === -1) usleep(10000);
+        }
+        curl_multi_close($mh);
+        foreach ($reqs as $k => [$path, $post]) {
+            $html = $out[$k] ?? '';
+            if ($html === '' || ($valido && !$valido($k, $html))) $out[$k] = $chamar($path, $post);
+        }
+        return $out;
+    };
+
+    // Pré-busca de tudo que depende só do Codigo/pedido — antes era sequencial dentro do loop
+    // (3 chamadas por código + 2 por pedido) e com o ano inteiro passava dos 120s do nginx.
+    // Total Geral (PD050P filtrado) por código, em sequência; depois, em paralelo, Conta Corrente
+    // (CX130) por código e detalhe (PD0303) e "Obs" (PD0301) por pedido; por fim Instruções (VD0302),
+    // que precisa do distribuidor que vem no CX130.
+    $reqs = []; $reqsTg = [];
+    foreach ($porCodigo as $codigo => $rows) {
+        $codDist = strlen((string)$codigo) > 2 ? substr((string)$codigo, 1, -1) : (string)$codigo;
+        $reqsTg["tg|$codigo"] = ['/cgi-bin/ITF/PD050P.EXE', [
+            'LNKTRANSPORTE' => $token,
+            'TxtPedido' => '', 'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
+            'TxtDataInicio' => $dataInicio, 'TxtDataFim' => $dataFim, 'TxtDatPix' => $datPix,
+        ]];
+        $reqs["cc|$codigo"] = ['/cgi-bin/ITF/CX130.EXE', [
+            'LNKTRANSPORTE' => $token,
+            'SubCampo' => '', 'SubOpcao' => 'detalhe', 'SubKey' => '', 'SubKeyTitulos' => '',
+            'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
+            'TxtDataInicio' => '01/01/2020', 'TxtDataFim' => $dataFim, 'ChkZerado' => 'on',
+        ]];
+        foreach ($rows as $i => $r) {
+            $reqs["det|$codigo|$i"] = ['/cgi-bin/ITF/PD0303.EXE', [
+                'LNKTRANSPORTE' => $token, 'SidPed' => $r['pedido_interno'] ?? '',
+            ]];
+            $numeroBusca = preg_replace('/\D/', '', $r['numero'] ?? '');
+            if ($numeroBusca !== '') {
+                $reqs["obs|$codigo|$i"] = ['/cgi-bin/ITF/PD0301.EXE', [
+                    'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '',
+                    'TxtPedCliente' => $numeroBusca, 'TxtNumero' => '',
+                    'TxtDiaInicio' => '01', 'TxtMesInicio' => '01', 'TxtAnoInicio' => '2000',
+                    'TxtDiaFim' => date('d'), 'TxtMesFim' => date('m'), 'TxtAnoFim' => date('Y'),
+                    'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '',
+                    'TxtProduto' => '',
+                ]];
+            }
+        }
+    }
+    // PD050P filtrado fica SEQUENCIAL: em paralelo o A&M devolveu a tela sem o painel do cliente
+    // (Total Geral/Supervisor/Segmento vazios) em alguns códigos — o filtro TxtCodDist é estado da sessão.
+    $pre  = $chamarVarios($reqsTg, 1);
+    $pre += $chamarVarios($reqs, $concorrencia, function ($k, $html) {
+        switch (strtok($k, '|')) {
+            case 'cc':  return stripos($html, 'TxtDistrib') !== false;
+            case 'det': return stripos($html, 'itens') !== false;
+            case 'obs': return stripos($html, '<TBODY>') !== false;
+        }
+        return true;
+    });
+    $reqs = [];
+    foreach ($porCodigo as $codigo => $rows) {
+        $ccPre = @mb_convert_encoding($pre["cc|$codigo"], 'UTF-8', 'ISO-8859-1') ?: $pre["cc|$codigo"];
+        preg_match('/id=TxtDistrib[^>]*value="([^"]*)"/i', $ccPre, $md);
+        $distribuidorCc = $txt($md[1] ?? '');
+        if ($distribuidorCc !== '') {
+            $reqs["vd|$codigo"] = ['/cgi-bin/ITF/VD0302.EXE', ['LNKTRANSPORTE' => $token, 'SidCodigo' => $distribuidorCc]];
+        }
+    }
+    $pre += $chamarVarios($reqs, $concorrencia);
+
     $stTab = stEstadosTabela();
     $campanhasAmPorId = array_column(campanhasAmListar(), null, 'id');
     $analises = [];
@@ -1205,11 +1500,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         // "Total Geral" do cliente (Pedidos + Cheques + Acordos + Cursos) — painel que a própria
         // tela "Pedidos Aguardando liberação" (PD0506->PD050P) mostra quando filtrada pelo Codigo
         // Distribuidor (mesma tela/sessão já aberta acima; só refaz o POST com TxtCodDist).
-        $totGeralHtml = $chamar('/cgi-bin/ITF/PD050P.EXE', [
-            'LNKTRANSPORTE' => $token,
-            'TxtPedido' => '', 'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
-            'TxtDataInicio' => $dataInicio, 'TxtDataFim' => $dataFim, 'TxtDatPix' => $datPix,
-        ]);
+        $totGeralHtml = $pre["tg|$codigo"];
         $totGeralHtml = @mb_convert_encoding($totGeralHtml, 'UTF-8', 'ISO-8859-1') ?: $totGeralHtml;
         $totalGeral = 0.0;
         if (preg_match('/id="?total"?[^>]*>\s*Total Geral.*?<b>\s*R?\$?\s*([\d.,]+)\s*<\/b>/is', $totGeralHtml, $mtg)) {
@@ -1222,12 +1513,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         $supervisor = $txt($msup[1] ?? '');
         $segmento   = $txt($mseg[1] ?? '');
 
-        $cc = $chamar('/cgi-bin/ITF/CX130.EXE', [
-            'LNKTRANSPORTE' => $token,
-            'SubCampo' => '', 'SubOpcao' => 'detalhe', 'SubKey' => '', 'SubKeyTitulos' => '',
-            'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
-            'TxtDataInicio' => '01/01/2020', 'TxtDataFim' => $dataFim, 'ChkZerado' => 'on',
-        ]);
+        $cc = $pre["cc|$codigo"];
         $cc = @mb_convert_encoding($cc, 'UTF-8', 'ISO-8859-1') ?: $cc;
 
         preg_match('/id=TxtDistrib[^>]*value="([^"]*)"/i', $cc, $md);
@@ -1242,9 +1528,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         // sessão CX130 já aberta acima, sem handshake de LOGIN.EXE extra.
         $instrucoes = [];
         if ($distribuidorCc !== '') {
-            $vdHtml = $chamar('/cgi-bin/ITF/VD0302.EXE', [
-                'LNKTRANSPORTE' => $token, 'SidCodigo' => $distribuidorCc,
-            ]);
+            $vdHtml = $pre["vd|$codigo"] ?? '';
             $vdHtml = @mb_convert_encoding($vdHtml, 'UTF-8', 'ISO-8859-1') ?: $vdHtml;
             if (preg_match('/id="historico"[^>]*>.*?<TABLE[^>]*>(.*?)<\/TABLE>/is', $vdHtml, $mhist)) {
                 preg_match_all('/<TR[^>]*onClick="hi\(this\)"[^>]*>(.*?)<\/TR>/is', $mhist[1], $hrows);
@@ -1309,9 +1593,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             $rows[$i]['com_academia']       = $comAcademia;
             $rows[$i]['accademia_cadastro'] = $accademiaFlag === null ? null : ($accademiaFlag ? 'SIM' : 'NAO');
 
-            $det = $chamar('/cgi-bin/ITF/PD0303.EXE', [
-                'LNKTRANSPORTE' => $token, 'SidPed' => $r['pedido_interno'] ?? '',
-            ]);
+            $det = $pre["det|$codigo|$i"];
             $det = @mb_convert_encoding($det, 'UTF-8', 'ISO-8859-1') ?: $det;
 
             $uf = ''; $cidade = '';
@@ -1358,14 +1640,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             $obsPedido = ''; $ehBf = false;
             $numeroBusca = preg_replace('/\D/', '', $r['numero'] ?? '');
             if ($numeroBusca !== '') {
-                $obsHtml = $chamar('/cgi-bin/ITF/PD0301.EXE', [
-                    'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '',
-                    'TxtPedCliente' => $numeroBusca, 'TxtNumero' => '',
-                    'TxtDiaInicio' => '01', 'TxtMesInicio' => '01', 'TxtAnoInicio' => '2000',
-                    'TxtDiaFim' => date('d'), 'TxtMesFim' => date('m'), 'TxtAnoFim' => date('Y'),
-                    'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '',
-                    'TxtProduto' => '',
-                ]);
+                $obsHtml = $pre["obs|$codigo|$i"] ?? '';
                 $obsHtml = @mb_convert_encoding($obsHtml, 'UTF-8', 'ISO-8859-1') ?: $obsHtml;
                 if (preg_match('/<TBODY>(.*?)<\/TBODY>/is', $obsHtml, $mob)) {
                     preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mob[1], $orows);
@@ -2504,18 +2779,99 @@ function calcularMargemPedido(int $pedidoId): array {
     $pedido = $pedido->fetch();
     if (!$pedido) return [];
 
-    $colPreco = colPrecoMoeda($pedido['moeda'] ?? 'BRL');
     $loteId = $pedido['lote_id'] ?: null;
-    $stmtItens = db()->prepare("
-        SELECT p.*, pr.codigo_produto, pr.multiplo, COALESCE($colPreco, pr.vendas_varejo) AS preco_unit
-        FROM pedidos p
-        LEFT JOIN produtos pr ON pr.id = p.produto_id
-        LEFT JOIN tabela_precos t ON t.produto_id = pr.id
-        WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?') . " ORDER BY p.id");
+    $stmtItens = db()->prepare("SELECT p.* FROM pedidos p WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?') . " ORDER BY p.id");
     $stmtItens->execute([$loteId ?: $pedidoId]);
     $itensPedido = $stmtItens->fetchAll();
+
+    $creditoUsadoAdmin = 0.0;
+    if ($pedido['lote_id']) {
+        $cuAdm = db()->prepare('SELECT credito_utilizado FROM pedidos WHERE lote_id = ? AND credito_utilizado > 0 LIMIT 1');
+        $cuAdm->execute([$pedido['lote_id']]);
+        $creditoUsadoAdmin = (float)($cuAdm->fetchColumn() ?: 0);
+    } else {
+        $creditoUsadoAdmin = (float)($pedido['credito_utilizado'] ?? 0);
+    }
+
+    // Desconto de pagamento (Pix 5%)
+    $descontoPixAdmin = 0.0;
+    if ($pedido['lote_id']) {
+        $dpAdm = db()->prepare('SELECT desconto_pagamento FROM pedidos WHERE lote_id = ? AND desconto_pagamento > 0 LIMIT 1');
+        $dpAdm->execute([$pedido['lote_id']]);
+        $descontoPixAdmin = (float)($dpAdm->fetchColumn() ?: 0);
+    } else {
+        $descontoPixAdmin = (float)($pedido['desconto_pagamento'] ?? 0);
+    }
+
+    return calcularMargemItens($pedido, $itensPedido, $creditoUsadoAdmin, $descontoPixAdmin);
+}
+
+/**
+ * Núcleo de calcularMargemPedido(): o mesmo waterfall de margem + detalhamento fiscal, mas a
+ * partir de dados em memória — não lê a tabela `pedidos`. Usado também por
+ * calcularMargemPedidoAEM() (relatório de pedidos faturados no A&M, que não existem no SisPed).
+ *
+ * @param array $pedido      cabeçalho: moeda, data_pedido, tipo_venda, desconto_cliente, desconto_canal,
+ *                           cliente_uf, cliente_regime, cliente_canal_id, margem_negociacao, network_tipo
+ * @param array $itensPedido itens no formato das linhas de `pedidos`: produto_id, descricao_produto,
+ *                           quantidade_total, valor_total, desconto_comercial, desconto_diretoria, desconto_campanha
+ * @param float $creditoUsadoAdmin crédito do cliente abatido do pedido (R$)
+ * @param float $descontoPixAdmin  desconto de pagamento à vista/Pix (R$); > 0 aciona o Desconto Financeiro
+ */
+function calcularMargemItens(array $pedido, array $itensPedido, float $creditoUsadoAdmin = 0.0, float $descontoPixAdmin = 0.0): array {
+    $colPreco = colPrecoMoeda($pedido['moeda'] ?? 'BRL');
     $valorTotalGeral = array_sum(array_column($itensPedido, 'valor_total'));
     $margemNegociacao = (float)($pedido['margem_negociacao'] ?? 0);
+
+    // Produto / tabela de preços / NCM de cada item — uma consulta só, por produto_id.
+    $prodInfo = [];
+    $prodIds = array_values(array_unique(array_filter(array_map('intval', array_column($itensPedido, 'produto_id')))));
+    if ($prodIds) {
+        $ph = implode(',', array_fill(0, count($prodIds), '?'));
+        $pq = db()->prepare("SELECT pr.id, pr.codigo_produto, pr.ncm_id, pr.linha, pr.grupo, pr.subgrupo,
+                                    COALESCE($colPreco, pr.vendas_varejo) AS preco_unit,
+                                    COALESCE(t.preco_padrao, 0) AS preco_padrao,
+                                    COALESCE(t.preco_network, 0) AS preco_network,
+                                    n.ipi, n.pis, n.cofins, n.pis_accademia, n.cofins_accademia, n.ncm AS ncm_codigo
+                             FROM produtos pr
+                             LEFT JOIN tabela_precos t ON t.produto_id = pr.id
+                             LEFT JOIN ncm n           ON n.id = pr.ncm_id
+                             WHERE pr.id IN ($ph)");
+        $pq->execute($prodIds);
+        foreach ($pq->fetchAll() as $pr) {
+            if (!isset($prodInfo[(int)$pr['id']])) $prodInfo[(int)$pr['id']] = $pr;
+        }
+    }
+    $fiscalRaw = []; $itensCamp = []; $impRaw = [];
+    foreach ($itensPedido as $it) {
+        $pr = $prodInfo[(int)($it['produto_id'] ?? 0)] ?? [];
+        $fiscalRaw[] = [
+            'descricao_produto' => $it['descricao_produto'] ?? null, 'quantidade_total' => $it['quantidade_total'] ?? 0,
+            'codigo_produto' => $pr['codigo_produto'] ?? null, 'ncm_id' => $pr['ncm_id'] ?? null,
+            'preco_unit' => $pr['preco_network'] ?? 0,
+            'ipi' => $pr['ipi'] ?? null, 'pis' => $pr['pis'] ?? null, 'cofins' => $pr['cofins'] ?? null,
+            'ncm_codigo' => $pr['ncm_codigo'] ?? null,
+        ];
+        // Itens com categoria e preço (para checar gatilho das campanhas).
+        $itensCamp[] = [
+            'produto_id' => (int)($it['produto_id'] ?? 0),
+            'qtd'        => (int)($it['quantidade_total'] ?? 0),
+            'linha'      => $pr['linha'] ?? null,
+            'grupo'      => $pr['grupo'] ?? null,
+            'subgrupo'   => $pr['subgrupo'] ?? null,
+            'preco'      => (float)($pr['preco_unit'] ?? 0),
+        ];
+        $impRaw[] = [
+            'id' => $it['id'] ?? null, 'produto_id' => $it['produto_id'] ?? null,
+            'descricao_produto' => $it['descricao_produto'] ?? null, 'quantidade_total' => $it['quantidade_total'] ?? 0,
+            'codigo_produto' => $pr['codigo_produto'] ?? null, 'ncm_id' => $pr['ncm_id'] ?? null,
+            'desconto_comercial' => $it['desconto_comercial'] ?? null, 'desconto_diretoria' => $it['desconto_diretoria'] ?? null,
+            'desconto_campanha' => $it['desconto_campanha'] ?? null,
+            'preco_padrao' => $pr['preco_padrao'] ?? 0, 'preco_network' => $pr['preco_network'] ?? 0,
+            'ipi' => $pr['ipi'] ?? null, 'pis' => $pr['pis'] ?? null, 'cofins' => $pr['cofins'] ?? null,
+            'pis_accademia' => $pr['pis_accademia'] ?? null, 'cofins_accademia' => $pr['cofins_accademia'] ?? null,
+        ];
+    }
 
     // ===== Detalhamento fiscal (preço Network + impostos do NCM) =====
     $UF_NOME = [
@@ -2534,18 +2890,6 @@ function calcularMargemPedido(int $pedidoId): array {
     }
     $ehLocal    = ($clienteUF !== '' && $clienteUF === EMPRESA_UF);
     $icmsTipoLabel = $clienteUF === '' ? '—' : ($ehLocal ? 'Local (' . $clienteUF . ')' : 'Interestadual (' . EMPRESA_UF . '→' . $clienteUF . ')');
-
-    $fiscalSql = "SELECT p.descricao_produto, p.quantidade_total, pr.codigo_produto, pr.ncm_id,
-                         COALESCE(t.preco_network, 0) AS preco_unit,
-                         n.ipi, n.pis, n.cofins, n.ncm AS ncm_codigo
-                  FROM pedidos p
-                  LEFT JOIN produtos pr     ON pr.id = p.produto_id
-                  LEFT JOIN tabela_precos t ON t.produto_id = pr.id
-                  LEFT JOIN ncm n           ON n.id = pr.ncm_id
-                  WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?') . " ORDER BY p.id";
-    $fq = db()->prepare($fiscalSql);
-    $fq->execute([$loteId ?: $pedidoId]);
-    $fiscalRaw = $fq->fetchAll();
 
     // ICMS (por ncm) para o estado do cliente
     $icmsByNcm = [];
@@ -2590,62 +2934,12 @@ function calcularMargemPedido(int $pedidoId): array {
     $pedidoCanalId = (int)($pedido['cliente_canal_id'] ?? 0);
     $ehBonifPedido = ($pedido['tipo_venda'] ?? 'venda') === 'bonificacao';
 
-    // Itens do pedido com categoria e preço (para checar gatilho das campanhas).
-    $ci = db()->prepare("SELECT p.produto_id, p.quantidade_total,
-                                COALESCE($colPreco, pr.vendas_varejo) AS preco_unit,
-                                pr.linha, pr.grupo, pr.subgrupo
-                         FROM pedidos p LEFT JOIN produtos pr ON pr.id = p.produto_id
-                         LEFT JOIN tabela_precos t ON t.produto_id = pr.id
-                         WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?'));
-    $ci->execute([$loteId ?: $pedidoId]);
-    $itensCamp = [];
-    foreach ($ci->fetchAll() as $it) {
-        $itensCamp[] = [
-            'produto_id' => (int)$it['produto_id'],
-            'qtd'        => (int)$it['quantidade_total'],
-            'linha'      => $it['linha'],
-            'grupo'      => $it['grupo'],
-            'subgrupo'   => $it['subgrupo'],
-            'preco'      => (float)$it['preco_unit'],
-        ];
-    }
     $ctxCamp = ctxCampanha($itensCamp, $pedidoCanalId);
     $campanhasAtingidas = campanhasAtingidasResumo($ctxCamp);
 
-    $creditoUsadoAdmin = 0.0;
-    if ($pedido['lote_id']) {
-        $cuAdm = db()->prepare('SELECT credito_utilizado FROM pedidos WHERE lote_id = ? AND credito_utilizado > 0 LIMIT 1');
-        $cuAdm->execute([$pedido['lote_id']]);
-        $creditoUsadoAdmin = (float)($cuAdm->fetchColumn() ?: 0);
-    } else {
-        $creditoUsadoAdmin = (float)($pedido['credito_utilizado'] ?? 0);
-    }
-
-    // Desconto de pagamento (Pix 5%)
-    $descontoPixAdmin = 0.0;
-    if ($pedido['lote_id']) {
-        $dpAdm = db()->prepare('SELECT desconto_pagamento FROM pedidos WHERE lote_id = ? AND desconto_pagamento > 0 LIMIT 1');
-        $dpAdm->execute([$pedido['lote_id']]);
-        $descontoPixAdmin = (float)($dpAdm->fetchColumn() ?: 0);
-    } else {
-        $descontoPixAdmin = (float)($pedido['desconto_pagamento'] ?? 0);
-    }
     $totalAPagarAdmin = max(0, $valorTotalGeral - $descontoPixAdmin - $creditoUsadoAdmin);
 
     // ===== Impostos por Empresa (waterfall: preço padrão → descontos → impostos por empresa → custo MP → custos fixos) =====
-    $impSql = "SELECT p.id, p.produto_id, p.descricao_produto, p.quantidade_total, pr.codigo_produto, pr.ncm_id,
-                      p.desconto_comercial, p.desconto_diretoria, p.desconto_campanha,
-                      COALESCE(t.preco_padrao, 0) AS preco_padrao,
-                      COALESCE(t.preco_network, 0) AS preco_network,
-                      n.ipi, n.pis, n.cofins, n.pis_accademia, n.cofins_accademia
-               FROM pedidos p
-               LEFT JOIN produtos pr     ON pr.id = p.produto_id
-               LEFT JOIN tabela_precos t ON t.produto_id = pr.id
-               LEFT JOIN ncm n           ON n.id = pr.ncm_id
-               WHERE " . ($loteId ? 'p.lote_id = ?' : 'p.id = ?') . " ORDER BY p.id";
-    $impQ = db()->prepare($impSql);
-    $impQ->execute([$loteId ?: $pedidoId]);
-    $impRaw = $impQ->fetchAll();
     $impEmpresas = db()->query('SELECT nome, irpj, csll, iss FROM impostos_empresas ORDER BY nome')->fetchAll();
 
     // Custo MP: busca no módulo "Custos dos Produtos" pela competência (mês/ano) da criação do pedido.
@@ -2847,6 +3141,98 @@ function calcularMargemPedido(int $pedidoId): array {
         'impTotalProdutos', 'impDeltaDescontos', 'impDeltaCredito', 'impDeltaNet', 'impDeltaImpostos', 'impDeltaMP', 'impDeltaDespesas',
         'impDeltaCanal', 'impDeltaCliente', 'impDeltaComercial', 'impDeltaCampanha', 'impDeltaFinanceiro'
     );
+}
+
+/**
+ * Margem de um pedido FATURADO do A&M (item de pedidosFaturadosAEM()) — que não existe no SisPed:
+ * monta em memória o mesmo pedido que o "Importa Pedido" criaria e roda calcularMargemItens().
+ * Não grava nada. Regras iguais às do Importa Pedido (admin/pedidos.php + criarPedidoImportadoAEM()):
+ *  - %Descto do 1º item = Desconto do Canal; %Descto ST = Desconto do Cliente;
+ *    %Negociação = Desc. Comercial; %Diretoria = Desc. Diretoria (em cascata);
+ *  - canal: "Pedido Accademia" SIM = Distribuidor, NAO = Varejo (sem o dado: canal do cadastro local);
+ *  - produto pelo codigo_produto (ativo); preço, NCM e custo MP vêm dos cadastros do SisPed;
+ *  - "00 - A Vista" = desconto de pagamento de 5%; "Credito Utilizado" do grid = crédito aplicado.
+ * UF: a do detalhe do pedido no A&M (senão a do cadastro); regime tributário: cadastro local (por CNPJ).
+ *
+ * @return array retorno de calcularMargemItens() + 'nao_mapeados' (itens sem produto no SisPed),
+ *               'canal_nome', 'cliente_id' (cliente local achado pelo CNPJ, ou null)
+ */
+function calcularMargemPedidoAEM(array $p): array {
+    static $canais = null;
+    if ($canais === null) $canais = db()->query('SELECT id, canal, network_tipo, margem_negociacao FROM canal_venda')->fetchAll();
+
+    $cli  = null;
+    $cnpj = preg_replace('/\D/', '', (string)($p['cnpj'] ?? ''));
+    if ($cnpj !== '') {
+        $cq = db()->prepare("SELECT id, estado, regime_tributario, canal_venda_id, moeda FROM clientes
+                             WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ? LIMIT 1");
+        $cq->execute([$cnpj]);
+        $cli = $cq->fetch() ?: null;
+    }
+    $flagAcc   = $p['pedido_accademia'] ?? null;
+    $nomeCanal = $flagAcc === 'SIM' ? 'Distribuidor' : ($flagAcc === 'NAO' ? 'Varejo' : null);
+    $canal = null;
+    foreach ($canais as $cv) {
+        $bate = $nomeCanal !== null ? $cv['canal'] === $nomeCanal : ($cli && (int)$cv['id'] === (int)$cli['canal_venda_id']);
+        if ($bate) { $canal = $cv; break; }
+    }
+
+    $itensAem    = $p['itens'] ?? [];
+    $descCanal   = (float)($itensAem[0]['pct_descto'] ?? 0);
+    $descCliente = (float)($itensAem[0]['pct_descto_st'] ?? 0);
+    $moeda       = ($cli['moeda'] ?? '') ?: 'BRL';
+    $pedido = [
+        'moeda'             => $moeda,
+        'lote_id'           => null,
+        'data_pedido'       => $p['data'] ?: date('Y-m-d'),
+        'tipo_venda'        => 'venda',
+        'desconto_cliente'  => $descCliente,
+        'desconto_canal'    => $descCanal,
+        'cliente_uf'        => ($p['uf'] ?? '') ?: ($cli['estado'] ?? ''),
+        'cliente_regime'    => $cli['regime_tributario'] ?? '',
+        'cliente_canal_id'  => $canal['id'] ?? 0,
+        'margem_negociacao' => $canal['margem_negociacao'] ?? 0,
+        'network_tipo'      => $canal['network_tipo'] ?? null,
+    ];
+
+    // Produtos pelo código do A&M + preço (mesma coluna/fallback de criarPedidoImportadoAEM()).
+    $colPreco   = colPrecoMoeda($moeda);
+    $prodPorCod = [];
+    $codigos = array_values(array_unique(array_filter(array_column($itensAem, 'codigo'))));
+    if ($codigos) {
+        $ph = implode(',', array_fill(0, count($codigos), '?'));
+        $pq = db()->prepare("SELECT p.id, p.codigo_produto, p.descricao_pt, COALESCE($colPreco, p.vendas_varejo, 0) AS preco
+                             FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
+                             WHERE p.status = 'ativo' AND p.codigo_produto IN ($ph) ORDER BY p.id");
+        $pq->execute($codigos);
+        foreach ($pq->fetchAll() as $pr) {
+            if (!isset($prodPorCod[$pr['codigo_produto']])) $prodPorCod[$pr['codigo_produto']] = $pr;
+        }
+    }
+
+    $descCliCanal = min(100, $descCliente + $descCanal);
+    $itens = []; $naoMapeados = [];
+    foreach ($itensAem as $it) {
+        $pr = $prodPorCod[$it['codigo']] ?? null;
+        if (!$pr) { $naoMapeados[] = $it['codigo'] . ' - ' . $it['nome']; continue; }
+        $qtd  = max(1, (int)$it['qtd']);
+        $dCom = (float)$it['pct_negociacao'];
+        $dDir = (float)$it['pct_diretoria'];
+        // Comercial e Diretoria em cascata, igual a criarPedidoImportadoAEM().
+        $fatorComDir = (1 - min(100, $dCom) / 100) * (1 - min(100, $dDir) / 100);
+        $itens[] = [
+            'id' => null, 'produto_id' => (int)$pr['id'], 'descricao_produto' => $pr['descricao_pt'],
+            'quantidade_total' => $qtd, 'desconto_comercial' => $dCom, 'desconto_diretoria' => $dDir, 'desconto_campanha' => 0,
+            'valor_total' => $qtd * (float)$pr['preco'] * (1 - $descCliCanal / 100) * $fatorComDir,
+        ];
+    }
+    $descontoPix = !empty($p['is_a_vista']) ? round(array_sum(array_column($itens, 'valor_total')) * 0.05, 2) : 0.0;
+
+    return calcularMargemItens($pedido, $itens, (float)($p['credito_utilizado'] ?? 0), $descontoPix) + [
+        'nao_mapeados' => $naoMapeados,
+        'canal_nome'   => $canal['canal'] ?? null,
+        'cliente_id'   => $cli ? (int)$cli['id'] : null,
+    ];
 }
 
 /**
