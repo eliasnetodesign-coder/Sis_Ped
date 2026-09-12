@@ -726,7 +726,7 @@ function buscarPedidoAEM(string $numero): array {
  * @param array  $filtros 'cliente' => trecho do nome ou código do A&M; 'bf' => '1' só BF | '0' só não-BF;
  *                        'situacoes' => códigos de 2 letras da coluna Situação (padrão ['FC'])
  * @return array ['ok'=>bool,'erro'=>?string,'pedidos'=>[['numero','pedido_interno','sid_ped','data',
- *               'codigo','cliente','cliente_nome','cnpj','uf','cidade','valor_pedido','credito_utilizado',
+ *               'codigo','cliente','vendedor' (VendPed = supervisor),'cliente_nome','cnpj','uf','cidade','valor_pedido','credito_utilizado',
  *               'situacao','situacao_cod','forma','is_a_vista','obs','eh_bf','pedido_accademia',
  *               'itens'=>[['codigo','nome','pct_descto','pct_descto_st','pct_negociacao','pct_diretoria',
  *               'qtd','valor_total'],...],'erro'=>?string], ...]]  — mais recentes primeiro.
@@ -823,6 +823,7 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
             'data'              => $md ? "{$md[3]}-{$md[2]}-{$md[1]}" : null,
             'codigo'            => $codigo,
             'cliente'           => $clienteGrid,
+            'vendedor'          => $c[$a + 4] ?? '',   // coluna VendPed = supervisor do pedido
             'cliente_nome'      => '', 'cnpj' => '', 'uf' => '', 'cidade' => '',
             'valor_pedido'      => $num($c[$a + 8] ?? ''),
             'credito_utilizado' => $num($c[$a + 9] ?? ''),

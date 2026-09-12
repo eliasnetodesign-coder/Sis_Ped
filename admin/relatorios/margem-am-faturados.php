@@ -118,6 +118,16 @@ $falhas = [];          // pedidos cujo detalhe (PD0303) não pôde ser lido
 $comSemCadastro = 0;   // pedidos com produto(s) sem cadastro no SisPed
 $tot = ['produtos'=>0,'descontos'=>0,'credito'=>0,'impostos'=>0,'mp'=>0,'despesas'=>0,'margem'=>0,
         'canal'=>0,'cliente'=>0,'comercial'=>0,'campanha'=>0,'financeiro'=>0];
+// Visões agregadas (abas "Por vendedor" / "Por produto") — mesmas colunas do waterfall.
+$porVend = [];         // supervisor (coluna VendPed do A&M) => acumulado
+$porProd = [];         // código do produto => acumulado (só itens com cadastro no SisPed)
+$novoAcum = fn() => ['pedidos'=>0,'clientes'=>[],'qtd'=>0,'produtos'=>0,'descontos'=>0,'credito'=>0,
+                     'impostos'=>0,'mp'=>0,'despesas'=>0,'margem'=>0,
+                     'camp_qtd'=>0,'campanhas'=>[]];   // por produto: qtd vendida com campanha + nome => [% mín, % máx]
+$somaAcum = function (array &$a, array $v) {
+    foreach (['produtos','descontos','credito','impostos','mp','despesas','margem'] as $k) $a[$k] += $v[$k];
+};
+$visao = in_array($_GET['visao'] ?? '', ['pedido', 'vendedor', 'produto'], true) ? $_GET['visao'] : 'pedido';
 
 if ($buscar) {
     $dias = (strtotime($fim) - strtotime($ini)) / 86400;
@@ -164,6 +174,7 @@ if ($buscar && !$erro) {
             'situacao'  => $p['situacao'],
             'situacao_cod' => $p['situacao_cod'],
             'cliente'   => $p['cliente_nome'] ?: $p['cliente'],
+            'vendedor'  => $p['vendedor'],
             'data'      => $p['data'],
             'produtos'  => $produtos,
             'descontos' => $descontos,
@@ -191,7 +202,52 @@ if ($buscar && !$erro) {
         $tot['campanha']   += -(float)$m['impDeltaCampanha'];
         $tot['financeiro'] += -(float)$m['impDeltaFinanceiro'];
         $tot['margem']    += $margem;
+
+        // Por vendedor: o pedido inteiro vai para o supervisor da coluna VendPed.
+        $vk = $p['vendedor'] !== '' ? $p['vendedor'] : '(sem supervisor)';
+        $porVend[$vk] = $porVend[$vk] ?? $novoAcum();
+        $porVend[$vk]['pedidos']++;
+        $porVend[$vk]['clientes'][$p['codigo']] = true;
+        $porVend[$vk]['qtd'] += array_sum(array_column($m['impItens'], 'qtd'));
+        $somaAcum($porVend[$vk], compact('produtos', 'descontos', 'credito', 'impostos', 'mp', 'despesas', 'margem'));
+
+        // Campanha: só pedido com "BF" no Obs (mesma regra do Importa Pedido BF e do check 5 da Análise
+        // Financeira). Item de campanha com faixa atingida no pedido = participou, com o % da faixa.
+        $campItem = [];
+        if ($p['eh_bf']) {
+            $av = campanhasAmAvaliarPedido($p['itens'], $p['pedido_accademia'] === 'SIM' ? 'distribuidor' : 'varejo');
+            foreach ($av['campanhas_atingidas'] as $ca) {
+                if ((float)$ca['percentual_esperado'] <= 0.005) continue;
+                foreach ($ca['itens'] as $ci) $campItem[$ci['codigo']] = [$ca['nome'], (float)$ca['percentual_esperado']];
+            }
+        }
+
+        // Por produto: mesmo rateio por item da visualização compacta (Σ itens = totais do pedido).
+        foreach ($m['impItens'] as $it) {
+            $q  = (int)$it['qtd'];
+            $pk = (string)$it['codigo'];
+            $porProd[$pk] = $porProd[$pk] ?? $novoAcum() + ['codigo' => $pk, 'descricao' => $it['descricao']];
+            if (!isset($porProd[$pk]['_ped'][$p['numero']])) { $porProd[$pk]['_ped'][$p['numero']] = true; $porProd[$pk]['pedidos']++; }
+            $porProd[$pk]['qtd'] += $q;
+            if (isset($campItem[$pk])) {
+                [$cNome, $cPct] = $campItem[$pk];
+                $porProd[$pk]['camp_qtd'] += $q;
+                $fx = $porProd[$pk]['campanhas'][$cNome] ?? [$cPct, $cPct];
+                $porProd[$pk]['campanhas'][$cNome] = [min($fx[0], $cPct), max($fx[1], $cPct)];
+            }
+            $somaAcum($porProd[$pk], [
+                'produtos'  => $it['precoPadrao'] * $q,
+                'descontos' => ($it['vCanal'] + $it['vCliente'] + $it['vPedido'] + $it['vCampanha']) * $q,
+                'credito'   => $it['vCredito'] * $q,
+                'impostos'  => ($it['netTotal'] + array_sum(array_column($it['blocosOutros'], 'total'))) * $q,
+                'mp'        => $it['custoMP'] * $q,
+                'despesas'  => ($it['vCF'] + $it['vDescFinanceiro']) * $q,
+                'margem'    => $it['resultadoIni'] * $q,
+            ]);
+        }
     }
+    uasort($porVend, fn($x, $y) => $y['margem'] <=> $x['margem']);
+    uasort($porProd, fn($x, $y) => $y['margem'] <=> $x['margem']);
 }
 $totMargemPct   = $tot['produtos'] > 0 ? $tot['margem'] / $tot['produtos'] * 100 : 0;
 $totImpostosPct = $tot['produtos'] > 0 ? $tot['impostos'] / $tot['produtos'] * 100 : 0;
@@ -228,6 +284,7 @@ require_once LAYOUT_PATH . '/header.php';
 
 <form class="card shadow-sm border-0 mb-4 p-3" id="frmBusca">
     <input type="hidden" name="acao" value="buscar">
+    <input type="hidden" name="visao" id="inpVisao" value="<?= e($visao) ?>">
     <div class="row g-2 align-items-end">
         <div class="col-6 col-md-2">
             <label class="form-label fw-semibold small mb-1">Data inicial</label>
@@ -353,6 +410,21 @@ require_once LAYOUT_PATH . '/header.php';
 .imp-chevron{display:inline-block;transition:transform .2s}
 .imp-toggle:not(.collapsed) .imp-chevron{transform:rotate(90deg)}
 </style>
+<?php
+$abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' => ['bi-person-badge', 'Por vendedor', count($porVend)],
+         'produto' => ['bi-box-seam', 'Por produto', count($porProd)]];
+?>
+<ul class="nav nav-tabs mb-0" role="tablist">
+    <?php foreach ($abas as $k => [$ico, $rot, $n]): ?>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link <?= $visao === $k ? 'active' : '' ?>" data-bs-toggle="tab" data-bs-target="#vis-<?= $k ?>" data-visao="<?= $k ?>" type="button" role="tab">
+            <i class="bi <?= $ico ?> me-1"></i><?= $rot ?> <span class="badge text-bg-light border ms-1"><?= $n ?></span>
+        </button>
+    </li>
+    <?php endforeach; ?>
+</ul>
+<div class="tab-content">
+<div class="tab-pane fade <?= $visao === 'pedido' ? 'show active' : '' ?>" id="vis-pedido" role="tabpanel">
 <div class="card shadow-sm border-0">
     <div class="card-body p-0"><div class="table-responsive tbl-fixa-wrap">
     <table class="table table-hover table-sm align-middle mb-0 tbl-fixa" style="font-size:.85rem">
@@ -363,7 +435,7 @@ require_once LAYOUT_PATH . '/header.php';
                 // data-o-<col> da linha com o valor bruto; data-tipo = num | txt.
                 $colunas = [
                     'num_am' => ['Nº A&amp;M', '', 'num'], 'interno' => ['Pedido Interno', '', 'num'], 'codigo' => ['Cód. Cliente', '', 'num'],
-                    'cliente' => ['Cliente', '', 'txt'], 'data' => ['Data', '', 'txt'],
+                    'cliente' => ['Cliente', '', 'txt'], 'vendedor' => ['Supervisor', '', 'txt'], 'data' => ['Data', '', 'txt'],
                     'tabela' => ['Valor Tabela', 'text-end', 'num'], 'descontos' => ['Descontos', 'text-end', 'num'], 'credito' => ['Crédito', 'text-end', 'num'],
                     'impostos' => ['Carga Impostos', 'text-end', 'num'], 'mp' => ['Custo MP', 'text-end', 'num'], 'despesas' => ['Despesas', 'text-end', 'num'],
                     'margem' => ['Margem', 'text-end', 'num'],
@@ -380,13 +452,13 @@ require_once LAYOUT_PATH . '/header.php';
             $soDig = fn($s) => (int)preg_replace('/\D/', '', (string)$s);
             $ord = [
                 'num_am' => $soDig($l['num_am']), 'interno' => $soDig($l['p']['pedido_interno']), 'codigo' => $soDig($l['codigo']),
-                'cliente' => $l['cliente'], 'data' => $l['data'] . ' ' . str_pad((string)$soDig($l['p']['pedido_interno']), 10, '0', STR_PAD_LEFT),
+                'cliente' => $l['cliente'], 'vendedor' => $l['vendedor'], 'data' => $l['data'] . ' ' . str_pad((string)$soDig($l['p']['pedido_interno']), 10, '0', STR_PAD_LEFT),
                 'tabela' => round($l['produtos'], 2), 'descontos' => round($l['descontos'], 2), 'credito' => round($l['credito'], 2),
                 'impostos' => round($l['impostos'], 2), 'mp' => round($l['mp'], 2), 'despesas' => round($l['despesas'], 2),
                 'margem' => round($l['margem'], 2),
             ];
         ?>
-            <tr<?php foreach ($ord as $k => $v) echo ' data-o-' . $k . '="' . e($v) . '"'; ?>>
+            <tr class="lin-ord"<?php foreach ($ord as $k => $v) echo ' data-o-' . $k . '="' . e($v) . '"'; ?>>
                 <td class="fw-semibold text-nowrap">
                     <?= e($l['num_am']) ?>
                     <?php if ($l['eh_bf']): ?><span class="badge bg-primary ms-1">BF</span><?php endif; ?>
@@ -400,6 +472,7 @@ require_once LAYOUT_PATH . '/header.php';
                 </td>
                 <td class="text-nowrap"><?= e($l['codigo']) ?></td>
                 <td class="text-truncate" style="max-width:190px" title="<?= e($l['cliente']) ?>"><?= e($l['cliente']) ?></td>
+                <td class="text-nowrap"><?= $l['vendedor'] !== '' ? e($l['vendedor']) : '<span class="text-muted">—</span>' ?></td>
                 <td class="text-nowrap"><?= dataBR($l['data']) ?></td>
                 <td class="text-end"><?= moedaBR($l['produtos']) ?></td>
                 <td class="text-end text-danger"><?= $l['descontos'] ? '− ' . moedaBR($l['descontos']) : '—' ?></td>
@@ -429,13 +502,13 @@ require_once LAYOUT_PATH . '/header.php';
                 </td>
             </tr>
         <?php endforeach; else: ?>
-            <tr><td colspan="13" class="text-center text-muted py-4">Nenhum pedido no A&amp;M no período com a situação <?= e(implode(', ', array_map(fn($c) => '“' . $situacoesOpc[$c] . '”', $situacoes))) ?><?= $cliente !== '' ? ' para o cliente “' . e($cliente) . '”' : '' ?>.</td></tr>
+            <tr><td colspan="14" class="text-center text-muted py-4">Nenhum pedido no A&amp;M no período com a situação <?= e(implode(', ', array_map(fn($c) => '“' . $situacoesOpc[$c] . '”', $situacoes))) ?><?= $cliente !== '' ? ' para o cliente “' . e($cliente) . '”' : '' ?>.</td></tr>
         <?php endif; ?>
         </tbody>
         <?php if ($linhas): ?>
         <tfoot class="table-light fw-semibold">
             <tr>
-                <td colspan="5">Total — <?= count($linhas) ?> pedido(s)</td>
+                <td colspan="6">Total — <?= count($linhas) ?> pedido(s)</td>
                 <td class="text-end"><?= moedaBR($tot['produtos']) ?></td>
                 <td class="text-end text-danger"><?= $tot['descontos'] ? '− ' . moedaBR($tot['descontos']) : '—' ?></td>
                 <td class="text-end text-danger"><?= $tot['credito'] ? '− ' . moedaBR($tot['credito']) : '—' ?></td>
@@ -460,15 +533,150 @@ require_once LAYOUT_PATH . '/header.php';
     <i class="bi bi-list-ul"></i> abre o detalhe da margem por item (o mesmo modal “Margem” da tela do pedido);
     <i class="bi bi-table"></i> mostra os itens numa tabela compacta (uma linha por item); <i class="bi bi-eye"></i> abre o pedido quando ele também foi importado no SisPed.
 </p>
+</div>
+
+<?php
+// Células numéricas comuns às visões "Por vendedor" e "Por produto" (mesmas colunas do "Por pedido").
+$colsValores = [
+    'tabela' => ['Valor Tabela', 'text-end', 'num'], 'descontos' => ['Descontos', 'text-end', 'num'], 'credito' => ['Crédito', 'text-end', 'num'],
+    'impostos' => ['Carga Impostos', 'text-end', 'num'], 'mp' => ['Custo MP', 'text-end', 'num'], 'despesas' => ['Despesas', 'text-end', 'num'],
+    'margem' => ['Margem', 'text-end', 'num'], 'part' => ['% da Margem', 'text-end', 'num'],
+];
+$thOrd = function (array $cols) {
+    foreach ($cols as $k => [$rotulo, $cls, $tipo]) {
+        echo '<th class="col-ord ' . $cls . '" data-col="' . $k . '" data-tipo="' . $tipo . '" tabindex="0" title="Clique para ordenar">'
+           . $rotulo . '<i class="bi bi-arrow-down-up ord-ico"></i></th>';
+    }
+};
+$ordValores = fn(array $a) => [
+    'tabela' => round($a['produtos'], 2), 'descontos' => round($a['descontos'], 2), 'credito' => round($a['credito'], 2),
+    'impostos' => round($a['impostos'], 2), 'mp' => round($a['mp'], 2), 'despesas' => round($a['despesas'], 2),
+    'margem' => round($a['margem'], 2), 'part' => round($a['margem'], 2),
+];
+$tdValores = function (array $a) use ($tot, $pctFmt, $corMargem) {
+    $impPct = $a['produtos'] > 0 ? $a['impostos'] / $a['produtos'] * 100 : 0;
+    $mPct   = $a['produtos'] > 0 ? $a['margem'] / $a['produtos'] * 100 : 0;
+    $part   = $tot['margem'] != 0 ? $a['margem'] / $tot['margem'] * 100 : 0;
+    ?>
+    <td class="text-end"><?= moedaBR($a['produtos']) ?></td>
+    <td class="text-end text-danger"><?= $a['descontos'] ? '− ' . moedaBR($a['descontos']) : '—' ?></td>
+    <td class="text-end text-danger"><?= $a['credito'] ? '− ' . moedaBR($a['credito']) : '—' ?></td>
+    <td class="text-end text-danger">− <?= moedaBR($a['impostos']) ?><span class="text-muted d-block" style="font-size:.75rem"><?= $pctFmt($impPct) ?></span></td>
+    <td class="text-end text-danger"><?= $a['mp'] ? '− ' . moedaBR($a['mp']) : '—' ?></td>
+    <td class="text-end text-danger"><?= $a['despesas'] ? '− ' . moedaBR($a['despesas']) : '—' ?></td>
+    <td class="text-end fw-bold">
+        <span class="text-<?= $corMargem($mPct) ?>"><?= moedaBR($a['margem']) ?></span>
+        <span class="badge bg-<?= $corMargem($mPct) ?> d-block mt-1"><?= $pctFmt($mPct) ?></span>
+    </td>
+    <td class="text-end">
+        <?= $pctFmt($part) ?>
+        <div class="progress mt-1" style="height:4px"><div class="progress-bar bg-<?= $corMargem($a['margem']) ?>" style="width:<?= max(0, min(100, abs($part))) ?>%"></div></div>
+    </td>
+    <?php
+};
+$trTotal = function (int $colspan, string $rotulo, array $a) use ($tot, $pctFmt, $corMargem, $tdValores) {
+    echo '<tfoot class="table-light fw-semibold"><tr><td colspan="' . $colspan . '">' . $rotulo . '</td>';
+    $tdValores($a);
+    echo '</tr></tfoot>';
+};
+$totProd = $novoAcum();
+foreach ($porProd as $a) { $somaAcum($totProd, $a); $totProd['qtd'] += $a['qtd']; }
+?>
+
+<div class="tab-pane fade <?= $visao === 'vendedor' ? 'show active' : '' ?>" id="vis-vendedor" role="tabpanel">
+<div class="card shadow-sm border-0">
+    <div class="card-body p-0"><div class="table-responsive tbl-fixa-wrap">
+    <table class="table table-hover table-sm align-middle mb-0 tbl-fixa" style="font-size:.85rem">
+        <thead class="table-light"><tr>
+            <?php $thOrd(['vendedor' => ['Supervisor', '', 'txt'], 'pedidos' => ['Pedidos', 'text-end', 'num'],
+                          'clientes' => ['Clientes', 'text-end', 'num'], 'qtd' => ['Qtd Itens', 'text-end', 'num']] + $colsValores); ?>
+        </tr></thead>
+        <tbody>
+        <?php foreach ($porVend as $vend => $a):
+            $ord = ['vendedor' => $vend, 'pedidos' => $a['pedidos'], 'clientes' => count($a['clientes']), 'qtd' => $a['qtd']] + $ordValores($a); ?>
+            <tr class="lin-ord"<?php foreach ($ord as $k => $v) echo ' data-o-' . $k . '="' . e($v) . '"'; ?>>
+                <td class="fw-semibold text-nowrap"><?= $vend === '(sem supervisor)' ? '<span class="text-muted fst-italic" title="Coluna VendPed vazia no A&amp;M">sem supervisor</span>' : e($vend) ?></td>
+                <td class="text-end"><?= $a['pedidos'] ?></td>
+                <td class="text-end"><?= count($a['clientes']) ?></td>
+                <td class="text-end"><?= number_format($a['qtd'], 0, ',', '.') ?></td>
+                <?php $tdValores($a); ?>
+            </tr>
+        <?php endforeach; ?>
+        <?php if (!$porVend): ?><tr><td colspan="12" class="text-center text-muted py-4">Nenhum pedido.</td></tr><?php endif; ?>
+        </tbody>
+        <?php if ($porVend) $trTotal(4, 'Total — ' . count($porVend) . ' supervisor(es), ' . count($linhas) . ' pedido(s)', $tot); ?>
+    </table>
+    </div></div>
+</div>
+<p class="text-muted small mt-2">
+    <i class="bi bi-info-circle me-1"></i>Supervisor = coluna “VendPed” do pedido no A&amp;M (Consulta/Reimprime). Cada pedido entra inteiro no
+    supervisor dele. “% da Margem” = participação na margem total do período.
+</p>
+</div>
+
+<div class="tab-pane fade <?= $visao === 'produto' ? 'show active' : '' ?>" id="vis-produto" role="tabpanel">
+<div class="card shadow-sm border-0">
+    <div class="card-body p-0"><div class="table-responsive tbl-fixa-wrap">
+    <table class="table table-hover table-sm align-middle mb-0 tbl-fixa" style="font-size:.85rem">
+        <thead class="table-light"><tr>
+            <?php $thOrd(['codigo' => ['Código', '', 'txt'], 'produto' => ['Produto', '', 'txt'], 'campanha' => ['Campanha', '', 'txt'],
+                          'pedidos' => ['Pedidos', 'text-end', 'num'], 'qtd' => ['Qtd', 'text-end', 'num'],
+                          'pcamp' => ['% em Campanha', 'text-end', 'num']] + $colsValores); ?>
+        </tr></thead>
+        <tbody>
+        <?php foreach ($porProd as $a):
+            $pCamp = $a['qtd'] > 0 ? $a['camp_qtd'] / $a['qtd'] * 100 : 0;
+            $ord = ['codigo' => $a['codigo'], 'produto' => $a['descricao'], 'campanha' => $a['campanhas'] ? implode(' / ', array_keys($a['campanhas'])) : '~',
+                    'pedidos' => $a['pedidos'], 'qtd' => $a['qtd'], 'pcamp' => round($pCamp, 2)] + $ordValores($a); ?>
+            <tr class="lin-ord"<?php foreach ($ord as $k => $v) echo ' data-o-' . $k . '="' . e($v) . '"'; ?>>
+                <td class="text-nowrap"><?= e($a['codigo']) ?></td>
+                <td class="text-truncate" style="max-width:260px" title="<?= e($a['descricao']) ?>"><?= e($a['descricao']) ?></td>
+                <td style="min-width:170px">
+                    <?php if (!$a['campanhas']): ?><span class="text-muted">—</span><?php endif; ?>
+                    <?php foreach ($a['campanhas'] as $cNome => [$pMin, $pMax]): ?>
+                    <div class="text-nowrap" style="font-size:.78rem">
+                        <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 text-truncate align-middle" style="max-width:170px" title="<?= e($cNome) ?>"><?= e($cNome) ?></span>
+                        <b title="% de desconto da faixa atingida"><?= $pMin == $pMax ? $pctFmt($pMin) : $pctFmt($pMin) . '–' . $pctFmt($pMax) ?></b>
+                    </div>
+                    <?php endforeach; ?>
+                </td>
+                <td class="text-end"><?= $a['pedidos'] ?></td>
+                <td class="text-end"><?= number_format($a['qtd'], 0, ',', '.') ?></td>
+                <td class="text-end">
+                    <?php if ($a['camp_qtd']): ?>
+                    <span title="<?= number_format($a['camp_qtd'], 0, ',', '.') ?> de <?= number_format($a['qtd'], 0, ',', '.') ?> un. vendidas com campanha"><?= $pctFmt($pCamp) ?></span>
+                    <?php else: ?><span class="text-muted">—</span><?php endif; ?>
+                </td>
+                <?php $tdValores($a); ?>
+            </tr>
+        <?php endforeach; ?>
+        <?php if (!$porProd): ?><tr><td colspan="14" class="text-center text-muted py-4">Nenhum item com cadastro no SisPed.</td></tr><?php endif; ?>
+        </tbody>
+        <?php if ($porProd) $trTotal(6, 'Total — ' . count($porProd) . ' produto(s), ' . number_format($totProd['qtd'], 0, ',', '.') . ' un.'
+            . ' — ' . count(array_filter(array_column($porProd, 'camp_qtd'))) . ' produto(s) com campanha, '
+            . $pctFmt($totProd['qtd'] > 0 ? array_sum(array_column($porProd, 'camp_qtd')) / $totProd['qtd'] * 100 : 0) . ' das un. em campanha', $totProd); ?>
+    </table>
+    </div></div>
+</div>
+<p class="text-muted small mt-2">
+    <i class="bi bi-info-circle me-1"></i>Soma dos itens de todos os pedidos, com o mesmo cálculo por item do detalhe de margem (descontos, crédito,
+    impostos, custo MP e despesas rateados por item). Itens sem cadastro no SisPed ficam de fora
+    <?php if ($comSemCadastro): ?>(<?= $comSemCadastro ?> pedido(s) com item(ns) nessa situação)<?php endif; ?>.<br>
+    <i class="bi bi-megaphone me-1"></i>“Campanha” = campanhas do A&amp;M de que o produto participou, com o % de desconto
+    da faixa atingida (intervalo quando variou entre pedidos). Só contam pedidos com “BF” no Obs e campanha com faixa atingida no pedido — mesma
+    regra do Importa Pedido BF. “% em Campanha” = parte das unidades vendidas do produto que saiu com campanha.
+</p>
+</div>
+</div><!-- /tab-content -->
 
 <script>
 // Ordenação por clique no título: 1º clique = crescente (A→Z, menor→maior), 2º = decrescente.
 // Usa os valores brutos gravados em data-o-<coluna> de cada linha, não o texto formatado.
-(function () {
-    var tbl = document.querySelector('.tbl-fixa');
-    if (!tbl || !tbl.tBodies[0]) return;
+// Vale para as tabelas das três abas (por pedido / vendedor / produto).
+Array.prototype.forEach.call(document.querySelectorAll('.tbl-fixa'), function (tbl) {
+    if (!tbl.tBodies[0]) return;
     var corpo = tbl.tBodies[0];
-    var linhas = Array.prototype.filter.call(corpo.rows, function (tr) { return tr.hasAttribute('data-o-num_am'); });
+    var linhas = Array.prototype.filter.call(corpo.rows, function (tr) { return tr.classList.contains('lin-ord'); });
     if (linhas.length < 2) return;
     linhas.forEach(function (tr, i) { tr.dataset.pos = i; });            // desempate: ordem original
     var ths = tbl.tHead.querySelectorAll('th.col-ord');
@@ -500,7 +708,15 @@ require_once LAYOUT_PATH . '/header.php';
             if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ordena(th); }
         });
     });
-})();
+});
+// Aba escolhida vai junto na próxima busca e fica na URL (recarregar mantém a visão).
+Array.prototype.forEach.call(document.querySelectorAll('[data-visao]'), function (bt) {
+    bt.addEventListener('shown.bs.tab', function () {
+        document.getElementById('inpVisao').value = bt.dataset.visao;
+        var u = new URL(location.href); u.searchParams.set('visao', bt.dataset.visao);
+        history.replaceState(null, '', u);
+    });
+});
 </script>
 
 <?php
@@ -512,7 +728,7 @@ foreach ($linhas as $i => $l) {
     $p = $l['p'];
     $modalDados[$i] = [
         'numero' => $p['numero'], 'interno' => $p['pedido_interno'], 'bf' => $l['eh_bf'],
-        'cliente' => $l['cliente'], 'cnpj' => $p['cnpj'], 'uf' => $l['uf'], 'canal' => $l['canal'],
+        'cliente' => $l['cliente'], 'cnpj' => $p['cnpj'], 'uf' => $l['uf'], 'canal' => $l['canal'], 'vendedor' => $l['vendedor'],
         'data' => dataBR($p['data']), 'forma' => $p['forma'], 'valor' => moedaBR($p['valor_pedido']),
         'credito' => moedaBR($p['credito_utilizado']), 'obs' => $p['obs'],
         'pedido' => array_intersect_key($p, array_flip(['numero', 'cnpj', 'uf', 'data', 'pedido_accademia', 'is_a_vista', 'credito_utilizado', 'itens'])),
@@ -547,7 +763,7 @@ function abrirItens(i, modo) {
     var h = '<div class="row g-2 small mb-3">'
         + '<div class="col-md-6"><b>Cliente:</b> ' + esc(d.cliente) + (d.cnpj ? ' — CNPJ ' + esc(d.cnpj) : '') + '</div>'
         + '<div class="col-md-3"><b>UF:</b> ' + esc(d.uf || '—') + ' &nbsp; <b>Canal:</b> ' + esc(d.canal || '—') + '</div>'
-        + '<div class="col-md-3"><b>Data:</b> ' + esc(d.data) + '</div>'
+        + '<div class="col-md-3"><b>Data:</b> ' + esc(d.data) + ' &nbsp; <b>Supervisor:</b> ' + esc(d.vendedor || '—') + '</div>'
         + '<div class="col-md-6"><b>Forma de pagamento:</b> ' + esc(d.forma || '—') + '</div>'
         + '<div class="col-md-3"><b>Valor no A&amp;M:</b> ' + esc(d.valor) + '</div>'
         + '<div class="col-md-3"><b>Crédito utilizado:</b> ' + esc(d.credito) + '</div>'
