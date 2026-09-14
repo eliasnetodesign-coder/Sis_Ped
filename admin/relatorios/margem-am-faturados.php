@@ -35,6 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['ajax_margem'])) {
             'pct_negociacao' => (float)($it['pct_negociacao'] ?? 0),
             'pct_diretoria'  => (float)($it['pct_diretoria'] ?? 0),
             'valor_total'    => (float)($it['valor_total'] ?? 0),
+            'preco_tabela'   => (float)($it['preco_tabela'] ?? 0),
         ];
     }
     $m = calcularMargemPedidoAEM($p);
@@ -93,8 +94,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['ajax_margem'])) {
 }
 
 // Versão "Pedidos faturados" do relatório margem-am.php: em vez dos pedidos importados no SisPed,
-// busca na hora, no A&M (Vendas > Consulta/Reimprime > Pesquisar Pedidos), os pedidos com situação
-// "FC - Faturado" e roda o mesmo cálculo de margem sobre eles. Somente leitura — nada é gravado.
+// busca na hora, no A&M, os pedidos "FC - Faturado" (Vendas > Consulta/Reimprime Pedidos do grupo
+// Faturados — período pela data do faturamento, valor e itens faturados) e, se marcadas, as demais
+// situações (Vendas > Consulta/Reimprime), e roda o mesmo cálculo de margem sobre eles. Pedido com
+// divergência entre valores e percentuais do A&M fica fora do cálculo, listado no topo. Nada é gravado.
 $ini = $_GET['ini'] ?? date('Y-m-01');
 $fim = $_GET['fim'] ?? date('Y-m-t');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ini)) $ini = date('Y-m-01');
@@ -114,7 +117,8 @@ $buscar = ($_GET['acao'] ?? '') === 'buscar';
 
 $erro = null;
 $linhas = [];
-$falhas = [];          // pedidos cujo detalhe (PD0303) não pôde ser lido
+$falhas = [];          // pedidos cujo detalhe (PD0303/PD0303F) não pôde ser lido
+$divergentes = [];     // pedidos com valores do A&M que não fecham com os percentuais — fora do cálculo
 $comSemCadastro = 0;   // pedidos com produto(s) sem cadastro no SisPed
 $tot = ['produtos'=>0,'descontos'=>0,'credito'=>0,'impostos'=>0,'mp'=>0,'despesas'=>0,'margem'=>0,
         'canal'=>0,'cliente'=>0,'comercial'=>0,'campanha'=>0,'financeiro'=>0];
@@ -133,8 +137,8 @@ if ($buscar) {
     $dias = (strtotime($fim) - strtotime($ini)) / 86400;
     if ($dias < 0) {
         $erro = 'A data final deve ser igual ou posterior à data inicial.';
-    } elseif ($dias > 92) {
-        $erro = 'Período máximo de 3 meses por consulta (o detalhe de cada pedido é lido no A&M, um a um).';
+    } elseif (strtotime($fim) >= strtotime($ini . ' +1 month')) {
+        $erro = 'Período máximo de 1 mês por consulta (o detalhe de cada pedido é lido no A&M, um a um).';
     } else {
         set_time_limit(300);
         $r = pedidosFaturadosAEM($ini, $fim, ['cliente' => $cliente, 'bf' => $bf, 'situacoes' => $situacoes]);
@@ -152,6 +156,7 @@ if ($buscar && !$erro) {
 
     foreach ($r['pedidos'] as $p) {
         if (!empty($p['erro'])) { $falhas[] = $p; continue; }
+        if (!empty($p['divergencias'])) { $divergentes[] = $p; continue; }
 
         $m = calcularMargemPedidoAEM($p);
 
@@ -168,6 +173,7 @@ if ($buscar && !$erro) {
         $linhas[] = [
             'p'         => $p,
             'num_am'    => $p['numero'],
+            'tipo'      => $p['tipo'],
             'eh_bf'     => $p['eh_bf'],
             'local_id'  => $locais[$p['numero']] ?? null,
             'codigo'    => $p['codigo'],
@@ -175,7 +181,9 @@ if ($buscar && !$erro) {
             'situacao_cod' => $p['situacao_cod'],
             'cliente'   => $p['cliente_nome'] ?: $p['cliente'],
             'vendedor'  => $p['vendedor'],
+            'vendedor_cod' => $p['vendedor_cod'],
             'data'      => $p['data'],
+            'data_pedido' => $p['data_pedido'],
             'produtos'  => $produtos,
             'descontos' => $descontos,
             'credito'   => $credito,
@@ -272,9 +280,10 @@ require_once LAYOUT_PATH . '/header.php';
             <span class="badge bg-success bg-opacity-10 text-success border border-success border-opacity-25 align-middle fs-6">Pedidos faturados</span>
         </h4>
         <p class="text-muted small mb-0">
-            Pedidos do A&amp;M (Vendas &gt; Consulta/Reimprime) nas situações escolhidas (padrão: “FC - Faturado”), buscados na hora — mesmo
-            waterfall do relatório de pedidos colocados: preço de tabela → descontos → crédito → impostos por empresa →
-            custo MP → custos fixos. Nada é gravado.
+            Pedidos do A&amp;M nas situações escolhidas (padrão: “FC - Faturado”), buscados na hora. Faturados vêm de Vendas &gt;
+            Consulta/Reimprime Pedidos (grupo Faturados): período pela data do faturamento, valor e itens faturados; as demais situações,
+            de Vendas &gt; Consulta/Reimprime. Mesmo waterfall do relatório de pedidos colocados: preço de tabela → descontos → crédito →
+            impostos por empresa → custo MP → custos fixos. Nada é gravado.
         </p>
     </div>
     <a href="<?= BASE_URL ?>/admin/relatorios/am.php" class="btn btn-outline-secondary btn-sm">
@@ -321,7 +330,7 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
     <div class="text-muted small mt-2" id="aguarde" style="display:none">
         <span class="spinner-border spinner-border-sm me-1"></span>
-        Consultando o sistema A&amp;M… lê o detalhe de cada pedido (cerca de 20–40 s por mês).
+        Consultando o sistema A&amp;M… lê o detalhe de cada pedido (cerca de 1 minuto num mês cheio).
     </div>
 </form>
 
@@ -338,6 +347,23 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 <?php else: ?>
 
+<?php if ($divergentes): ?>
+    <div class="alert alert-danger small">
+        <div class="fw-semibold mb-1">
+            <i class="bi bi-exclamation-octagon me-1"></i><?= count($divergentes) ?> pedido(s) com divergência no A&amp;M — fora do cálculo
+            (não entram na tabela, nos totais nem nas abas). Confira no A&amp;M:
+        </div>
+        <ul class="mb-0 ps-3">
+            <?php foreach ($divergentes as $d): ?>
+            <li>
+                <b><?= e($d['tipo'] . ' ' . $d['numero']) ?></b> (interno <?= e($d['pedido_interno']) ?>, <?= dataBR($d['data']) ?>)
+                — <?= e($d['codigo']) ?> <?= e($d['cliente_nome'] ?: $d['cliente']) ?> — <?= moedaBR($d['valor_pedido']) ?>:
+                <?= e(implode(' · ', $d['divergencias'])) ?>
+            </li>
+            <?php endforeach; ?>
+        </ul>
+    </div>
+<?php endif; ?>
 <?php if ($falhas): ?>
     <div class="alert alert-warning small">
         <i class="bi bi-exclamation-triangle me-1"></i>
@@ -363,7 +389,7 @@ require_once LAYOUT_PATH . '/header.php';
     <?php
     // "Descontos Aplicados" = descontos em cascata (canal + cliente + comercial/diretoria +
     // campanha) + crédito — as duas etapas do waterfall entre o preço de tabela e os impostos.
-    // O desconto financeiro (Pix) fica em "Custo MP + Despesas", junto com o custo fixo.
+    // O desconto financeiro (Pix) fica em "Despesas", junto com o custo fixo.
     $totDescontos    = $tot['descontos'] + $tot['credito'];
     $totDescontosPct = $tot['produtos'] > 0 ? $totDescontos / $tot['produtos'] * 100 : 0;
     // Abertura por tipo, no title do card (passe o mouse para ver).
@@ -378,20 +404,31 @@ require_once LAYOUT_PATH . '/header.php';
         fn($k, $v) => $k . ': ' . moedaBR($v),
         array_keys($descontosDet), $descontosDet
     ));
+    // Saldo em cascata: cada card mostra o que sobra do valor de tabela após a sua etapa.
+    $saldoDescontos  = $tot['produtos'] - $totDescontos;
+    $saldoImpostos   = $saldoDescontos - $tot['impostos'];
+    $saldoMp         = $saldoImpostos - $tot['mp'];
+    $totMpPct        = $tot['produtos'] > 0 ? $tot['mp'] / $tot['produtos'] * 100 : 0;
+    $totDespesasPct  = $tot['produtos'] > 0 ? $tot['despesas'] / $tot['produtos'] * 100 : 0;
     $resumo = [
         ['Valor de Tabela', $tot['produtos'], 'secondary'],
-        ['Descontos Aplicados', $totDescontos, 'danger', $totDescontosPct, $tituloDescontos],
-        ['Carga de Impostos', $tot['impostos'], 'warning', $totImpostosPct],
-        ['Custo MP + Despesas', $tot['mp'] + $tot['despesas'], 'info'],
+        ['Descontos Aplicados', $totDescontos, 'danger', $totDescontosPct, $tituloDescontos,
+            'Tabela − descontos: <b>' . moedaBR($saldoDescontos) . '</b>'],
+        ['Carga de Impostos', $tot['impostos'], 'warning', $totImpostosPct, null,
+            'Após impostos: <b>' . moedaBR($saldoImpostos) . '</b>'],
+        ['Custo MP', $tot['mp'], 'info', $totMpPct, null,
+            'Após custo MP: <b>' . moedaBR($saldoMp) . '</b>'],
+        ['Despesas', $tot['despesas'], 'info', $totDespesasPct],
         ['Margem Final', $tot['margem'], $corMargem($totMargemPct), $totMargemPct],
     ];
     foreach ($resumo as $rs): ?>
     <div class="col-6 col-md-4 col-xl">
-        <div class="card shadow-sm border-0 border-start border-4 border-<?= $rs[2] ?> h-100"<?= isset($rs[4]) ? ' title="' . e($rs[4]) . '"' : '' ?>>
+        <div class="card shadow-sm border-0 border-start border-4 border-<?= $rs[2] ?> h-100"<?= !empty($rs[4]) ?' title="' . e($rs[4]) . '"' : '' ?>>
             <div class="card-body py-3">
                 <div class="text-muted small fw-semibold text-uppercase"><?= e($rs[0]) ?></div>
                 <div class="fs-4 fw-bold text-<?= $rs[2] ?>"><?= moedaBR($rs[1]) ?></div>
                 <?php if (isset($rs[3])): ?><div class="small text-muted"><?= $pctFmt($rs[3]) ?> sobre o valor de tabela</div><?php endif; ?>
+                <?php if (isset($rs[5])): ?><div class="small text-muted"><?= $rs[5] ?></div><?php endif; ?>
             </div>
         </div>
     </div>
@@ -461,6 +498,10 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
             <tr class="lin-ord"<?php foreach ($ord as $k => $v) echo ' data-o-' . $k . '="' . e($v) . '"'; ?>>
                 <td class="fw-semibold text-nowrap">
                     <?= e($l['num_am']) ?>
+                    <?php if ($l['tipo'] === 'MAT'): ?><span class="badge bg-secondary ms-1" title="Pedido MAT no A&amp;M">MAT</span><?php endif; ?>
+                    <?php if ($l['p']['descto_zerado']): ?>
+                    <i class="bi bi-info-circle text-info ms-1" title="%Descto considerado 0 em <?= (int)$l['p']['descto_zerado'] ?> item(ns): Preço Tabela = Valor Unitário no A&amp;M (preço já líquido)"></i>
+                    <?php endif; ?>
                     <?php if ($l['eh_bf']): ?><span class="badge bg-primary ms-1">BF</span><?php endif; ?>
                     <?php if ($l['nao_mapeados']): ?>
                     <i class="bi bi-exclamation-triangle-fill text-warning ms-1" title="Sem cadastro no SisPed (fora do cálculo):&#10;<?= e(implode("\n", $l['nao_mapeados'])) ?>"></i>
@@ -472,8 +513,8 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
                 </td>
                 <td class="text-nowrap"><?= e($l['codigo']) ?></td>
                 <td class="text-truncate" style="max-width:190px" title="<?= e($l['cliente']) ?>"><?= e($l['cliente']) ?></td>
-                <td class="text-nowrap"><?= $l['vendedor'] !== '' ? e($l['vendedor']) : '<span class="text-muted">—</span>' ?></td>
-                <td class="text-nowrap"><?= dataBR($l['data']) ?></td>
+                <td class="text-nowrap" title="<?= e($l['vendedor_cod']) ?>"><?= $l['vendedor'] !== '' ? e($l['vendedor']) : '<span class="text-muted">—</span>' ?></td>
+                <td class="text-nowrap"<?= $l['data_pedido'] && $l['data_pedido'] !== $l['data'] ? ' title="Pedido feito em ' . dataBR($l['data_pedido']) . '"' : '' ?>><?= dataBR($l['data']) ?></td>
                 <td class="text-end"><?= moedaBR($l['produtos']) ?></td>
                 <td class="text-end text-danger"><?= $l['descontos'] ? '− ' . moedaBR($l['descontos']) : '—' ?></td>
                 <td class="text-end text-danger"><?= $l['credito'] ? '− ' . moedaBR($l['credito']) : '—' ?></td>
@@ -527,9 +568,11 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
     </div></div>
 </div>
 <p class="text-muted small mt-2">
-    <i class="bi bi-info-circle me-1"></i>“Data” = data do pedido no A&amp;M. Descontos de canal/cliente, % Negociação,
-    % Diretoria, crédito utilizado e forma de pagamento vêm do próprio pedido no A&amp;M; preço de tabela, NCM/impostos
-    e custo MP vêm dos cadastros do SisPed (mesma regra do “Importa Pedido”). “Despesas” = custos fixos (%) + desconto financeiro.
+    <i class="bi bi-info-circle me-1"></i>“Data” = data do faturamento nos pedidos faturados (a do pedido aparece ao passar o mouse) e data do
+    pedido nas demais situações. Nos faturados, itens e quantidades são os faturados (produto em falta fica de fora) e o valor é o faturado.
+    “Supervisor” = supervisor do cadastro do cliente, com o nome do cadastro de usuários do A&amp;M. Descontos de canal/cliente, % Negociação,
+    % Diretoria, crédito utilizado, forma de pagamento e o preço de tabela (coluna “Preço Tabela”) vêm do próprio pedido no A&amp;M;
+    NCM/impostos e custo MP vêm dos cadastros do SisPed. “Despesas” = custos fixos (%) + desconto financeiro.
     <i class="bi bi-list-ul"></i> abre o detalhe da margem por item (o mesmo modal “Margem” da tela do pedido);
     <i class="bi bi-table"></i> mostra os itens numa tabela compacta (uma linha por item); <i class="bi bi-eye"></i> abre o pedido quando ele também foi importado no SisPed.
 </p>
@@ -595,7 +638,7 @@ foreach ($porProd as $a) { $somaAcum($totProd, $a); $totProd['qtd'] += $a['qtd']
         <?php foreach ($porVend as $vend => $a):
             $ord = ['vendedor' => $vend, 'pedidos' => $a['pedidos'], 'clientes' => count($a['clientes']), 'qtd' => $a['qtd']] + $ordValores($a); ?>
             <tr class="lin-ord"<?php foreach ($ord as $k => $v) echo ' data-o-' . $k . '="' . e($v) . '"'; ?>>
-                <td class="fw-semibold text-nowrap"><?= $vend === '(sem supervisor)' ? '<span class="text-muted fst-italic" title="Coluna VendPed vazia no A&amp;M">sem supervisor</span>' : e($vend) ?></td>
+                <td class="fw-semibold text-nowrap"><?= $vend === '(sem supervisor)' ? '<span class="text-muted fst-italic" title="Cliente sem supervisor no cadastro do A&amp;M">sem supervisor</span>' : e($vend) ?></td>
                 <td class="text-end"><?= $a['pedidos'] ?></td>
                 <td class="text-end"><?= count($a['clientes']) ?></td>
                 <td class="text-end"><?= number_format($a['qtd'], 0, ',', '.') ?></td>
@@ -609,8 +652,8 @@ foreach ($porProd as $a) { $somaAcum($totProd, $a); $totProd['qtd'] += $a['qtd']
     </div></div>
 </div>
 <p class="text-muted small mt-2">
-    <i class="bi bi-info-circle me-1"></i>Supervisor = coluna “VendPed” do pedido no A&amp;M (Consulta/Reimprime). Cada pedido entra inteiro no
-    supervisor dele. “% da Margem” = participação na margem total do período.
+    <i class="bi bi-info-circle me-1"></i>Supervisor = supervisor do cadastro do cliente no A&amp;M (código “Vend Cad”), com o nome da coluna “Usuário”
+    de Acesso &gt; Cadastra Usuários do Sistema. Cada pedido entra inteiro no supervisor. “% da Margem” = participação na margem total do período.
 </p>
 </div>
 
@@ -727,7 +770,8 @@ $modalDados = [];
 foreach ($linhas as $i => $l) {
     $p = $l['p'];
     $modalDados[$i] = [
-        'numero' => $p['numero'], 'interno' => $p['pedido_interno'], 'bf' => $l['eh_bf'],
+        'numero' => $p['tipo'] . ' ' . $p['numero'], 'interno' => $p['pedido_interno'], 'bf' => $l['eh_bf'],
+        'faturado' => $p['fonte'] === 'faturado', 'data_pedido' => $p['data_pedido'] ? dataBR($p['data_pedido']) : '',
         'cliente' => $l['cliente'], 'cnpj' => $p['cnpj'], 'uf' => $l['uf'], 'canal' => $l['canal'], 'vendedor' => $l['vendedor'],
         'data' => dataBR($p['data']), 'forma' => $p['forma'], 'valor' => moedaBR($p['valor_pedido']),
         'credito' => moedaBR($p['credito_utilizado']), 'obs' => $p['obs'],
@@ -763,9 +807,11 @@ function abrirItens(i, modo) {
     var h = '<div class="row g-2 small mb-3">'
         + '<div class="col-md-6"><b>Cliente:</b> ' + esc(d.cliente) + (d.cnpj ? ' — CNPJ ' + esc(d.cnpj) : '') + '</div>'
         + '<div class="col-md-3"><b>UF:</b> ' + esc(d.uf || '—') + ' &nbsp; <b>Canal:</b> ' + esc(d.canal || '—') + '</div>'
-        + '<div class="col-md-3"><b>Data:</b> ' + esc(d.data) + ' &nbsp; <b>Supervisor:</b> ' + esc(d.vendedor || '—') + '</div>'
+        + '<div class="col-md-3"><b>' + (d.faturado ? 'Faturado em' : 'Data') + ':</b> ' + esc(d.data)
+        + (d.faturado && d.data_pedido && d.data_pedido !== d.data ? ' <span class="text-muted">(pedido ' + esc(d.data_pedido) + ')</span>' : '')
+        + ' &nbsp; <b>Supervisor:</b> ' + esc(d.vendedor || '—') + '</div>'
         + '<div class="col-md-6"><b>Forma de pagamento:</b> ' + esc(d.forma || '—') + '</div>'
-        + '<div class="col-md-3"><b>Valor no A&amp;M:</b> ' + esc(d.valor) + '</div>'
+        + '<div class="col-md-3"><b>' + (d.faturado ? 'Valor faturado' : 'Valor no A&amp;M') + ':</b> ' + esc(d.valor) + '</div>'
         + '<div class="col-md-3"><b>Crédito utilizado:</b> ' + esc(d.credito) + '</div>'
         + (d.obs ? '<div class="col-12"><b>Obs:</b> ' + esc(d.obs) + '</div>' : '')
         + '</div>';

@@ -171,12 +171,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </button>
                 </form>
             </div>
-
-            <div class="card-footer text-center text-muted py-3 small">
-                <strong>Usuários de teste</strong><br>
-                Cliente: <code>cliente@teste.com</code> &bull; Admin: <code>comercial@teste.com</code><br>
-                Senha: <code>123</code>
-            </div>
         </div>
     </div>
 

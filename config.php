@@ -710,26 +710,45 @@ function buscarPedidoAEM(string $numero): array {
 }
 
 /**
- * Pedidos do A&M no período nas situações pedidas (padrão só "FC - Faturado"; também "AB - Liberado
- * para o faturamento", "AC - Liberado para o financeiro", "SA - Bloqueado"…) — mesma busca manual de Vendas >
- * "Consulta/Reimprime" > "Pesquisar Pedidos" (PD030 -> PD0301, RdbSel=V) — mais o detalhe de cada
- * pedido (PD0303: cliente, CNPJ, UF e itens). Somente leitura; usado pelo relatório
- * admin/relatorios/margem-am-faturados.php, que calcula a margem sem gravar nada no SisPed.
+ * Pedidos do A&M no período nas situações pedidas (padrão só "FC - Faturado"), com o detalhe de cada um.
+ * Somente leitura; usado pelo relatório admin/relatorios/margem-am-faturados.php, que calcula a margem
+ * sem gravar nada no SisPed.
  *
- * Colunas do grid (THEAD): S, PedidoCliente ("PED nnn"), PedidoInterno (link PD0303 SidPed=), Data,
- * Emis, VendPed, Tipo, Codigo, Cliente, ValorPedido, CreditoUtilizado, Situação, Altera, Forma Pagto,
- * Obs, MA. As posições são contadas a partir da célula "PED nnn": a 1ª célula de algumas linhas traz
- * um onclick com HTML dentro, que desloca a contagem.
+ * - "FC - Faturado" vem da tela de faturados: Vendas > "Consulta/Reimprime Pedidos" do grupo Faturados
+ *   (PD030F -> PD0301F, detalhe PD0303F). Período = data do FATURAMENTO, valor = valor faturado e
+ *   itens/quantidades = os faturados (produto em falta sai do pedido ou vem com qtd menor — é o correto).
+ * - As demais situações ("AB - Liberado para o faturamento", "AC - Liberado para o financeiro",
+ *   "SA - Bloqueado"…) vêm de Vendas > "Consulta/Reimprime" (PD030 -> PD0301, RdbSel=V, detalhe PD0303),
+ *   com período pela data do pedido.
+ * Entram os pedidos "PED" e "MAT". Supervisor = o do CADASTRO do cliente (coluna "Vend Cad" do grid de
+ * faturados; nas demais situações, coluna "Vend" do Cadastro de Distribuidores CL200), com o nome da
+ * coluna "Usuário" de Acesso > "Cadastra Usuários do Sistema" (FJ001U), buscado pelo código (S070…).
+ *
+ * Grid PD0301F: Pedido Interno ("PED 00930318"), Pedido Cliente, Data (faturamento), Emis, Vend Ped,
+ * Vend Cad, Tipo, Codigo, Cliente, Valor Pedido, Valor Credito, Status, Boleto, Forma Pagto, Obs.
+ * Grid PD0301: S, PedidoCliente ("PED nnn"), PedidoInterno, Data, Emis, VendPed, Tipo, Codigo, Cliente,
+ * ValorPedido, CreditoUtilizado, Situação, Altera, Forma Pagto, Obs, MA.
+ * Nos dois, as posições são contadas a partir da célula "PED/MAT nnn" (a 1ª célula de algumas linhas
+ * traz um onclick com HTML dentro, que desloca a contagem). Os itens do detalhe são lidos pelo título
+ * das colunas (o PD0303F tem a coluna "Lote" a mais).
+ *
+ * 'divergencias' (textos; vazio = ok): item cujo Valor Líquido não fecha com Preço Tabela e os
+ * percentuais (%Descto + %Descto ST somados, depois %Negociação e %Diretoria em cascata) ou pedido cujo
+ * Valor Total dos itens difere de Σ Qtd × Valor Líquido — o relatório lista esses pedidos à parte e
+ * não os soma.
  *
  * @param string $dataIni aaaa-mm-dd
  * @param string $dataFim aaaa-mm-dd (limitada a hoje)
  * @param array  $filtros 'cliente' => trecho do nome ou código do A&M; 'bf' => '1' só BF | '0' só não-BF;
  *                        'situacoes' => códigos de 2 letras da coluna Situação (padrão ['FC'])
- * @return array ['ok'=>bool,'erro'=>?string,'pedidos'=>[['numero','pedido_interno','sid_ped','data',
- *               'codigo','cliente','vendedor' (VendPed = supervisor),'cliente_nome','cnpj','uf','cidade','valor_pedido','credito_utilizado',
- *               'situacao','situacao_cod','forma','is_a_vista','obs','eh_bf','pedido_accademia',
- *               'itens'=>[['codigo','nome','pct_descto','pct_descto_st','pct_negociacao','pct_diretoria',
- *               'qtd','valor_total'],...],'erro'=>?string], ...]]  — mais recentes primeiro.
+ * @return array ['ok'=>bool,'erro'=>?string,'pedidos'=>[['numero','tipo' (PED|MAT),'pedido_interno','sid_ped',
+ *               'fonte' (faturado|pedido),'data' (faturamento no FC; pedido nas demais),'data_pedido',
+ *               'codigo','cliente','vendedor_cod','vendedor' (nome do supervisor do cadastro),'cliente_nome',
+ *               'cnpj','uf','cidade','valor_pedido','credito_utilizado','situacao','situacao_cod','forma',
+ *               'is_a_vista','obs','eh_bf','pedido_accademia','itens'=>[['codigo','nome','pct_descto',
+ *               'pct_descto_st','pct_negociacao','pct_diretoria','qtd','valor_total','preco_tabela' (coluna
+ *               "Preço Tabela" do A&M)],...],'divergencias'=>[...],'descto_zerado','erro'=>?string], ...]]
+ *               — mais recentes primeiro.
  */
 function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = []): array {
     $falha = fn($msg) => ['ok' => false, 'erro' => $msg, 'pedidos' => []];
@@ -745,6 +764,7 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
     $situacoes = array_values(array_filter(array_map('strtoupper', (array)($filtros['situacoes'] ?? ['FC'])),
         fn($s) => preg_match('/^[A-Z]{2}$/', $s)));
     if (!$situacoes) $situacoes = ['FC'];
+    $outras = array_values(array_diff($situacoes, ['FC']));
 
     $chamar = function (string $path, array $post) {
         $ch = curl_init(aemBaseUrl() . $path);
@@ -764,85 +784,48 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
         $s = preg_replace('/[^\d.,-]/', '', (string)$s);
         return $s === '' ? 0.0 : (float)str_replace(['.', ','], ['', '.'], $s);
     };
+    // Título de coluna sem acento/espaço ("% Descto ST" -> "%desctost", "Usuário" -> "usuario").
+    $chave = fn($h) => preg_replace('/[^a-z%]/', '', strtr(mb_strtolower($txt($h), 'UTF-8'),
+        ['á' => 'a', 'à' => 'a', 'â' => 'a', 'ã' => 'a', 'é' => 'e', 'ê' => 'e', 'í' => 'i', 'ó' => 'o', 'ô' => 'o', 'õ' => 'o', 'ú' => 'u', 'ç' => 'c']));
+    $fmt = fn($v) => number_format((float)$v, 2, ',', '.');
+    $periodo = [
+        'TxtDiaInicio' => date('d', $ti), 'TxtMesInicio' => date('m', $ti), 'TxtAnoInicio' => date('Y', $ti),
+        'TxtDiaFim' => date('d', $tf), 'TxtMesFim' => date('m', $tf), 'TxtAnoFim' => date('Y', $tf),
+    ];
 
-    // 1) Login + abre Vendas > Consulta/Reimprime.
+    // 1) Login.
     $loginHtml = $chamar('/cgi-bin/ITF/ITF.EXE', ['SubMenu' => 'FROTA', 'TxtLgloginUsuario' => AEM_LOGIN, 'PwdLgloginSenha' => AEM_SENHA]);
     if (!preg_match('/LNKTRANSPORTE=([0-9A-Za-z]+)/', $loginHtml, $m)) return $falha('Não foi possível autenticar no sistema A&M.');
     $token = $m[1];
-    $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0163']);
-    $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
 
-    // 2) "Pesquisar Pedidos" (PD0301) no período — só vendas (RdbSel=V), sem os flags de "Aguardando…".
-    $grid = $chamar('/cgi-bin/ITF/PD0301.EXE', [
-        'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '', 'TxtPedCliente' => '', 'TxtNumero' => '',
-        'TxtDiaInicio' => date('d', $ti), 'TxtMesInicio' => date('m', $ti), 'TxtAnoInicio' => date('Y', $ti),
-        'TxtDiaFim' => date('d', $tf), 'TxtMesFim' => date('m', $tf), 'TxtAnoFim' => date('Y', $tf),
-        'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '', 'TxtProduto' => '', 'RdbSel' => 'V',
-    ]);
-    // Página grande (centenas de linhas) — limites do <TBODY> por strpos, não regex (backtrack limit do PCRE).
-    $posB = stripos($grid, '<TBODY>');
-    $posE = $posB !== false ? stripos($grid, '</TBODY>', $posB) : false;
-    if ($posB === false || $posE === false) {
-        if (stripos($grid, 'PedidoCliente') !== false) return ['ok' => true, 'erro' => null, 'pedidos' => []];
-        return $falha('Não foi possível ler o grid Consulta/Reimprime do A&M.');
-    }
-    preg_match_all('/<TR\b[^>]*>(.*?)<\/TR>/is', substr($grid, $posB + 7, $posE - $posB - 7), $trs);
-
-    $pedidos = [];
-    foreach ($trs[1] as $tr) {
-        if (!preg_match('/SidPed=(\d+)/', $tr, $ms)) continue;
-        preg_match_all('/<TD\b[^>]*>(.*?)<\/TD>/is', $tr, $tds);
-        $c = array_map($txt, $tds[1]);
-        $a = null;
-        foreach ($c as $ix => $cel) {
-            if (preg_match('/^PED\s*\d+/i', $cel)) { $a = $ix; break; }
+    // 2) Nome dos supervisores: Acesso > "Cadastra Usuários do Sistema" (FJ001U) — Código (S070) => Usuário.
+    //    A lista já vem inteira (liberados e bloqueados). Página grande: limites por strpos, não regex.
+    $usuarios = [];
+    $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0010']);
+    $uHtml = $chamar('/cgi-bin/ITF/FJ001U.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'TRMENU.EXE', 'SubMenu' => 'FROTA']);
+    $posH = stripos($uHtml, '<THEAD>');
+    $posB = $posH !== false ? stripos($uHtml, '<TBODY>', $posH) : false;
+    $posE = $posB !== false ? stripos($uHtml, '</TBODY>', $posB) : false;
+    if ($posE !== false) {
+        preg_match_all('/<T[HD]\b[^>]*>(.*?)<\/T[HD]>/is', substr($uHtml, $posH, $posB - $posH), $uh);
+        $uCols = array_map($chave, $uh[1]);
+        $iNome = array_search('usuario', $uCols, true);
+        $iCod  = array_search('codigo', $uCols, true);
+        if ($iNome !== false && $iCod !== false) {
+            preg_match_all('/<TR\b[^>]*>(.*?)<\/TR>/is', substr($uHtml, $posB + 7, $posE - $posB - 7), $ur);
+            foreach ($ur[1] as $tr) {
+                preg_match_all('/<TD\b[^>]*>(.*?)<\/TD>/is', $tr, $ud);
+                $cod  = $txt($ud[1][$iCod] ?? '');
+                $nome = $txt($ud[1][$iNome] ?? '');
+                if ($cod !== '' && $nome !== '' && !isset($usuarios[$cod])) $usuarios[$cod] = $nome;
+            }
         }
-        if ($a === null) continue;
-        $situacao = $c[$a + 10] ?? '';
-        if (!preg_match('/^([A-Z]{2})\s*-/i', $situacao, $msit) || !in_array(strtoupper($msit[1]), $situacoes, true)) continue;
-
-        $codigo      = $c[$a + 6] ?? '';
-        $clienteGrid = $c[$a + 7] ?? '';
-        if ($filtroCliente !== '' && mb_strpos(mb_strtolower($codigo . ' ' . $clienteGrid), $filtroCliente) === false) continue;
-
-        // Forma Pagto = 1ª célula após a Situação no formato "00 - A Vista" / "71B - 30/60/90DD"; Obs = a seguinte.
-        $forma = ''; $obs = '';
-        for ($k = $a + 11, $n = count($c); $k < $n; $k++) {
-            if (preg_match('/^\d+[A-Za-z]?\s*-\s*\S/', $c[$k])) { $forma = $c[$k]; $obs = $c[$k + 1] ?? ''; break; }
-        }
-        $ehBf = strtoupper(substr(trim($obs), 0, 2)) === 'BF';
-        if ($filtroBf === '1' && !$ehBf) continue;
-        if ($filtroBf === '0' && $ehBf) continue;
-
-        preg_match('/(\d{2})\/(\d{2})\/(\d{4})/', $c[$a + 2] ?? '', $md);
-        preg_match('/^(\d+)/', $forma, $mfp);
-        $pedidos[] = [
-            'numero'            => preg_replace('/\D/', '', $c[$a]),
-            'pedido_interno'    => $c[$a + 1] ?? '',
-            'sid_ped'           => $ms[1],
-            'data'              => $md ? "{$md[3]}-{$md[2]}-{$md[1]}" : null,
-            'codigo'            => $codigo,
-            'cliente'           => $clienteGrid,
-            'vendedor'          => $c[$a + 4] ?? '',   // coluna VendPed = supervisor do pedido
-            'cliente_nome'      => '', 'cnpj' => '', 'uf' => '', 'cidade' => '',
-            'valor_pedido'      => $num($c[$a + 8] ?? ''),
-            'credito_utilizado' => $num($c[$a + 9] ?? ''),
-            'situacao'          => $situacao,
-            'situacao_cod'      => strtoupper($msit[1]),
-            'forma'             => $forma,
-            'is_a_vista'        => (($mfp[1] ?? '') === '00') && stripos($forma, 'vista') !== false,
-            'obs'               => $obs,
-            'eh_bf'             => $ehBf,
-            'pedido_accademia'  => null,
-            'itens'             => [],
-            'erro'              => null,
-        ];
     }
-    if (!$pedidos) return ['ok' => true, 'erro' => null, 'pedidos' => []];
 
-    // 3) Cadastro de Distribuidores (CL200) — "Pedido Accademia" (SIM/NAO) por Codigo (5 primeiros
-    //    dígitos): define o canal do cálculo (Distribuidor/Varejo), mesma regra do "Importa Pedido".
-    $mapAccademia = [];
+    // 3) Cadastro de Distribuidores (CL200) por Codigo: "Pedido Accademia" (SIM/NAO, pelos 5 primeiros
+    //    dígitos — define o canal do cálculo, Distribuidor/Varejo, mesma regra do "Importa Pedido") e "Vend"
+    //    (supervisor do cadastro, usado nas situações que não vêm do grid de faturados).
+    $mapAccademia = []; $mapVend = []; $mapVend5 = [];
     $distribHtml = $chamar('/cgi-bin/ITF/CL200.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'CLMENU.EXE', 'SubMenu' => 'FROTA']);
     $posTab = strpos($distribHtml, 'id="tabela"');
     if ($posTab === false) $posTab = strpos($distribHtml, "id='tabela'");
@@ -855,17 +838,51 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
             $cd = array_map($txt, $dc[1]);
             if (count($cd) < 18) continue;
             $key = substr($cd[1], 0, 5);
-            if ($key !== '') $mapAccademia[$key] = strtoupper($cd[17]);
+            if ($key === '') continue;
+            $mapAccademia[$key] = strtoupper($cd[17]);
+            if ($cd[3] !== '') {
+                $mapVend[$cd[1]] = $cd[3];
+                $mapVend5[$key]  = $mapVend5[$key] ?? $cd[3];
+            }
         }
     }
+    unset($uHtml, $distribHtml);
 
-    // 4) Detalhe de cada pedido (PD0303): cliente, CNPJ, UF e itens.
-    foreach ($pedidos as &$p) {
-        $p['pedido_accademia'] = $mapAccademia[substr($p['codigo'], 0, 5)] ?? null;
-        $det = $chamar('/cgi-bin/ITF/PD0303.EXE', ['LNKTRANSPORTE' => $token, 'SidPed' => $p['sid_ped']]);
-        if (!preg_match('/id=["\']itens["\'].*?<TBODY>(.*?)<\/TBODY>/is', $det, $mBody)) {
+    // Supervisor do cadastro: código (do grid ou, sem ele, do CL200) => nome do usuário no A&M.
+    $supervisor = function (string $cod, string $codigoCliente, string $nomeGrid) use ($usuarios, $mapVend, $mapVend5): array {
+        if ($cod === '') $cod = $mapVend[$codigoCliente] ?? ($mapVend5[substr($codigoCliente, 0, 5)] ?? '');
+        return $cod === '' ? ['', $nomeGrid] : [$cod, $usuarios[$cod] ?? $cod];
+    };
+    // Filtros de cliente e BF; devolve null quando o pedido fica fora, senão se é BF (Obs começa com "BF").
+    $passa = function (string $codigo, string $cliente, string $obs) use ($filtroCliente, $filtroBf): ?bool {
+        if ($filtroCliente !== '' && mb_strpos(mb_strtolower($codigo . ' ' . $cliente), $filtroCliente) === false) return null;
+        $ehBf = strtoupper(substr(trim($obs), 0, 2)) === 'BF';
+        if (($filtroBf === '1' && !$ehBf) || ($filtroBf === '0' && $ehBf)) return null;
+        return $ehBf;
+    };
+    // Linhas do grid (SidPed, células, posição da célula "PED/MAT nnn"); null = página sem <TBODY>.
+    $linhasGrid = function (string $grid) use ($txt): ?array {
+        $posB = stripos($grid, '<TBODY>');
+        $posE = $posB !== false ? stripos($grid, '</TBODY>', $posB) : false;
+        if ($posB === false || $posE === false) return null;
+        preg_match_all('/<TR\b[^>]*>(.*?)<\/TR>/is', substr($grid, $posB + 7, $posE - $posB - 7), $trs);
+        $out = [];
+        foreach ($trs[1] as $tr) {
+            if (!preg_match('/SidPed=(\d+)/', $tr, $ms)) continue;
+            preg_match_all('/<TD\b[^>]*>(.*?)<\/TD>/is', $tr, $tds);
+            $c = array_map($txt, $tds[1]);
+            foreach ($c as $ix => $cel) {
+                if (preg_match('/^(PED|MAT)\s*(\d+)/i', $cel, $mp)) { $out[] = [$ms[1], $c, $ix, strtoupper($mp[1]), $mp[2]]; break; }
+            }
+        }
+        return $out;
+    };
+    // Detalhe do pedido (PD0303 / PD0303F): cliente, CNPJ, UF, data do pedido e itens (lidos pelo título da coluna).
+    // $faturado = PD0303F, onde "Valor Unitário" é o preço FATURADO (no PD0303 é o do pedido, após %Descto/%Descto ST).
+    $lerDetalhe = function (array &$p, string $det, bool $faturado) use ($txt, $num, $chave, $fmt) {
+        if (!preg_match('/id=["\']itens["\'](.*?)<TBODY>(.*?)<\/TBODY>/is', $det, $mBody)) {
             $p['erro'] = 'detalhe do pedido não lido';
-            continue;
+            return;
         }
         if (preg_match('/Cliente:\s*<\/FONT>\s*<\/TD>\s*<TD[^>]*>\s*<FONT[^>]*>\s*<b>\s*([^<]*?)\s*<\/b>/is', $det, $mc)) {
             $p['cliente_nome'] = trim(preg_replace('/^\d+\s+/', '', $txt($mc[1])));
@@ -877,25 +894,153 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
             $p['cidade'] = $txt($mu[2]);
             $p['uf']     = strtoupper($mu[3]);
         }
-        preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mBody[1], $itrs);
+        if (preg_match('/Pedido Interno\s+[\d.]+\s+(\d{2})\/(\d{2})\/(\d{4})/i', $det, $mdp)) {
+            $p['data_pedido'] = "{$mdp[3]}-{$mdp[2]}-{$mdp[1]}";
+        }
+        preg_match_all('/<T[HD]\b[^>]*>(.*?)<\/T[HD]>/is', $mBody[1], $mh);
+        $ix = array_flip(array_map($chave, $mh[1]));
+        if (!isset($ix['codigodzyon'], $ix['qtd'], $ix['valortotal'])) {
+            // Sem títulos legíveis: layout fixo do PD0303 (sem a coluna "Lote").
+            $ix = ['codigodzyon' => 1, 'nomedoproduto' => 3, 'precotabela' => 5, '%descto' => 6, '%desctost' => 7, 'valorunitario' => 8,
+                   '%negociacao' => 9, 'valornegociado' => 10, '%diretoria' => 11, 'qtd' => 12, 'valorliquido' => 13, 'valortotal' => 14];
+        }
+        $col = fn(array $ic, string $k) => isset($ix[$k]) ? ($ic[$ix[$k]] ?? '') : '';
+        $itDiv = []; $somaTotal = 0.0; $somaLiq = 0.0;
+        preg_match_all('/<TR[^>]*>(.*?)<\/TR>/is', $mBody[2], $itrs);
         foreach ($itrs[1] as $itrHtml) {
             preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $itrHtml, $itds);
             $ic = array_map($txt, $itds[1]);
             if (count($ic) < 13) continue;
-            $p['itens'][] = [
-                'codigo'         => $ic[1],
-                'nome'           => $ic[3],
-                'pct_descto'     => $num($ic[6]),
-                'pct_descto_st'  => $num($ic[7]),
-                'pct_negociacao' => $num($ic[9]),
-                'pct_diretoria'  => $num($ic[11]),
-                'qtd'            => (int)preg_replace('/\D/', '', $ic[12]),
-                'valor_total'    => $num($ic[14] ?? 0),
+            $it = [
+                'codigo'         => $col($ic, 'codigodzyon'),
+                'nome'           => $col($ic, 'nomedoproduto'),
+                'pct_descto'     => $num($col($ic, '%descto')),
+                'pct_descto_st'  => $num($col($ic, '%desctost')),
+                'pct_negociacao' => $num($col($ic, '%negociacao')),
+                'pct_diretoria'  => $num($col($ic, '%diretoria')),
+                'qtd'            => (int)round($num($col($ic, 'qtd'))),   // PD0303F traz "6,00"
+                'valor_total'    => $num($col($ic, 'valortotal')),
             ];
+            $preco = $num($col($ic, 'precotabela'));
+            $vLiq  = $num($col($ic, 'valorliquido'));
+            // Item com %Descto mas Valor Unitário do pedido = Preço Tabela (ex.: Amazon, Accademia): o preço já vem
+            // líquido e o desconto não foi aplicado — considera %Descto 0 (regra do usuário). No PD0303F o Valor
+            // Unitário é o faturado; o do pedido sai do Valor Negociado ÷ (1 − %Negociação).
+            $vUnitPed = $faturado
+                ? ($it['pct_negociacao'] < 100 ? $num($col($ic, 'valornegociado')) / (1 - $it['pct_negociacao'] / 100) : 0.0)
+                : $num($col($ic, 'valorunitario'));
+            if ($it['pct_descto'] > 0 && $preco > 0 && abs($vUnitPed - $preco) <= max(0.01, $preco * 0.002)) {
+                $it['pct_descto'] = 0.0;
+                $p['descto_zerado']++;
+            }
+            $it['preco_tabela'] = $preco;   // base do cálculo de margem no lugar do preço padrão do SisPed
+            $p['itens'][] = $it;
+            // Conferência: Preço Tabela × (1 − %Descto − %Descto ST) × (1 − %Negociação) × (1 − %Diretoria) = Valor Líquido.
+            if ($preco > 0 && $vLiq > 0) {
+                $calc = $preco * (1 - min(100, $it['pct_descto'] + $it['pct_descto_st']) / 100)
+                      * (1 - $it['pct_negociacao'] / 100) * (1 - $it['pct_diretoria'] / 100);
+                if (abs($calc - $vLiq) > max(0.02, $vLiq * 0.003)) {
+                    $itDiv[] = $it['codigo'] . ' (Valor Líquido ' . $fmt($vLiq) . ', pelos % daria ' . $fmt($calc) . ')';
+                }
+            }
+            $somaTotal += $it['valor_total'];
+            $somaLiq   += $it['qtd'] * $vLiq;
         }
-        if (!$p['itens']) $p['erro'] = 'pedido sem itens no A&M';
+        if (!$p['itens']) { $p['erro'] = 'pedido sem itens no A&M'; return; }
+        if ($itDiv) {
+            $p['divergencias'][] = count($itDiv) . ' item(ns) em que Preço Tabela e percentuais não fecham com o Valor Líquido: '
+                . implode('; ', array_slice($itDiv, 0, 3)) . (count($itDiv) > 3 ? '…' : '');
+        }
+        if ($somaLiq > 0 && abs($somaTotal - $somaLiq) > max(1.0, $somaLiq * 0.005)) {
+            $p['divergencias'][] = 'Valor Total dos itens R$ ' . $fmt($somaTotal) . ' × Qtd × Valor Líquido R$ ' . $fmt($somaLiq)
+                . ' (' . sprintf('%+.1f', ($somaTotal / $somaLiq - 1) * 100) . '%)';
+        }
+    };
+    $vazio = ['cliente_nome' => '', 'cnpj' => '', 'uf' => '', 'cidade' => '', 'itens' => [], 'divergencias' => [], 'descto_zerado' => 0, 'erro' => null];
+
+    $pedidos = [];
+
+    // 4) Demais situações (AB/AC/SA…): Vendas > "Consulta/Reimprime" > "Pesquisar Pedidos" (PD0301) +
+    //    detalhe PD0303 — período pela data do pedido, só vendas (RdbSel=V), sem os flags de "Aguardando…".
+    if ($outras) {
+        $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0163']);
+        $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+        $grid = $chamar('/cgi-bin/ITF/PD0301.EXE', [
+            'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '', 'TxtPedCliente' => '', 'TxtNumero' => '',
+            'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '', 'TxtProduto' => '', 'RdbSel' => 'V',
+        ] + $periodo);
+        $linhas = $linhasGrid($grid);
+        if ($linhas === null && stripos($grid, 'PedidoCliente') === false) return $falha('Não foi possível ler o grid Consulta/Reimprime do A&M.');
+        $ini = count($pedidos);
+        foreach ($linhas ?? [] as [$sid, $c, $a, $tipo, $nro]) {
+            $situacao = $c[$a + 10] ?? '';
+            if (!preg_match('/^([A-Z]{2})\s*-/i', $situacao, $msit) || !in_array(strtoupper($msit[1]), $outras, true)) continue;
+            $codigo      = $c[$a + 6] ?? '';
+            $clienteGrid = $c[$a + 7] ?? '';
+            // Forma Pagto = 1ª célula após a Situação no formato "00 - A Vista" / "71B - 30/60/90DD"; Obs = a seguinte.
+            $forma = ''; $obs = '';
+            for ($k = $a + 11, $n = count($c); $k < $n; $k++) {
+                if (preg_match('/^\d+[A-Za-z]?\s*-\s*\S/', $c[$k])) { $forma = $c[$k]; $obs = $c[$k + 1] ?? ''; break; }
+            }
+            $ehBf = $passa($codigo, $clienteGrid, $obs);
+            if ($ehBf === null) continue;
+            preg_match('/(\d{2})\/(\d{2})\/(\d{4})/', $c[$a + 2] ?? '', $md);
+            preg_match('/^(\d+)/', $forma, $mfp);
+            [$vCod, $vNome] = $supervisor('', $codigo, $c[$a + 4] ?? '');
+            $data = $md ? "{$md[3]}-{$md[2]}-{$md[1]}" : null;
+            $pedidos[] = [
+                'numero' => ltrim($nro, '0'), 'tipo' => $tipo, 'pedido_interno' => $c[$a + 1] ?? '', 'sid_ped' => $sid,
+                'fonte' => 'pedido', 'data' => $data, 'data_pedido' => $data,
+                'codigo' => $codigo, 'cliente' => $clienteGrid, 'vendedor_cod' => $vCod, 'vendedor' => $vNome,
+                'valor_pedido' => $num($c[$a + 8] ?? ''), 'credito_utilizado' => $num($c[$a + 9] ?? ''),
+                'situacao' => $situacao, 'situacao_cod' => strtoupper($msit[1]), 'forma' => $forma,
+                'is_a_vista' => (($mfp[1] ?? '') === '00') && stripos($forma, 'vista') !== false,
+                'obs' => $obs, 'eh_bf' => $ehBf, 'pedido_accademia' => $mapAccademia[substr($codigo, 0, 5)] ?? null,
+            ] + $vazio;
+        }
+        for ($i = $ini, $n = count($pedidos); $i < $n; $i++) {
+            $lerDetalhe($pedidos[$i], $chamar('/cgi-bin/ITF/PD0303.EXE', ['LNKTRANSPORTE' => $token, 'SidPed' => $pedidos[$i]['sid_ped']]), false);
+        }
     }
-    unset($p);
+
+    // 5) "FC - Faturado": Vendas > "Consulta/Reimprime Pedidos" (grupo Faturados, PD030F -> PD0301F) + detalhe
+    //    PD0303F. O SidPed deste grid só vale no PD0303F (no PD0303 abre outro pedido).
+    if (in_array('FC', $situacoes, true)) {
+        $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $token, 'TxtTransac' => '0693']);
+        $chamar('/cgi-bin/ITF/PD030F.EXE', ['LNKTRANSPORTE' => $token, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+        $grid = $chamar('/cgi-bin/ITF/PD0301F.EXE', [
+            'LNKTRANSPORTE' => $token, 'SubOpcao' => '', 'SubForm' => '', 'TxtPedCliente' => '', 'TxtNumero' => '',
+            'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '', 'TxtProduto' => '', 'SelForma' => '', 'RdbSel' => 'V',
+        ] + $periodo);
+        $linhas = $linhasGrid($grid);
+        if ($linhas === null && stripos($grid, 'Pedidos Faturados') === false) return $falha('Não foi possível ler o grid de pedidos faturados do A&M.');
+        $ini = count($pedidos);
+        foreach ($linhas ?? [] as [$sid, $c, $a, $tipo, $nro]) {
+            if (stripos($c[$a + 11] ?? '', 'fatur') === false) continue;
+            $codigo      = $c[$a + 7] ?? '';
+            $clienteGrid = $c[$a + 8] ?? '';
+            $forma       = $c[$a + 13] ?? '';
+            $obs         = $c[$a + 14] ?? '';
+            $ehBf = $passa($codigo, $clienteGrid, $obs);
+            if ($ehBf === null) continue;
+            preg_match('/(\d{2})\/(\d{2})\/(\d{4})/', $c[$a + 2] ?? '', $md);
+            preg_match('/^(\d+)/', $forma, $mfp);
+            [$vCod, $vNome] = $supervisor($c[$a + 5] ?? '', $codigo, '');
+            $pedidos[] = [
+                'numero' => ltrim(preg_replace('/\D/', '', $c[$a + 1] ?? ''), '0'), 'tipo' => $tipo,
+                'pedido_interno' => number_format((int)$nro, 0, '', '.'), 'sid_ped' => $sid,
+                'fonte' => 'faturado', 'data' => $md ? "{$md[3]}-{$md[2]}-{$md[1]}" : null, 'data_pedido' => null,
+                'codigo' => $codigo, 'cliente' => $clienteGrid, 'vendedor_cod' => $vCod, 'vendedor' => $vNome,
+                'valor_pedido' => $num($c[$a + 9] ?? ''), 'credito_utilizado' => $num($c[$a + 10] ?? ''),
+                'situacao' => 'FC - Faturado', 'situacao_cod' => 'FC', 'forma' => $forma,
+                'is_a_vista' => (($mfp[1] ?? '') === '00') && stripos($forma, 'vista') !== false,
+                'obs' => $obs, 'eh_bf' => $ehBf, 'pedido_accademia' => $mapAccademia[substr($codigo, 0, 5)] ?? null,
+            ] + $vazio;
+        }
+        for ($i = $ini, $n = count($pedidos); $i < $n; $i++) {
+            $lerDetalhe($pedidos[$i], $chamar('/cgi-bin/ITF/PD0303F.EXE', ['LNKTRANSPORTE' => $token, 'SidPed' => $pedidos[$i]['sid_ped']]), true);
+        }
+    }
 
     usort($pedidos, fn($x, $y) => [$y['data'], $y['pedido_interno']] <=> [$x['data'], $x['pedido_interno']]);
     return ['ok' => true, 'erro' => null, 'pedidos' => $pedidos];
@@ -1353,8 +1498,11 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         $linhas[] = $row;
     }
 
+    // Agrupa pelo cliente = 5 primeiros dígitos do Codigo (o 6º é a filial/CNPJ), pra juntar
+    // na mesma análise os pedidos de todos os CNPJs do cliente (ex.: 135861 e 135862 -> 13586).
+    // Cada linha mantém o próprio 'codigo' completo.
     $porCodigo = [];
-    foreach ($linhas as $row) $porCodigo[$row['codigo']][] = $row;
+    foreach ($linhas as $row) $porCodigo[substr((string)$row['codigo'], 0, 5)][] = $row;
 
     // Cadastro de Distribuidores (CL200) — coluna "PedidoAccademia" (SIM/NAO) por
     // Codigo. Página grande (>800 KB): baixa uma vez e monta o mapa first5 => SIM/NAO.
@@ -1440,7 +1588,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
     // que precisa do distribuidor que vem no CX130.
     $reqs = []; $reqsTg = [];
     foreach ($porCodigo as $codigo => $rows) {
-        $codDist = strlen((string)$codigo) > 2 ? substr((string)$codigo, 1, -1) : (string)$codigo;
+        $codDist = strlen((string)$codigo) > 1 ? substr((string)$codigo, 1) : (string)$codigo;
         $reqsTg["tg|$codigo"] = ['/cgi-bin/ITF/PD050P.EXE', [
             'LNKTRANSPORTE' => $token,
             'TxtPedido' => '', 'TxtCodDist' => $codDist, 'TxtDistrib' => '', 'status' => '',
@@ -1495,8 +1643,9 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
     $campanhasAmPorId = array_column(campanhasAmListar(), null, 'id');
     $analises = [];
     foreach ($porCodigo as $codigo => $rows) {
-        // "Codigo Distribuidor" = Codigo sem o 1o e o ultimo digito (ex.: 141801 -> 4180).
-        $codDist = strlen((string)$codigo) > 2 ? substr((string)$codigo, 1, -1) : (string)$codigo;
+        // "Codigo Distribuidor" = Codigo sem o 1o e o ultimo digito (ex.: 141801 -> 4180); aqui
+        // $codigo já é o de 5 dígitos (sem a filial), então só tira o 1o.
+        $codDist = strlen((string)$codigo) > 1 ? substr((string)$codigo, 1) : (string)$codigo;
 
         // "Total Geral" do cliente (Pedidos + Cheques + Acordos + Cursos) — painel que a própria
         // tela "Pedidos Aguardando liberação" (PD0506->PD050P) mostra quando filtrada pelo Codigo
@@ -1740,8 +1889,17 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         }
         unset($rc);
 
+        // Codigos completos (6 dígitos = CNPJs/filiais) e nomes que caíram neste cliente.
+        $codigosFiliais = array_values(array_unique(array_column($rows, 'codigo')));
+        sort($codigosFiliais);
+        $nomesFiliais = [];
+        foreach ($rows as $r) $nomesFiliais[$r['codigo']] = $nomesFiliais[$r['codigo']] ?? ($r['cliente_completo'] ?? '');
+        ksort($nomesFiliais);
+
         $analises[(string)$codigo] = [
             'codigo'              => (string)$codigo,
+            'codigos_filiais'     => $codigosFiliais,
+            'nomes_filiais'       => $nomesFiliais,
             'codigo_distribuidor' => $codDist,
             'distribuidor_cc'     => $distribuidorCc,
             'canal_venda'         => $txt($mcv[1] ?? ''),
@@ -2868,7 +3026,9 @@ function calcularMargemItens(array $pedido, array $itensPedido, float $creditoUs
             'codigo_produto' => $pr['codigo_produto'] ?? null, 'ncm_id' => $pr['ncm_id'] ?? null,
             'desconto_comercial' => $it['desconto_comercial'] ?? null, 'desconto_diretoria' => $it['desconto_diretoria'] ?? null,
             'desconto_campanha' => $it['desconto_campanha'] ?? null,
-            'preco_padrao' => $pr['preco_padrao'] ?? 0, 'preco_network' => $pr['preco_network'] ?? 0,
+            // 'preco_tabela_aem' (pedidos lidos do A&M): o "Preço Tabela" do próprio pedido substitui o preço padrão do SisPed.
+            'preco_padrao' => isset($it['preco_tabela_aem']) ? (float)$it['preco_tabela_aem'] : ($pr['preco_padrao'] ?? 0),
+            'preco_network' => $pr['preco_network'] ?? 0,
             'ipi' => $pr['ipi'] ?? null, 'pis' => $pr['pis'] ?? null, 'cofins' => $pr['cofins'] ?? null,
             'pis_accademia' => $pr['pis_accademia'] ?? null, 'cofins_accademia' => $pr['cofins_accademia'] ?? null,
         ];
@@ -3221,11 +3381,15 @@ function calcularMargemPedidoAEM(array $p): array {
         $dDir = (float)$it['pct_diretoria'];
         // Comercial e Diretoria em cascata, igual a criarPedidoImportadoAEM().
         $fatorComDir = (1 - min(100, $dCom) / 100) * (1 - min(100, $dDir) / 100);
+        // Preço de partida = "Preço Tabela" do pedido no A&M (clientes com tabela própria, ex.: Amazon); sem ele,
+        // o preço do cadastro do SisPed. NCM/impostos e custo MP continuam vindo do SisPed.
+        $precoAem = (float)($it['preco_tabela'] ?? 0);
+        $preco    = $precoAem > 0 ? $precoAem : (float)$pr['preco'];
         $itens[] = [
             'id' => null, 'produto_id' => (int)$pr['id'], 'descricao_produto' => $pr['descricao_pt'],
             'quantidade_total' => $qtd, 'desconto_comercial' => $dCom, 'desconto_diretoria' => $dDir, 'desconto_campanha' => 0,
-            'valor_total' => $qtd * (float)$pr['preco'] * (1 - $descCliCanal / 100) * $fatorComDir,
-        ];
+            'valor_total' => $qtd * $preco * (1 - $descCliCanal / 100) * $fatorComDir,
+        ] + ($precoAem > 0 ? ['preco_tabela_aem' => $precoAem] : []);
     }
     $descontoPix = !empty($p['is_a_vista']) ? round(array_sum(array_column($itens, 'valor_total')) * 0.05, 2) : 0.0;
 

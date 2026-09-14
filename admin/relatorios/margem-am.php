@@ -187,7 +187,7 @@ require_once LAYOUT_PATH . '/header.php';
     <?php
     // "Descontos Aplicados" = descontos em cascata (canal + cliente + comercial/diretoria +
     // campanha) + crédito — as duas etapas do waterfall entre o preço de tabela e os impostos.
-    // O desconto financeiro (Pix) fica em "Custo MP + Despesas", junto com o custo fixo.
+    // O desconto financeiro (Pix) fica em "Despesas", junto com o custo fixo.
     $totDescontos    = $tot['descontos'] + $tot['credito'];
     $totDescontosPct = $tot['produtos'] > 0 ? $totDescontos / $tot['produtos'] * 100 : 0;
     // Abertura por tipo, no title do card (passe o mouse para ver).
@@ -202,20 +202,31 @@ require_once LAYOUT_PATH . '/header.php';
         fn($k, $v) => $k . ': ' . moedaBR($v),
         array_keys($descontosDet), $descontosDet
     ));
+    // Saldo em cascata: cada card mostra o que sobra do valor de tabela após a sua etapa.
+    $saldoDescontos  = $tot['produtos'] - $totDescontos;
+    $saldoImpostos   = $saldoDescontos - $tot['impostos'];
+    $saldoMp         = $saldoImpostos - $tot['mp'];
+    $totMpPct        = $tot['produtos'] > 0 ? $tot['mp'] / $tot['produtos'] * 100 : 0;
+    $totDespesasPct  = $tot['produtos'] > 0 ? $tot['despesas'] / $tot['produtos'] * 100 : 0;
     $resumo = [
         ['Valor de Tabela', $tot['produtos'], 'secondary'],
-        ['Descontos Aplicados', $totDescontos, 'danger', $totDescontosPct, $tituloDescontos],
-        ['Carga de Impostos', $tot['impostos'], 'warning', $totImpostosPct],
-        ['Custo MP + Despesas', $tot['mp'] + $tot['despesas'], 'info'],
+        ['Descontos Aplicados', $totDescontos, 'danger', $totDescontosPct, $tituloDescontos,
+            'Tabela − descontos: <b>' . moedaBR($saldoDescontos) . '</b>'],
+        ['Carga de Impostos', $tot['impostos'], 'warning', $totImpostosPct, null,
+            'Após impostos: <b>' . moedaBR($saldoImpostos) . '</b>'],
+        ['Custo MP', $tot['mp'], 'info', $totMpPct, null,
+            'Após custo MP: <b>' . moedaBR($saldoMp) . '</b>'],
+        ['Despesas', $tot['despesas'], 'info', $totDespesasPct],
         ['Margem Final', $tot['margem'], $corMargem($totMargemPct), $totMargemPct],
     ];
     foreach ($resumo as $r): ?>
     <div class="col-6 col-md-4 col-xl">
-        <div class="card shadow-sm border-0 border-start border-4 border-<?= $r[2] ?> h-100"<?= isset($r[4]) ? ' title="' . e($r[4]) . '"' : '' ?>>
+        <div class="card shadow-sm border-0 border-start border-4 border-<?= $r[2] ?> h-100"<?= !empty($r[4]) ?' title="' . e($r[4]) . '"' : '' ?>>
             <div class="card-body py-3">
                 <div class="text-muted small fw-semibold text-uppercase"><?= e($r[0]) ?></div>
                 <div class="fs-4 fw-bold text-<?= $r[2] ?>"><?= moedaBR($r[1]) ?></div>
                 <?php if (isset($r[3])): ?><div class="small text-muted"><?= $pctFmt($r[3]) ?> sobre o valor de tabela</div><?php endif; ?>
+                <?php if (isset($r[5])): ?><div class="small text-muted"><?= $r[5] ?></div><?php endif; ?>
             </div>
         </div>
     </div>

@@ -26,15 +26,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'liberar
         $numero = trim($it['numero'] ?? '');
         $tipo   = strtoupper(trim($it['tipo'] ?? ''));
         $avista = !empty($it['avista']);
+        // O card agrupa pelo cliente (5 dígitos); no log vai o Codigo completo do pedido (CNPJ).
+        $codigoPed = trim($it['codigo'] ?? '') ?: $codigo;
         if ($sidped === '') continue;
         // À vista não libera por aqui, exceto pedido de Bonificação (tipo B) — sempre pode.
         if ($avista && $tipo !== 'B') {
-            $insLog->execute([$sidped, $numero, $codigo, $u['id'], $u['nome'], 'pulado_avista', 'Pedido à vista — liberação por aqui não permitida (por enquanto).']);
+            $insLog->execute([$sidped, $numero, $codigoPed, $u['id'], $u['nome'], 'pulado_avista', 'Pedido à vista — liberação por aqui não permitida (por enquanto).']);
             $resultados[] = ['sidped' => $sidped, 'numero' => $numero, 'status' => 'pulado_avista'];
             continue;
         }
         $r = liberarPedidoAEM($sidped);
-        $insLog->execute([$sidped, $numero, $codigo, $u['id'], $u['nome'], $r['ok'] ? 'liberado' : 'erro', $r['ok'] ? $r['resposta'] : $r['erro']]);
+        $insLog->execute([$sidped, $numero, $codigoPed, $u['id'], $u['nome'], $r['ok'] ? 'liberado' : 'erro', $r['ok'] ? $r['resposta'] : $r['erro']]);
         $resultados[] = ['sidped' => $sidped, 'numero' => $numero, 'status' => $r['ok'] ? 'liberado' : 'erro', 'erro' => $r['erro']];
     }
     echo json_encode(['ok' => true, 'resultados' => $resultados]);
@@ -153,6 +155,12 @@ require_once LAYOUT_PATH . '/header.php';
                 <div class="fw-bold">
                     <i class="bi bi-hash"></i><?= e($a['codigo']) ?>
                     <span class="text-muted fw-normal">— <?= e($a['cliente'] ?: $a['distribuidor_cc']) ?></span>
+                    <?php if (count($a['nomes_filiais'] ?? []) > 1): ?>
+                        <div class="small fw-normal text-muted mt-1">
+                            <i class="bi bi-diagram-3 me-1"></i><?= count($a['nomes_filiais']) ?> CNPJs:
+                            <?php $partes = []; foreach ($a['nomes_filiais'] as $cf => $nf) $partes[] = '<b>' . e($cf) . '</b>' . ($nf !== '' ? ' ' . e($nf) : ''); echo implode(' · ', $partes); ?>
+                        </div>
+                    <?php endif; ?>
                 </div>
                 <span class="badge bg-<?= $a['aprovado'] ? 'success' : 'danger' ?>"><?= $a['aprovado'] ? 'CÓDIGO APROVADO' : 'CÓDIGO NÃO APROVADO' ?></span>
             </div>
@@ -183,7 +191,7 @@ require_once LAYOUT_PATH . '/header.php';
                         <thead class="table-light">
                             <tr>
                                 <th style="width:2.5rem" class="text-center"><i class="bi bi-check2-square"></i></th>
-                                <th>Número</th><th>Tipo</th><th>Data</th>
+                                <th>Número</th><th>Código</th><th>Tipo</th><th>Data</th>
                                 <th class="text-end">Valor</th>
                                 <th class="text-end">Créd. Utilizado</th>
                                 <th class="text-end">Saldo a Pagar</th>
@@ -204,6 +212,7 @@ require_once LAYOUT_PATH . '/header.php';
                                            data-avista="<?= !empty($l['is_a_vista']) ? '1' : '0' ?>"
                                            data-tipo="<?= e($l['tipo']) ?>"
                                            data-numero="<?= e($l['numero']) ?>"
+                                           data-codigo="<?= e($l['codigo']) ?>"
                                            <?= !empty($l['conforme']) ? 'checked' : '' ?>>
                                 </td>
                                 <td class="fw-semibold">
@@ -215,6 +224,7 @@ require_once LAYOUT_PATH . '/header.php';
                                         <?= e($l['numero']) ?>
                                     <?php endif; ?>
                                 </td>
+                                <td class="small" title="<?= e($l['cliente_completo'] ?? '') ?>"><?= e($l['codigo']) ?></td>
                                 <td class="text-center">
                                     <span class="badge bg-<?= $l['tipo'] === 'V' ? 'primary' : 'warning text-dark' ?>"><?= e($l['tipo']) ?></span>
                                 </td>
@@ -646,7 +656,7 @@ document.addEventListener('click', function (e) {
     card.querySelectorAll('.sel-pedido:checked').forEach(function (c) {
         // À vista não libera por aqui, exceto pedido de Bonificação (tipo B) — sempre pode.
         if (c.dataset.avista === '1' && c.dataset.tipo !== 'B') { puladosAvista++; return; }
-        itens.push({ sidped: c.dataset.sidped, numero: c.dataset.numero, tipo: c.dataset.tipo, avista: c.dataset.avista });
+        itens.push({ sidped: c.dataset.sidped, numero: c.dataset.numero, codigo: c.dataset.codigo, tipo: c.dataset.tipo, avista: c.dataset.avista });
     });
     if (itens.length === 0) {
         alert(puladosAvista > 0
@@ -669,6 +679,7 @@ document.addEventListener('click', function (e) {
     itens.forEach(function (i, idx) {
         fd.append('itens[' + idx + '][sidped]', i.sidped);
         fd.append('itens[' + idx + '][numero]', i.numero);
+        fd.append('itens[' + idx + '][codigo]', i.codigo || '');
         fd.append('itens[' + idx + '][tipo]', i.tipo || '');
         fd.append('itens[' + idx + '][avista]', i.avista === '1' ? '1' : '0');
     });
