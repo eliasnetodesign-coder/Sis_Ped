@@ -44,18 +44,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'liberar
 }
 
 // ── Consulta sob demanda ao sistema A&M (não grava nada) ─────────────────────
+// Roda em SEGUNDO PLANO: com ~30 clientes a consulta passa de 100s (o A&M atende o PD050P filtrado
+// praticamente em fila) e o nginx corta em 120s (504). "buscar" só dispara o job e devolve a página na
+// hora (fastcgi_finish_request, no fim do arquivo); o mesmo worker segue consultando e grava o
+// resultado em arquivo. A página consulta ?acao=status até ficar pronto e abre ?acao=ver&job=<id>.
 $resultado = null;
 $erro      = null;
 $hoje      = date('Y-m-d');
 $iniGet    = $_GET['ini'] ?? date('Y-01-01');
 $fimGet    = $_GET['fim'] ?? date('Y-12-31');
 
+$jobDir    = sys_get_temp_dir() . '/sisped-analise-am';
+$jobArq    = function ($id, $ext) use ($jobDir) { return $jobDir . '/' . $id . '.' . $ext; };
+$jobLer    = function ($id) use ($jobArq) {
+    $f = $jobArq($id, 'json');
+    return is_file($f) ? json_decode((string)file_get_contents($f), true) : null;
+};
+$jobGravar = function ($id, array $st) use ($jobArq) { file_put_contents($jobArq($id, 'json'), json_encode($st), LOCK_EX); };
+$jobId      = preg_match('/^[a-f0-9]{16}$/', $_GET['job'] ?? '') ? $_GET['job'] : null;
+$jobRodando = false;
+$disparar   = false;
+
+if (($_GET['acao'] ?? '') === 'status') {
+    header('Content-Type: application/json');
+    $st = $jobId ? $jobLer($jobId) : null;
+    echo json_encode($st ?: ['status' => 'nao_encontrado']);
+    exit;
+}
+
 if (($_GET['acao'] ?? '') === 'buscar') {
-    $toBR = function ($iso) { $t = strtotime($iso); return $t ? date('d/m/Y', $t) : ''; };
-    set_time_limit(300);
-    // 6 conexões simultâneas ao A&M — sequencial passava dos 120s do nginx com o ano inteiro.
-    $resultado = analiseFinanceiraAEM($toBR($iniGet), $toBR($fimGet), 6);
-    if (!$resultado['ok']) { $erro = $resultado['erro'] ?: 'Falha ao consultar o A&M.'; $resultado = null; }
+    if (!is_dir($jobDir)) @mkdir($jobDir, 0770, true);
+    foreach (glob($jobDir . '/*') ?: [] as $f) if (filemtime($f) < time() - 86400) @unlink($f);
+    // Mesma busca ainda rodando (ex.: F5 na página) — acompanha a que já está em andamento em vez de
+    // disparar outra consulta ao A&M.
+    $atual = $jobDir . '/atual-' . md5($iniGet . '|' . $fimGet);
+    $prev  = is_file($atual) ? trim((string)file_get_contents($atual)) : '';
+    $stPrev = $prev !== '' ? $jobLer($prev) : null;
+    if ($stPrev && $stPrev['status'] === 'rodando' && time() - $stPrev['inicio'] < 600) {
+        $jobId = $prev;
+    } else {
+        $jobId = bin2hex(random_bytes(8));
+        $jobGravar($jobId, ['status' => 'rodando', 'inicio' => time(), 'usuario' => $u['id'], 'erro' => null]);
+        file_put_contents($atual, $jobId, LOCK_EX);
+        $disparar = true;
+    }
+    $jobRodando  = true;
+    $jobInicio   = $disparar ? time() : (int)$stPrev['inicio'];
+}
+
+if (($_GET['acao'] ?? '') === 'ver' && $jobId) {
+    $f = $jobArq($jobId, 'ser');
+    $resultado = is_file($f) ? @unserialize((string)file_get_contents($f), ['allowed_classes' => false]) : null;
+    if (!is_array($resultado) || empty($resultado['ok'])) {
+        $resultado = null;
+        $erro = 'Resultado da consulta não encontrado (fica guardado por 24h). Clique em "Buscar informações no A&M" de novo.';
+    }
 }
 
 $stTab = stEstadosTabela();
@@ -111,8 +154,10 @@ require_once LAYOUT_PATH . '/header.php';
         </form>
         <div class="text-muted small mt-2" id="aguarde" style="display:none">
             <span class="spinner-border spinner-border-sm me-1"></span>
-            Consultando o sistema A&amp;M… pode levar até ~2 minutos (lê o detalhe de cada pedido).
+            Consultando o sistema A&amp;M… <span id="aguardeTempo"></span> — pode levar de 1 a 3 minutos
+            (lê o detalhe de cada pedido). Pode deixar esta página aberta; ela atualiza sozinha quando terminar.
         </div>
+        <div class="alert alert-danger small mt-2 mb-0" id="erroJob" hidden></div>
     </div>
 </div>
 
@@ -631,6 +676,46 @@ document.getElementById('frmBusca').addEventListener('submit', function () {
     b.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Consultando…';
     document.getElementById('aguarde').style.display = '';
 });
+<?php if ($jobRodando): ?>
+// Consulta rodando em segundo plano no servidor — acompanha pelo ?acao=status e abre o resultado.
+(function () {
+    var job = <?= json_encode($jobId) ?>;
+    var ini = <?= json_encode($iniGet) ?>, fim = <?= json_encode($fimGet) ?>;
+    var url = window.location.pathname;
+    var b = document.getElementById('btnBuscar');
+    b.disabled = true;
+    b.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Consultando…';
+    document.getElementById('aguarde').style.display = '';
+    var t0 = Date.now() - <?= (int)(time() - $jobInicio) ?> * 1000;
+    var tempo = document.getElementById('aguardeTempo');
+    var relogio = setInterval(function () { tempo.textContent = '(' + Math.round((Date.now() - t0) / 1000) + 's)'; }, 1000);
+    function falhou(msg) {
+        clearInterval(relogio);
+        document.getElementById('aguarde').style.display = 'none';
+        var el = document.getElementById('erroJob');
+        el.textContent = msg;
+        el.hidden = false;
+        b.disabled = false;
+        b.innerHTML = '<i class="bi bi-cloud-download me-1"></i>Buscar informações no A&amp;M';
+    }
+    function consulta() {
+        if (Date.now() - t0 > 15 * 60 * 1000) { falhou('A consulta ao A&M não terminou em 15 minutos. Tente de novo.'); return; }
+        fetch(url + '?acao=status&job=' + job, { cache: 'no-store' })
+            .then(function (r) { return r.json(); })
+            .then(function (s) {
+                if (s.status === 'pronto') {
+                    window.location.replace(url + '?acao=ver&job=' + job + '&ini=' + encodeURIComponent(ini) + '&fim=' + encodeURIComponent(fim));
+                } else if (s.status === 'rodando') {
+                    setTimeout(consulta, 3000);
+                } else {
+                    falhou(s.erro || 'Consulta não encontrada. Clique em "Buscar informações no A&M" de novo.');
+                }
+            })
+            .catch(function () { setTimeout(consulta, 5000); });
+    }
+    setTimeout(consulta, 3000);
+})();
+<?php endif; ?>
 function atualizaContagem() {
     var n = document.querySelectorAll('.sel-pedido:checked').length;
     var el = document.getElementById('selCount');
@@ -715,3 +800,32 @@ document.addEventListener('click', function (e) {
 });
 </script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>
+<?php
+// ── Job da consulta: a página já foi entregue; daqui pra baixo o worker segue em segundo plano ──
+if ($disparar) {
+    session_write_close(); // senão o ?acao=status fica travado esperando o lock da sessão
+    ignore_user_abort(true);
+    set_time_limit(900);
+    if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+
+    $terminou = false;
+    register_shutdown_function(function () use (&$terminou, $jobGravar, $jobId) {
+        if ($terminou) return;
+        $e = error_get_last();
+        $jobGravar($jobId, ['status' => 'erro', 'inicio' => time(), 'erro' => 'A consulta foi interrompida no servidor' . ($e ? ': ' . $e['message'] : '.')]);
+    });
+    $toBR = function ($iso) { $t = strtotime($iso); return $t ? date('d/m/Y', $t) : ''; };
+    try {
+        // 6 conexões simultâneas ao A&M (e até 4 sessões pro PD050P filtrado) — ver analiseFinanceiraAEM().
+        $r = analiseFinanceiraAEM($toBR($iniGet), $toBR($fimGet), 6);
+        if (!empty($r['ok'])) {
+            file_put_contents($jobArq($jobId, 'ser'), serialize($r), LOCK_EX);
+            $jobGravar($jobId, ['status' => 'pronto', 'inicio' => $jobInicio, 'erro' => null]);
+        } else {
+            $jobGravar($jobId, ['status' => 'erro', 'inicio' => $jobInicio, 'erro' => $r['erro'] ?: 'Falha ao consultar o A&M.']);
+        }
+    } catch (Throwable $ex) {
+        $jobGravar($jobId, ['status' => 'erro', 'inicio' => $jobInicio, 'erro' => 'Falha ao consultar o A&M: ' . $ex->getMessage()]);
+    }
+    $terminou = true;
+}

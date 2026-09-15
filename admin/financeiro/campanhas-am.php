@@ -1,7 +1,8 @@
 <?php
 require_once __DIR__ . '/../../config.php';
 $u = usuario();
-if (!$u || !in_array($u['tipo'], ['financeiro', 'tecnologia da informacao'])) {
+// Comercial acessa pelo atalho "Campanhas" em admin/pedidos.php (usado no Importa Pedido BF).
+if (!$u || !in_array($u['tipo'], ['financeiro', 'comercial', 'tecnologia da informacao'])) {
     header('Location: ' . BASE_URL . '/login.php');
     exit;
 }
@@ -125,9 +126,15 @@ require_once LAYOUT_PATH . '/header.php';
     </p>
 </div>
 
+<?php if ($u['tipo'] === 'comercial' || ($_GET['origem'] ?? '') === 'pedidos'): ?>
+<a href="<?= BASE_URL ?>/admin/pedidos.php" class="btn btn-outline-secondary btn-sm mb-3">
+    <i class="bi bi-arrow-left me-1"></i>Voltar para Pedidos
+</a>
+<?php else: ?>
 <a href="<?= BASE_URL ?>/admin/financeiro/analise-financeira.php" class="btn btn-outline-secondary btn-sm mb-3">
     <i class="bi bi-arrow-left me-1"></i>Voltar para Análise Financeira
 </a>
+<?php endif; ?>
 
 <ul class="nav nav-tabs mb-3">
     <li class="nav-item"><a class="nav-link <?= $tabAtiva === 'campanhas' ? 'active' : '' ?>" href="?tab=campanhas">Campanhas</a></li>

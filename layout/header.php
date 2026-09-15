@@ -269,6 +269,7 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
             ];
             $relLinks = [
                 ['slug'=>'am',                   'label'=>'Relatórios A&M',      'icon'=>'bi-clipboard-data'],
+                ['slug'=>'log-descontos-am',     'label'=>'Log de Descontos A&M', 'icon'=>'bi-journal-text'],
                 ['slug'=>'status-pedidos',       'label'=>'Status dos Pedidos',  'icon'=>'bi-kanban'],
                 ['slug'=>'faturamento-diario',   'label'=>'Fat. Diário',         'icon'=>'bi-calendar-day'],
                 ['slug'=>'faturamento-mensal',   'label'=>'Fat. Mensal',         'icon'=>'bi-calendar-month'],
@@ -379,6 +380,36 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                     </a>
                 </li>
             </ul>
+            <?php if ($_usuario['tipo'] === 'financeiro'): // TI já tem o flyout Relatórios completo (bloco comercial)
+                $relLinksFin = [
+                    ['slug'=>'log-descontos-am', 'label'=>'Log de Descontos A&M', 'icon'=>'bi-journal-text'],
+                ];
+            ?>
+            <!-- Flyout Relatórios (financeiro: só os relatórios que o perfil acessa) -->
+            <ul class="nav flex-column border-top mt-2 pt-2">
+                <li class="nav-item sidebar-flyout-wrap">
+                    <a class="nav-link d-flex align-items-center justify-content-between <?= $_inRelatorios ? 'active' : '' ?>"
+                       href="#" id="rel-toggle">
+                        <span><i class="bi bi-bar-chart-line me-2"></i>Relatórios</span>
+                        <i class="bi bi-chevron-right small sidebar-chevron"></i>
+                    </a>
+                    <div class="sidebar-flyout-menu" id="submenu-rel">
+                        <div class="sidebar-flyout-title">Relatórios</div>
+                        <ul class="nav flex-column">
+                            <?php foreach ($relLinksFin as $lk): ?>
+                            <li class="nav-item">
+                                <a class="nav-link <?= $_pg === $lk['slug'] ? 'active' : '' ?>"
+                                   href="<?= BASE_URL ?>/admin/relatorios/<?= $lk['slug'] ?>.php"
+                                   data-bs-dismiss="offcanvas">
+                                    <i class="bi <?= $lk['icon'] ?> me-2"></i><?= $lk['label'] ?>
+                                </a>
+                            </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                </li>
+            </ul>
+            <?php endif; ?>
             <?php endif; // financeiro ?>
 
             <!-- Flyout Administração -->

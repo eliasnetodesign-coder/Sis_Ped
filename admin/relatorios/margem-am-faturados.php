@@ -104,6 +104,9 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ini)) $ini = date('Y-m-01');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fim)) $fim = date('Y-m-t');
 $cliente = trim((string)($_GET['cliente'] ?? ''));
 $bf = in_array($_GET['bf'] ?? '', ['1', '0'], true) ? $_GET['bf'] : '';
+// Pedidos tipo "MAT" do A&M: 'ocultar' (padrão), 'exibir' (junto com os PED) ou 'so' (só MAT).
+$mat = in_array($_GET['mat'] ?? '', ['exibir', 'ocultar', 'so'], true) ? $_GET['mat'] : 'ocultar';
+$matOcultos = 0;
 // Situação do pedido no A&M (coluna "Situação" do grid Consulta/Reimprime). Nenhuma marcada = só FC.
 $situacoesOpc = [
     'FC' => 'FC - Faturado',
@@ -155,6 +158,9 @@ if ($buscar && !$erro) {
     }
 
     foreach ($r['pedidos'] as $p) {
+        // Filtro MAT antes de tudo: vale para a tabela, os totais, as abas e as listas de falhas/divergências.
+        if ($mat === 'ocultar' && $p['tipo'] === 'MAT') { $matOcultos++; continue; }
+        if ($mat === 'so' && $p['tipo'] !== 'MAT') continue;
         if (!empty($p['erro'])) { $falhas[] = $p; continue; }
         if (!empty($p['divergencias'])) { $divergentes[] = $p; continue; }
 
@@ -303,7 +309,7 @@ require_once LAYOUT_PATH . '/header.php';
             <label class="form-label fw-semibold small mb-1">Data final</label>
             <input type="date" name="fim" value="<?= e($fim) ?>" class="form-control form-control-sm">
         </div>
-        <div class="col-12 col-md-3">
+        <div class="col-12 col-md-2">
             <label class="form-label fw-semibold small mb-1">Cliente</label>
             <input type="text" name="cliente" value="<?= e($cliente) ?>" class="form-control form-control-sm" placeholder="Nome ou código do A&amp;M">
         </div>
@@ -315,7 +321,15 @@ require_once LAYOUT_PATH . '/header.php';
                 <option value="0" <?= $bf === '0' ? 'selected' : '' ?>>Só não-BF</option>
             </select>
         </div>
-        <div class="col-6 col-md-3">
+        <div class="col-6 col-md-2">
+            <label class="form-label fw-semibold small mb-1">Pedidos MAT</label>
+            <select name="mat" class="form-select form-select-sm">
+                <option value="ocultar" <?= $mat === 'ocultar' ? 'selected' : '' ?>>Ocultar</option>
+                <option value="exibir" <?= $mat === 'exibir' ? 'selected' : '' ?>>Exibir</option>
+                <option value="so" <?= $mat === 'so' ? 'selected' : '' ?>>Só MAT</option>
+            </select>
+        </div>
+        <div class="col-12 col-md-2">
             <button class="btn btn-primary btn-sm w-100" id="btnBuscar">
                 <i class="bi bi-cloud-download me-1"></i>Buscar no A&amp;M
             </button>
@@ -347,15 +361,22 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 <?php else: ?>
 
+<?php if ($matOcultos): ?>
+<div class="small text-muted mb-2"><i class="bi bi-eye-slash me-1"></i><?= $matOcultos ?> pedido(s) MAT ocultos pelo filtro.</div>
+<?php endif; ?>
 <?php if ($divergentes): ?>
     <div class="alert alert-danger small">
         <div class="fw-semibold mb-1">
             <i class="bi bi-exclamation-octagon me-1"></i><?= count($divergentes) ?> pedido(s) com divergência no A&amp;M — fora do cálculo
-            (não entram na tabela, nos totais nem nas abas). Confira no A&amp;M:
+            (não entram na tabela, nos totais nem nas abas). Confira no A&amp;M
+            (<i class="bi bi-calculator"></i> mostra a conta item a item):
         </div>
-        <ul class="mb-0 ps-3">
-            <?php foreach ($divergentes as $d): ?>
-            <li>
+        <ul class="list-unstyled mb-0">
+            <?php foreach ($divergentes as $di => $d): ?>
+            <li class="mb-1">
+                <button type="button" class="btn btn-outline-danger btn-sm py-0 px-1 me-1 align-baseline" onclick="abrirDivergencia(<?= $di ?>)" title="Ver os cálculos deste pedido">
+                    <i class="bi bi-calculator"></i>
+                </button>
                 <b><?= e($d['tipo'] . ' ' . $d['numero']) ?></b> (interno <?= e($d['pedido_interno']) ?>, <?= dataBR($d['data']) ?>)
                 — <?= e($d['codigo']) ?> <?= e($d['cliente_nome'] ?: $d['cliente']) ?> — <?= moedaBR($d['valor_pedido']) ?>:
                 <?= e(implode(' · ', $d['divergencias'])) ?>
@@ -778,6 +799,18 @@ foreach ($linhas as $i => $l) {
         'pedido' => array_intersect_key($p, array_flip(['numero', 'cnpj', 'uf', 'data', 'pedido_accademia', 'is_a_vista', 'credito_utilizado', 'itens'])),
     ];
 }
+// Pedidos com divergência: dados crus do A&M para a conferência item a item (botão da lista do topo).
+$divDados = [];
+foreach ($divergentes as $di => $p) {
+    $divDados[$di] = [
+        'numero' => $p['tipo'] . ' ' . $p['numero'], 'interno' => $p['pedido_interno'], 'bf' => $p['eh_bf'],
+        'faturado' => $p['fonte'] === 'faturado', 'cliente' => $p['cliente_nome'] ?: $p['cliente'], 'codigo' => $p['codigo'],
+        'data' => dataBR($p['data']), 'forma' => $p['forma'], 'valor_pedido' => (float)$p['valor_pedido'],
+        'credito' => (float)$p['credito_utilizado'], 'obs' => $p['obs'], 'descto_zerado' => (int)$p['descto_zerado'],
+        'divergencias' => $p['divergencias'], 'itens' => $p['itens'],
+        'pedido' => array_intersect_key($p, array_flip(['numero', 'cnpj', 'uf', 'data', 'pedido_accademia', 'is_a_vista', 'credito_utilizado', 'itens'])),
+    ];
+}
 ?>
 <div class="modal fade" id="mdlItens" tabindex="-1"><div class="modal-dialog modal-fullscreen-lg-down modal-xl modal-dialog-scrollable">
     <div class="modal-content">
@@ -815,26 +848,115 @@ function abrirItens(i, modo) {
         + '<div class="col-md-3"><b>Crédito utilizado:</b> ' + esc(d.credito) + '</div>'
         + (d.obs ? '<div class="col-12"><b>Obs:</b> ' + esc(d.obs) + '</div>' : '')
         + '</div>';
-    h += '<div id="mdlItensMargem" class="text-center text-muted py-5">'
-       + '<span class="spinner-border spinner-border-sm me-2"></span>Calculando a margem…</div>';
+    h += '<div id="mdlItensMargem"></div>';
     document.getElementById('mdlItensCorpo').innerHTML = h;
     bootstrap.Modal.getOrCreateInstance(document.getElementById('mdlItens')).show();
-
+    carregaMargem(d.pedido, compacto);
+}
+// Busca o detalhe "Margem" (ou a tabela compacta) do pedido e põe em #mdlItensMargem.
+function carregaMargem(pedido, compacto) {
     var seq = ++seqMargem;
     var mostra = function (cls, html) {
         if (seq !== seqMargem) return;
         var alvo = document.getElementById('mdlItensMargem');
+        if (!alvo) return;
         alvo.className = cls; alvo.innerHTML = html;
     };
+    mostra('text-center text-muted py-5', '<span class="spinner-border spinner-border-sm me-2"></span>Calculando a margem…');
     fetch(URL_MARGEM + (compacto ? '&modo=compacto' : ''), {
         method: 'POST', credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(d.pedido)
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(pedido)
     })
         .then(function (r) { if (!r.ok || r.redirected) throw new Error(r.status); return r.text(); })
         .then(function (html) { mostra('', html); })
         .catch(function () {
             mostra('alert alert-danger small', 'Não foi possível calcular a margem deste pedido (sessão expirada?). Recarregue a página e tente de novo.');
         });
+}
+
+// Conferência de um pedido com divergência: a conta de cada item com os valores do próprio A&M.
+var divergentesAM = <?= json_encode($divDados, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?>;
+function abrirDivergencia(i) {
+    var d = divergentesAM[i]; if (!d) return;
+    var esc = function (s) { var el = document.createElement('div'); el.textContent = s == null ? '' : String(s); return el.innerHTML; };
+    var R = function (v, dec) {
+        if (v == null) return '—';
+        dec = dec == null ? 2 : dec;
+        return Number(v).toLocaleString('pt-BR', {minimumFractionDigits: dec, maximumFractionDigits: dec});
+    };
+    var P = function (v) { return Number(v || 0).toLocaleString('pt-BR', {maximumFractionDigits: 2}) + '%'; };
+    var difUnit = function (it) { return it.liquido_calc == null ? 0 : it.valor_liquido - it.liquido_calc; };
+    var difTot  = function (it) { return it.valor_total - it.qtd * it.valor_liquido; };
+
+    document.getElementById('mdlItensTitulo').innerHTML = '<i class="bi bi-calculator me-2"></i>Conferência — Pedido A&amp;M Nº ' + esc(d.numero)
+        + ' <small class="text-muted fw-normal">— Interno ' + esc(d.interno) + '</small>'
+        + (d.bf ? ' <span class="badge bg-primary ms-1">BF</span>' : '');
+
+    var h = '<div class="row g-2 small mb-2">'
+        + '<div class="col-md-6"><b>Cliente:</b> ' + esc(d.codigo) + ' ' + esc(d.cliente) + '</div>'
+        + '<div class="col-md-3"><b>' + (d.faturado ? 'Faturado em' : 'Data') + ':</b> ' + esc(d.data) + '</div>'
+        + '<div class="col-md-3"><b>' + (d.faturado ? 'Valor faturado' : 'Valor no A&amp;M') + ':</b> R$ ' + R(d.valor_pedido) + '</div>'
+        + '<div class="col-md-6"><b>Forma de pagamento:</b> ' + esc(d.forma || '—') + '</div>'
+        + '<div class="col-md-6"><b>Crédito utilizado:</b> R$ ' + R(d.credito) + '</div>'
+        + (d.obs ? '<div class="col-12"><b>Obs:</b> ' + esc(d.obs) + '</div>' : '')
+        + '</div>';
+    h += '<div class="alert alert-danger small py-2 mb-2"><b>Divergência:</b><ul class="mb-0 ps-3">'
+        + d.divergencias.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('') + '</ul></div>';
+    h += '<div class="small text-muted mb-2">'
+        + '<b>VL pelos %</b> = Preço Tabela × (1 − %Descto − %Descto ST) × (1 − %Negociação) × (1 − %Diretoria). '
+        + '<b>Qtd × VL</b> = Qtd × Valor Líquido do A&amp;M, comparado com o Valor Total do item no A&amp;M. '
+        + 'Linhas em vermelho = item cujo Valor Líquido não fecha com os percentuais.'
+        + (d.descto_zerado ? ' <i class="bi bi-info-circle text-info"></i> %Descto considerado 0 em ' + d.descto_zerado + ' item(ns) (Preço Tabela = Valor Unitário: preço já líquido).' : '')
+        + '</div>';
+
+    var sQL = 0, sVT = 0, sQtd = 0;
+    var linhas = d.itens.map(function (it) {
+        var dU = difUnit(it), dT = difTot(it), qvl = it.qtd * it.valor_liquido;
+        var ruimT = Math.abs(dT) > Math.max(0.05, Math.abs(qvl) * 0.005);
+        sQL += qvl; sVT += it.valor_total; sQtd += it.qtd;
+        return '<tr class="' + (it.diverge ? 'table-danger' : '') + '">'
+            + '<td class="text-nowrap">' + esc(it.codigo) + '</td>'
+            + '<td class="text-truncate" style="max-width:200px" title="' + esc(it.nome) + '">' + esc(it.nome) + '</td>'
+            + '<td class="text-end">' + R(it.qtd, 0) + '</td>'
+            + '<td class="text-end">' + R(it.preco_tabela) + '</td>'
+            + '<td class="text-end">' + P(it.pct_descto) + '</td>'
+            + '<td class="text-end">' + P(it.pct_descto_st) + '</td>'
+            + '<td class="text-end">' + P(it.pct_negociacao) + '</td>'
+            + '<td class="text-end">' + P(it.pct_diretoria) + '</td>'
+            + '<td class="text-end text-muted">' + R(it.valor_unitario) + '</td>'
+            + '<td class="text-end text-muted">' + R(it.valor_negociado) + '</td>'
+            + '<td class="text-end">' + R(it.liquido_calc, 4) + '</td>'
+            + '<td class="text-end fw-semibold">' + R(it.valor_liquido, 4) + '</td>'
+            + '<td class="text-end' + (it.diverge ? ' text-danger fw-semibold' : ' text-muted') + '">' + (it.liquido_calc == null ? '—' : (dU >= 0 ? '+' : '') + R(dU, 4)) + '</td>'
+            + '<td class="text-end">' + R(qvl) + '</td>'
+            + '<td class="text-end fw-semibold">' + R(it.valor_total) + '</td>'
+            + '<td class="text-end' + (ruimT ? ' text-danger fw-semibold' : ' text-muted') + '">' + (dT >= 0 ? '+' : '') + R(dT) + '</td>'
+            + '</tr>';
+    }).join('');
+    var dS = sVT - sQL;
+    h += '<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-2" style="font-size:.78rem">'
+        + '<thead class="table-light"><tr>'
+        + '<th>Código</th><th>Produto</th><th class="text-end">Qtd</th><th class="text-end">Preço Tabela</th>'
+        + '<th class="text-end">%Descto</th><th class="text-end">%Descto ST</th><th class="text-end">%Negoc.</th><th class="text-end">%Diret.</th>'
+        + '<th class="text-end" title="' + (d.faturado ? 'Valor Unitário faturado' : 'Valor Unitário do pedido') + '">Vr Unit.</th>'
+        + '<th class="text-end">Vr Negoc.</th><th class="text-end">VL pelos %</th><th class="text-end">VL A&amp;M</th><th class="text-end">Dif. un.</th>'
+        + '<th class="text-end">Qtd × VL</th><th class="text-end">Valor Total A&amp;M</th><th class="text-end">Dif. total</th>'
+        + '</tr></thead><tbody>' + linhas + '</tbody>'
+        + '<tfoot class="table-light fw-semibold"><tr>'
+        + '<td colspan="2">Total — ' + d.itens.length + ' item(ns)</td><td class="text-end">' + R(sQtd, 0) + '</td>'
+        + '<td colspan="10"></td>'
+        + '<td class="text-end">' + R(sQL) + '</td><td class="text-end">' + R(sVT) + '</td>'
+        + '<td class="text-end' + (Math.abs(dS) > Math.max(1, Math.abs(sQL) * 0.005) ? ' text-danger' : '') + '">' + (dS >= 0 ? '+' : '') + R(dS) + '</td>'
+        + '</tr></tfoot></table></div>';
+    h += '<div class="small text-muted mb-3">' + (d.faturado ? 'Valor faturado' : 'Valor do pedido') + ' no grid do A&amp;M: <b>R$ ' + R(d.valor_pedido) + '</b>'
+        + ' · Σ Valor Total dos itens: <b>R$ ' + R(sVT) + '</b> · Σ Qtd × Valor Líquido: <b>R$ ' + R(sQL) + '</b></div>';
+    h += '<div class="border-top pt-3"><button type="button" class="btn btn-sm btn-outline-secondary" id="btnMargemDiv">'
+        + '<i class="bi bi-bank me-1"></i>Calcular a margem assim mesmo (com os percentuais do A&amp;M)</button></div>'
+        + '<div id="mdlItensMargem" class="mt-3"></div>';
+    document.getElementById('mdlItensCorpo').innerHTML = h;
+    document.getElementById('btnMargemDiv').addEventListener('click', function () { this.disabled = true; carregaMargem(d.pedido, false); });
+    ++seqMargem;   // descarta resposta de margem de outro pedido que ainda esteja chegando
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('mdlItens')).show();
 }
 </script>
 

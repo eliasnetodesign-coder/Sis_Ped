@@ -286,6 +286,8 @@ function db() {
                 KEY idx_numero (numero_pedido),
                 KEY idx_created (created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // "Print" (HTML completo) da aba Validar — a tela com o botão Conclui Pedido — e da resposta do Conclui.
+            try { $pdo->exec("ALTER TABLE descontos_diretoria_am_logs ADD COLUMN IF NOT EXISTS html_validar MEDIUMTEXT NULL, ADD COLUMN IF NOT EXISTS html_conclui MEDIUMTEXT NULL"); } catch (PDOException $e) {}
 
             // Campanhas "Beauty" do check 5 da Análise Financeira A&M — independente do
             // módulo de campanhas do pedido local (tabela `campanhas`); ver campanhas-am-dados.php.
@@ -934,15 +936,23 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
                 $p['descto_zerado']++;
             }
             $it['preco_tabela'] = $preco;   // base do cálculo de margem no lugar do preço padrão do SisPed
-            $p['itens'][] = $it;
+            // Valores crus do A&M, para a conferência das divergências no relatório.
+            $it['valor_unitario']  = $num($col($ic, 'valorunitario'));
+            $it['valor_negociado'] = $num($col($ic, 'valornegociado'));
+            $it['valor_liquido']   = $vLiq;
+            $it['liquido_calc']    = null;    // Valor Líquido pelos percentuais (null = sem preço/valor para conferir)
+            $it['diverge']         = false;
             // Conferência: Preço Tabela × (1 − %Descto − %Descto ST) × (1 − %Negociação) × (1 − %Diretoria) = Valor Líquido.
             if ($preco > 0 && $vLiq > 0) {
                 $calc = $preco * (1 - min(100, $it['pct_descto'] + $it['pct_descto_st']) / 100)
                       * (1 - $it['pct_negociacao'] / 100) * (1 - $it['pct_diretoria'] / 100);
+                $it['liquido_calc'] = round($calc, 4);
                 if (abs($calc - $vLiq) > max(0.02, $vLiq * 0.003)) {
+                    $it['diverge'] = true;
                     $itDiv[] = $it['codigo'] . ' (Valor Líquido ' . $fmt($vLiq) . ', pelos % daria ' . $fmt($calc) . ')';
                 }
             }
+            $p['itens'][] = $it;
             $somaTotal += $it['valor_total'];
             $somaLiq   += $it['qtd'] * $vLiq;
         }
@@ -1580,6 +1590,52 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         }
         return $out;
     };
+    // Filas que precisam de ordem (estado da sessão A&M): $filas = [idFila => [chave => [path, post]]].
+    // Uma requisição por fila de cada vez, filas em paralelo entre si. Mesma regra de refazer de $chamarVarios.
+    $chamarPorSessao = function (array $filas, ?callable $valido = null) use ($chamar) {
+        $out = []; $ativos = [];
+        $mh = curl_multi_init();
+        $hid = function ($ch) { return is_object($ch) ? spl_object_id($ch) : (int)$ch; };
+        $add = function ($f) use (&$filas, &$ativos, $mh, $hid) {
+            if (empty($filas[$f])) return;
+            $k = array_key_first($filas[$f]);
+            [$path, $post] = $filas[$f][$k];
+            unset($filas[$f][$k]);
+            $ch = curl_init(aemBaseUrl() . $path);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 45,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_USERAGENT      => 'Mozilla/5.0',
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => http_build_query($post),
+            ]);
+            curl_multi_add_handle($mh, $ch);
+            $ativos[$hid($ch)] = [$f, $k, $path, $post];
+        };
+        $todas = [];
+        foreach ($filas as $f => $reqs) { $todas += $reqs; $add($f); }
+        while ($ativos) {
+            curl_multi_exec($mh, $rodando);
+            while ($info = curl_multi_info_read($mh)) {
+                $ch = $info['handle'];
+                [$f, $k] = $ativos[$hid($ch)];
+                $resp = curl_multi_getcontent($ch);
+                $out[$k] = ($info['result'] === CURLE_OK && $resp !== null) ? (string)$resp : '';
+                curl_multi_remove_handle($mh, $ch);
+                curl_close($ch);
+                unset($ativos[$hid($ch)]);
+                $add($f);
+            }
+            if ($ativos && curl_multi_select($mh, 1.0) === -1) usleep(10000);
+        }
+        curl_multi_close($mh);
+        foreach ($todas as $k => [$path, $post]) {
+            $html = $out[$k] ?? '';
+            if ($html === '' || ($valido && !$valido($k, $html))) $out[$k] = $chamar($path, $post);
+        }
+        return $out;
+    };
 
     // Pré-busca de tudo que depende só do Codigo/pedido — antes era sequencial dentro do loop
     // (3 chamadas por código + 2 por pedido) e com o ano inteiro passava dos 120s do nginx.
@@ -1617,9 +1673,26 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             }
         }
     }
-    // PD050P filtrado fica SEQUENCIAL: em paralelo o A&M devolveu a tela sem o painel do cliente
-    // (Total Geral/Supervisor/Segmento vazios) em alguns códigos — o filtro TxtCodDist é estado da sessão.
-    $pre  = $chamarVarios($reqsTg, 1);
+    // PD050P filtrado fica SEQUENCIAL dentro de uma sessão: em paralelo na mesma sessão o A&M devolveu
+    // a tela sem o painel do cliente (Total Geral/Supervisor/Segmento vazios) — o filtro TxtCodDist é
+    // estado da sessão. Como são ~3,5s por cliente (28 clientes ≈ 95s, estourava os 120s do nginx),
+    // distribui os códigos em várias SESSÕES (logins) independentes: sequencial em cada uma, sessões
+    // em paralelo entre si. Sessão extra que não autenticar só fica de fora (os códigos vão pras outras).
+    $tokensTg = [$token];
+    for ($s = 1; $s < min($concorrencia, 4, count($reqsTg)); $s++) {
+        $lh = $chamar('/cgi-bin/ITF/ITF.EXE', ['SubMenu' => 'FROTA', 'TxtLgloginUsuario' => AEM_LOGIN, 'PwdLgloginSenha' => AEM_SENHA]);
+        if (!preg_match('/LNKTRANSPORTE=([0-9A-Za-z]+)/', $lh, $ml2)) continue;
+        $chamar('/cgi-bin/ITF/LOGIN.EXE',  ['LNKTRANSPORTE' => $ml2[1], 'TxtTransac' => '0277']);
+        $chamar('/cgi-bin/ITF/PD0506.EXE', ['LNKTRANSPORTE' => $ml2[1], 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+        $tokensTg[] = $ml2[1];
+    }
+    $filas = []; $n = 0;
+    foreach ($reqsTg as $k => [$path, $post]) {
+        $s = $n++ % count($tokensTg);
+        $post['LNKTRANSPORTE'] = $tokensTg[$s];
+        $filas[$s][$k] = [$path, $post];
+    }
+    $pre = $chamarPorSessao($filas, function ($k, $html) { return stripos($html, 'Total Geral') !== false; });
     $pre += $chamarVarios($reqs, $concorrencia, function ($k, $html) {
         switch (strtok($k, '|')) {
             case 'cc':  return stripos($html, 'TxtDistrib') !== false;
@@ -2036,6 +2109,98 @@ function liberarPedidoAEM(string $sidPed): array {
 }
 
 /**
+ * Campos que o navegador enviaria ao submeter o <FORM id|name=$form> de uma tela do A&M:
+ * inputs (radio/checkbox só se marcados), selects (opção selecionada ou a 1ª) e textareas.
+ * O HTML do A&M mistura atributos com/sem aspas (value="x", value=56).
+ */
+function aemCamposForm(string $html, string $form): array {
+    if (!preg_match('/<FORM\b[^>]*\b(?:id|name)\s*=\s*["\']?' . preg_quote($form, '/') . '\b[^>]*>(.*?)(?:<\/FORM>|$)/is', $html, $mf)) return [];
+    $attrs = function (string $tag): array {
+        preg_match_all('/([a-zA-Z_:-]+)(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+)))?/', $tag, $ma, PREG_SET_ORDER);
+        $a = [];
+        foreach ($ma as $x) $a[strtolower($x[1])] = html_entity_decode(($x[2] ?? '') . ($x[3] ?? '') . ($x[4] ?? ''), ENT_QUOTES, 'UTF-8');
+        return $a;
+    };
+    $campos = [];
+    preg_match_all('/<INPUT\b([^>]*)>/i', $mf[1], $mi);
+    foreach ($mi[1] as $tag) {
+        $a = $attrs($tag);
+        if (($a['name'] ?? '') === '') continue;
+        $tipo = strtolower($a['type'] ?? 'text');
+        if (in_array($tipo, ['button', 'submit', 'reset', 'image', 'file'], true)) continue;
+        if (in_array($tipo, ['radio', 'checkbox'], true) && !array_key_exists('checked', $a)) continue;
+        $campos[$a['name']] = $a['value'] ?? ($tipo === 'checkbox' || $tipo === 'radio' ? 'on' : '');
+    }
+    preg_match_all('/<SELECT\b([^>]*)>(.*?)<\/SELECT>/is', $mf[1], $ms, PREG_SET_ORDER);
+    foreach ($ms as $s) {
+        $a = $attrs($s[1]);
+        if (($a['name'] ?? '') === '') continue;
+        preg_match_all('/<OPTION\b([^>]*)>([^<]*)/i', $s[2], $mo, PREG_SET_ORDER);
+        $val = null;
+        foreach ($mo as $o) {
+            $ao = $attrs($o[1]);
+            $v  = $ao['value'] ?? trim(html_entity_decode($o[2], ENT_QUOTES, 'UTF-8'));
+            if ($val === null || array_key_exists('selected', $ao)) $val = $v;
+            if (array_key_exists('selected', $ao)) break;
+        }
+        $campos[$a['name']] = $val ?? '';
+    }
+    preg_match_all('/<TEXTAREA\b([^>]*)>(.*?)<\/TEXTAREA>/is', $mf[1], $mt, PREG_SET_ORDER);
+    foreach ($mt as $t) {
+        $a = $attrs($t[1]);
+        if (($a['name'] ?? '') !== '') $campos[$a['name']] = html_entity_decode($t[2], ENT_QUOTES, 'UTF-8');
+    }
+    return $campos;
+}
+
+/**
+ * O pedido (nº interno do A&M) está no "Resumo dos Pedidos Colocados"? (Vendas > GE080 -> "Gerar
+ * relatório" = GE0801 -> clique no vendedor = GE0802 {SubDia='<vendedor>', SubTipo='Vendedor'}.)
+ * É o critério do Comercial para "pedido concluído": pedido aberto em "Altera" e não concluído some
+ * desse relatório até alguém Validar + Concluir. Usa sessão própria (login novo), para não trocar a
+ * transação da sessão que está editando o pedido.
+ *
+ * @param string  $pedInterno nº interno (ex.: 931591 ou 931.591)
+ * @param string  $data       data do pedido dd/mm/aaaa (período do relatório = esse dia)
+ * @param ?string $vendCod    código do vendedor (ex.: S074); null/não listado = procura em todos do dia
+ * @return ?bool  null = não foi possível consultar o relatório
+ */
+function aemPedidoNoResumoColocados(string $pedInterno, string $data, ?string $vendCod = null): ?bool {
+    $pedInterno = preg_replace('/\D/', '', $pedInterno);
+    if ($pedInterno === '' || !preg_match('#^(\d{2})/(\d{2})/(\d{4})$#', $data, $md)) return null;
+    $chamar = function (string $path, array $post) {
+        $ch = curl_init(aemBaseUrl() . $path);
+        curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 45, CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_USERAGENT => 'Mozilla/5.0', CURLOPT_POST => true, CURLOPT_POSTFIELDS => http_build_query($post)]);
+        $r = curl_exec($ch); curl_close($ch);
+        return $r === false ? '' : (@mb_convert_encoding($r, 'UTF-8', 'ISO-8859-1') ?: $r);
+    };
+    $login = $chamar('/cgi-bin/ITF/ITF.EXE', ['SubMenu' => 'FROTA', 'TxtLgloginUsuario' => AEM_LOGIN, 'PwdLgloginSenha' => AEM_SENHA]);
+    if (!preg_match('/LNKTRANSPORTE=([0-9A-Za-z]+)/', $login, $m)) return null;
+    $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $m[1], 'TxtTransac' => '0671']);
+    $campos = aemCamposForm($chamar('/cgi-bin/ITF/GE080.EXE', ['LNKTRANSPORTE' => $m[1], 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']), 'GE080');
+    if (!isset($campos['LNKTRANSPORTE'])) return null;
+    $campos = array_merge($campos, ['TxtDiaInicio' => $md[1], 'TxtMesInicio' => $md[2], 'TxtAnoInicio' => $md[3],
+        'TxtDiaFim' => $md[1], 'TxtMesFim' => $md[2], 'TxtAnoFim' => $md[3], 'SelVendedor' => '']);
+    $resumo = $chamar('/cgi-bin/ITF/GE0801.EXE', $campos);
+    $form   = aemCamposForm($resumo, 'GE0801');
+    if (!isset($form['LNKTRANSPORTE'])) return null;
+
+    preg_match_all("/detalhe\('([^']*)','Vendedor'\)/", $resumo, $mv);
+    $vends = array_values(array_unique($mv[1]));
+    if ($vendCod !== null && $vendCod !== '') {
+        $doVend = array_values(array_filter($vends, fn($v) => stripos(ltrim($v), $vendCod) === 0));
+        if ($doVend) $vends = $doVend;
+    }
+    $alvo = '/(?<![\d.])' . preg_quote(number_format((int)$pedInterno, 0, '', '.'), '/') . '(?![\d,])/';
+    foreach ($vends as $v) {
+        $det = $chamar('/cgi-bin/ITF/GE0802.EXE', ['SubDia' => html_entity_decode($v, ENT_QUOTES, 'UTF-8'), 'SubTipo' => 'Vendedor'] + $form);
+        if (preg_match($alvo, strip_tags($det))) return true;
+    }
+    return false;
+}
+
+/**
  * Grava o % Diretoria de itens direto no pedido do sistema A&M, reproduzindo o
  * caminho manual: Vendas > "Consulta/Reimprime" (flag "Exibir os Pedidos Aguardando
  * no Comercial") > "Altera" na linha do pedido > aba "Itens" (edita a coluna
@@ -2051,7 +2216,15 @@ function liberarPedidoAEM(string $sidPed): array {
  *        (cpo 01=Quantidade, 05=%Negociação, 06=%Diretoria). O HTML traz o LNKTRANSPORTE "longo".
  *   editar campo: POST VD35012.EXE {LNKTRANSPORTE=<longo>, TxtValorAlt=<valor BR>, SubKey=<SidPed><seq3>, SubCampo='06'}.
  *   aba Validar: POST VD350.EXE {SubOpcao=SubTela=validar,...} -> "Pedido NNN Validada com Sucesso" | erros.
- *   Conclui Pedido: onClick="impressao('<SidPed>','02')" -> POST PD0306.EXE {+ campos VD350, HidKey=SidPed, SubLogo='02'}.
+ *   Conclui Pedido: href="javascript:impressao('<SidPed>','02')" -> submete o form VD350 INTEIRO da aba
+ *     Validar para PD0306.EXE com HidKey=SidPed, SubLogo='02'. O form traz o LNKTRANSPORTE "longo" e
+ *     RdbCP=P (Cotação/Pedido) — sem eles o A&M responde "ERRO 0142 Cotacao ou Pedido inexistente".
+ *     Resposta OK = "Aguarde... Processando" + window.open('/mpdf/pdf_aem/PDF….php') (o PDF do pedido,
+ *     não usado aqui). Situações no grid: VD Em digitação -> SA Bloqueado (aguardando o Comercial, com
+ *     Altera) -> AC Lib. financeiro -> AB Lib. faturamento -> FC Faturado. O Conclui NÃO tira o pedido
+ *     de SA (visto em 2026-09-14, pedido 188752); só VD indicaria que não concluiu.
+ *   Confirmação (critério do Comercial): o pedido aberto em "Altera" SOME do "Resumo dos Pedidos
+ *     Colocados" e volta após o Conclui -> aemPedidoNoResumoColocados(), até 3 tentativas.
  *
  * IMPORTANTE: grava de verdade no A&M. `$concluir=false` para antes do "Conclui Pedido"
  * (as edições de item já ficam salvas; só não re-submete o pedido para aprovação).
@@ -2097,22 +2270,24 @@ function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $
     $anoIni = (string)((int)date('Y') - 1);
     $chamar('/cgi-bin/ITF/LOGIN.EXE', ['LNKTRANSPORTE' => $tok, 'TxtTransac' => '0163']);
     $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $tok, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
-    $grid = $chamar('/cgi-bin/ITF/PD0301.EXE', [
+    $gridParams = [
         'LNKTRANSPORTE' => $tok, 'SubOpcao' => '', 'SubForm' => '',
         'TxtPedCliente' => $numero, 'TxtNumero' => '',
         'TxtDiaInicio' => '01', 'TxtMesInicio' => '01', 'TxtAnoInicio' => $anoIni,
         'TxtDiaFim' => date('d'), 'TxtMesFim' => date('m'), 'TxtAnoFim' => date('Y'),
         'SelVendedor' => '', 'TxtCodDist' => '', 'TxtDistrib' => '', 'status' => '',
         'TxtProduto' => '', 'RdbSel' => 'V', 'Chk01' => 'on',
-    ]);
+    ];
+    $grid = $chamar('/cgi-bin/ITF/PD0301.EXE', $gridParams);
     if (!preg_match('/<TBODY>(.*?)<\/TBODY>/is', $grid, $mb)) return $falha('Não foi possível ler o grid Consulta/Reimprime do A&M.', ['resposta' => $log]);
     preg_match_all('/<TR\b[^>]*>(.*?)<\/TR>/is', $mb[1], $trs);
-    $sidPed = ''; $pedInterno = ''; $pedCliente = ''; $subCliente = ''; $linhasCom = 0;
+    $sidPed = ''; $pedInterno = ''; $pedCliente = ''; $subCliente = ''; $dataPed = ''; $linhasCom = 0;
     foreach ($trs[1] as $tr) {
         if (!preg_match("/javascript:altera\('(\d+)'\)/", $tr, $ma)) continue;   // só linhas editáveis (Aguardando Comercial)
         $linhasCom++;
         $sidPed = $ma[1];
         $plain  = trim(preg_replace('/\s+/', ' ', strip_tags($tr)));
+        if (preg_match('#\b(\d{2}/\d{2}/\d{4})\b#', $plain, $mdp)) $dataPed = $mdp[1];   // 1ª data da linha = data do pedido
         if (preg_match('#>\s*([\d.]+)\s*<IMG#i', $tr, $mpi)) $pedInterno = preg_replace('/\D/', '', $mpi[1]);
         if (preg_match('/PED\s+(\d+)/i', $plain, $mpc)) $pedCliente = $mpc[1];
         if (preg_match('/fichacadastral\(\x27?(\d+)/', $tr, $mfc)) $subCliente = $mfc[1];
@@ -2132,7 +2307,7 @@ function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $
     }
 
     // 3) "Altera" -> abre o editor (form VD350).
-    $chamar('/cgi-bin/ITF/CT0051.EXE', [
+    $ctHtml = $chamar('/cgi-bin/ITF/CT0051.EXE', [
         'LNKTRANSPORTE' => $tok, 'HidKey' => '', 'HidCliente' => '', 'SidPed' => $sidPed, 'SidCodigo' => '',
         'SubKey' => '', 'SubKey2' => '', 'SubKeyCliente' => '', 'SubTela' => '', 'SubOpcao' => '',
         'TxtDiaInicio' => '01', 'TxtMesInicio' => '01', 'TxtAnoInicio' => $anoIni,
@@ -2148,7 +2323,11 @@ function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $
         'SubKeyAlt' => '', 'SubKeyPedcads' => $sidPed, 'SubPedido' => $pedCliente, 'SubKeyProduto' => '',
         'SubKeyPeditem' => '', 'SubLogo' => '', 'HidKey' => '', 'SubTipo' => 'V', 'status' => '',
     ];
-    $itensHtml = $chamar('/cgi-bin/ITF/VD350.EXE', $vd350base + ['SubOpcao' => 'itens', 'SubTela' => 'itens']);
+    // Como o clique na aba "Itens": submete o form VD350 da tela do Altera (LNKTRANSPORTE longo, ...).
+    $formCt    = aemCamposForm($ctHtml, 'VD350');
+    $itensHtml = $chamar('/cgi-bin/ITF/VD350.EXE', isset($formCt['LNKTRANSPORTE'])
+        ? array_merge($formCt, ['SubOpcao' => 'itens', 'SubTela' => 'itens'])
+        : $vd350base + ['SubOpcao' => 'itens', 'SubTela' => 'itens']);
     if (!preg_match('/id=LNKTRANSPORTE\s+name=LNKTRANSPORTE\s+size=800\s+type=hidden\s+value="([^"]*)"/i', $itensHtml, $mlt)) {
         return $falha('Não foi possível obter o token de sessão do editor de itens no A&M.', ['sid_ped' => $sidPed, 'pedido_interno' => $pedInterno, 'pedido_cliente' => $pedCliente, 'resposta' => $log]);
     }
@@ -2194,17 +2373,82 @@ function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $
     }
 
     // 6) Aba "Validar".
-    $valHtml   = $chamar('/cgi-bin/ITF/VD350.EXE', $vd350base + ['SubOpcao' => 'validar', 'SubTela' => 'validar']);
+    // Clique na aba "Validar" estando na aba Itens: o navegador submete o form VD350 DA ABA ITENS
+    // (LNKTRANSPORTE longo, SubTelaAnterior='itens', TxtVendedor, TxtFinDscto, ...). Até 14/09 ia o
+    // $vd350base (token curto, SubTelaAnterior vazio): o A&M dizia "Validada com Sucesso", mas o pedido
+    // não voltava ao "Resumo dos Pedidos Colocados" (logs #156/#158) — suspeita de a navegação não
+    // efetivar as edições da aba Itens.
+    $formItens = aemCamposForm($itensHtml, 'VD350');
+    $valHtml   = $chamar('/cgi-bin/ITF/VD350.EXE', isset($formItens['LNKTRANSPORTE'])
+        ? array_merge($formItens, ['SubOpcao' => 'validar', 'SubTela' => 'validar'])
+        : $vd350base + ['SubOpcao' => 'validar', 'SubTela' => 'validar']);
+    $log .= "\n### abas como o navegador: Itens via form do Altera=" . (isset($formCt['LNKTRANSPORTE']) ? 'sim' : 'não')
+          . ', Validar via form da aba Itens=' . (isset($formItens['LNKTRANSPORTE']) ? 'sim' : 'não') . "\n";
     $validado  = (bool)preg_match('/Validad[ao]\s+com\s+Sucesso/i', $valHtml);
-    $valResumo = mb_substr(trim(preg_replace('/\s+/', ' ', strip_tags($valHtml))), 0, 500);
+    $valResumo = mb_substr(trim(preg_replace('/\s+/', ' ', strip_tags(preg_replace('#<(script|style)\b.*?</\1>#is', ' ', $valHtml)))), 0, 500);
 
-    // 7) "Conclui Pedido" (só se pediu, a validação passou e nenhuma edição falhou).
+    // 7) "Conclui Pedido" (só se pediu, a validação passou e nenhuma edição falhou): igual ao
+    // impressao(key,logo) da tela — submete o form VD350 da própria aba Validar (LNKTRANSPORTE
+    // longo, RdbCP=P, ...) com HidKey/SubLogo do link. Antes (2026-09-03 a 09-14) mandava só o
+    // $vd350base (token curto, sem RdbCP) e o A&M respondia "ERRO 0142 Cotacao ou Pedido inexistente".
     $concluido = false; $concluiResp = '';
     if ($concluir && $validado && !$erros) {
-        $concluiResp = $chamar('/cgi-bin/ITF/PD0306.EXE', $vd350base + [
-            'SubOpcao' => 'validar', 'SubTela' => 'validar', 'HidKey' => $sidPed, 'SubLogo' => '02',
-        ]);
-        $concluido = ($concluiResp !== '') && !preg_match('/erro|inv[aá]lid|permiss/i', trim(strip_tags($concluiResp)));
+        $campos = aemCamposForm($valHtml, 'VD350');
+        if (!isset($campos['LNKTRANSPORTE'])) {   // form não encontrado: monta o equivalente
+            $campos = ['LNKTRANSPORTE' => $longTok] + $vd350base + ['SubOpcao' => 'validar', 'SubTela' => 'validar', 'SubTelaAnterior' => 'validar', 'RdbCP' => 'P'];
+        }
+        $imp = preg_match("/impressao\('(\d+)','(\d+)'\)/", $valHtml, $mi) ? $mi : [null, $sidPed, '02'];
+        $campos['HidKey']  = $imp[1];
+        $campos['SubLogo'] = $imp[2];
+        $log .= "\n### CONCLUI campos: " . implode(',', array_keys($campos))
+              . " | HidKey={$campos['HidKey']} SubLogo={$campos['SubLogo']} RdbCP=" . ($campos['RdbCP'] ?? '-')
+              . ' LNKTRANSPORTE=' . strlen((string)$campos['LNKTRANSPORTE']) . "ch\n";
+
+        $concluiResp = $chamar('/cgi-bin/ITF/PD0306.EXE', $campos);
+        $concluiTxt  = trim(strip_tags(preg_replace('#<(script|style)\b.*?</\1>#is', ' ', $concluiResp)));
+        $concluiErro = ($concluiResp === '') || (bool)preg_match('/erro|inv[aá]lid|permiss/i', $concluiTxt);
+        // Sucesso = o mesmo que o navegador recebe: "Aguarde... Processando" + window.open do PDF do pedido.
+        $pdfConclui  = preg_match("#window\.open\('([^']+)'#", $concluiResp, $mp) ? $mp[1] : null;
+        $processou   = !$concluiErro && ($pdfConclui !== null || stripos($concluiTxt, 'Processando') !== false);
+
+        // Situação do pedido no grid. Ele CONTINUA "SA - Bloqueado" (aguardando o Comercial, com
+        // Altera): o Conclui fecha a digitação, não aprova. Só "VD - Em digitação" = não concluiu.
+        $situacao = null;
+        if ($processou) {
+            $chamar('/cgi-bin/ITF/PD030.EXE', ['LNKTRANSPORTE' => $tok, 'HidMenu' => 'VDMENU.EXE', 'SubMenu' => 'FROTA']);
+            $gridPos = $chamar('/cgi-bin/ITF/PD0301.EXE', $gridParams);
+            if (preg_match('/<TBODY>(.*?)<\/TBODY>/is', $gridPos, $mgp)) {
+                preg_match_all('/<TR\b[^>]*>(.*?)<\/TR>/is', $mgp[1], $trp);
+                foreach ($trp[1] as $tr) {
+                    if (strpos($tr, "'" . $sidPed . "'") === false
+                        && !preg_match('/PED\s+' . preg_quote($pedCliente, '/') . '\b/', strip_tags($tr))) continue;
+                    preg_match_all('/<TD\b[^>]*>(.*?)<\/TD>/is', $tr, $tdp);
+                    foreach ($tdp[1] as $td) {
+                        $x = trim(preg_replace('/\s+/u', ' ', html_entity_decode(strip_tags($td), ENT_QUOTES, 'UTF-8')));
+                        if (preg_match('/^[A-Z0-9]{2} - \S/u', $x)) { $situacao = $x; break 2; }
+                    }
+                }
+            }
+        }
+        // Critério do Comercial: o pedido volta ao "Resumo dos Pedidos Colocados" (some dele enquanto
+        // está alterado e não concluído). Espera a tela "Aguarde... Processando" e confere até 3x
+        // (3 s entre elas — o import inteiro precisa caber nos 120 s do nginx).
+        $noResumo = null; $tentativas = 0;
+        if ($processou && $pedInterno !== '' && $dataPed !== '') {
+            $vendCod = preg_match('/^\s*([A-Z0-9]{2,5})\s*-/', (string)($campos['TxtVendedor'] ?? ''), $mvc) ? $mvc[1] : null;
+            while ($tentativas < 3) {
+                $tentativas++;
+                sleep(3);
+                $noResumo = aemPedidoNoResumoColocados($pedInterno, $dataPed, $vendCod);
+                if ($noResumo !== false) break;   // achou, ou não deu para consultar
+            }
+        }
+        $concluido = $processou && strpos((string)$situacao, 'VD') !== 0 && $noResumo !== false;
+        $log .= "\n### CONCLUI resultado: " . ($concluido ? 'concluído' : 'falhou')
+              . ' | Resumo dos Pedidos Colocados: ' . ($noResumo === null ? 'não verificado'
+                    : ($noResumo ? "sim (tentativa {$tentativas})" : "NÃO apareceu após {$tentativas} tentativas"))
+              . ' | situação no A&M: ' . ($situacao ?? 'não lida') . ($pdfConclui ? " | PDF {$pdfConclui}" : '')
+              . ($concluiErro ? ' | resposta com erro' : '') . "\n";
     }
 
     $aplicadosOk = count(array_filter($detItens, fn($d) => $d['de'] != $d['para'] && $d['aplicado']));
@@ -2225,6 +2469,8 @@ function aplicarDescontoDiretoriaAEM(string $numero, array $pctPorCodigo, bool $
         'obs_gravada'    => $obsGravada,
         'obs_texto'      => $obsNova,
         'resposta'       => $log . "\n\n=== VALIDAR ===\n" . $valResumo . "\n\n=== CONCLUI ===\n" . mb_substr(trim(strip_tags($concluiResp)), 0, 3000),
+        'html_validar'   => $valHtml,       // tela Validar (antes do Conclui Pedido), p/ o Log de Descontos A&M
+        'html_conclui'   => $concluiResp,
     ];
 }
 

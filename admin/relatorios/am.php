@@ -22,6 +22,10 @@ function _contaPedidosAM(string $likeObs, string $ini, string $fim): int {
 $qtdMargem = _contaPedidosAM('Importado do sistema A&M%', $ini, $fim);
 $qtdBf     = _contaPedidosAM('Importado do sistema A&M (BF)%', $ini, $fim);
 
+$qLog = db()->prepare('SELECT COUNT(*) FROM descontos_diretoria_am_logs WHERE DATE(created_at) BETWEEN ? AND ?');
+$qLog->execute([$ini, $fim]);
+$qtdLogAm = (int)$qLog->fetchColumn();
+
 $quadros = [
     [
         'slug'  => 'margem-am',
@@ -51,6 +55,15 @@ $quadros = [
         'cor'   => 'primary',
         'contador' => $qtdBf,
         'contador_label' => 'pedidos BF neste mês',
+    ],
+    [
+        'slug'  => 'log-descontos-am',
+        'titulo'=> 'Log de Descontos A&M',
+        'desc'  => 'Gravações do % Diretoria direto no pedido do A&M feitas pelo “Importa Pedido BF”: itens alterados, resultado da aba Validar e do “Conclui Pedido”, com a resposta do A&M.',
+        'icon'  => 'bi-journal-text',
+        'cor'   => 'primary',
+        'contador' => $qtdLogAm,
+        'contador_label' => 'gravações neste mês',
     ],
 ];
 

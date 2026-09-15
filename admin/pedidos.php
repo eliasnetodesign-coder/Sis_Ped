@@ -289,12 +289,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             foreach ($r['itens'] as $it) $pctPorCodigo[$it['codigoAEM']] = $bfOverrides[$it['codigoAEM']] ?? 0.0;
             $am = aplicarDescontoDiretoriaAEM($_POST['numero'] ?? '', $pctPorCodigo, true, $bfObsAM);
             try {
-                db()->prepare('INSERT INTO descontos_diretoria_am_logs (numero_pedido,sid_ped,pedido_interno,pedido_sisped,usuario_id,usuario_nome,itens,status,mensagem,resposta) VALUES (?,?,?,?,?,?,?,?,?,?)')
+                db()->prepare('INSERT INTO descontos_diretoria_am_logs (numero_pedido,sid_ped,pedido_interno,pedido_sisped,usuario_id,usuario_nome,itens,status,mensagem,resposta,html_validar,html_conclui) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
                     ->execute([
                         preg_replace('/\D/', '', (string)($_POST['numero'] ?? '')), $am['sid_ped'] ?? null, $am['pedido_interno'] ?? null,
                         $res['primeiro_id'], $u['id'], $u['nome'],
                         json_encode($am['itens'] ?? [], JSON_UNESCAPED_UNICODE), $am['status'] ?? 'erro',
                         $am['erro'] ?: ($am['validacao'] ?? null), mb_substr((string)($am['resposta'] ?? ''), 0, 60000),
+                        ($am['html_validar'] ?? '') !== '' ? mb_substr($am['html_validar'], 0, 2000000) : null,
+                        ($am['html_conclui'] ?? '') !== '' ? mb_substr($am['html_conclui'], 0, 2000000) : null,
                     ]);
             } catch (Exception $eLog) { /* log é best-effort */ }
             $amMsg = $am['ok']
@@ -513,6 +515,9 @@ require_once LAYOUT_PATH . '/header.php';
         <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalImportaAEMBF">
             <i class="bi bi-tags me-1"></i>Importa Pedido BF
         </button>
+        <a href="<?= BASE_URL ?>/admin/financeiro/campanhas-am.php?origem=pedidos" class="btn btn-outline-secondary">
+            <i class="bi bi-megaphone me-1"></i>Campanhas
+        </a>
     </div>
     <?php endif; ?>
 </div>
