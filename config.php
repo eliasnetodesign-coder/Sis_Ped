@@ -901,6 +901,14 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
         }
         preg_match_all('/<T[HD]\b[^>]*>(.*?)<\/T[HD]>/is', $mBody[1], $mh);
         $ix = array_flip(array_map($chave, $mh[1]));
+        // PD0303F de pedido de exportação: Seq, Código DZYON, Catalogo, Lote, Nome do Produto, Vr Unitário Dolar,
+        // Vr Total Dolar, Qtd, Vr Unitário, Vr Total — sem Preço Tabela nem percentuais; valores em R$.
+        $exportacao = !isset($ix['valortotal']) && isset($ix['vrtotal']);
+        if ($exportacao) {
+            $ix['valortotal']    = $ix['vrtotal'];
+            $ix['valorunitario'] = $ix['vrunitario'] ?? null;
+        }
+        $minCelulas = $exportacao ? count($mh[1]) : 13;
         if (!isset($ix['codigodzyon'], $ix['qtd'], $ix['valortotal'])) {
             // Sem títulos legíveis: layout fixo do PD0303 (sem a coluna "Lote").
             $ix = ['codigodzyon' => 1, 'nomedoproduto' => 3, 'precotabela' => 5, '%descto' => 6, '%desctost' => 7, 'valorunitario' => 8,
@@ -912,7 +920,7 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
         foreach ($itrs[1] as $itrHtml) {
             preg_match_all('/<TD[^>]*>(.*?)<\/TD>/is', $itrHtml, $itds);
             $ic = array_map($txt, $itds[1]);
-            if (count($ic) < 13) continue;
+            if (count($ic) < $minCelulas) continue;
             $it = [
                 'codigo'         => $col($ic, 'codigodzyon'),
                 'nome'           => $col($ic, 'nomedoproduto'),
@@ -925,6 +933,9 @@ function pedidosFaturadosAEM(string $dataIni, string $dataFim, array $filtros = 
             ];
             $preco = $num($col($ic, 'precotabela'));
             $vLiq  = $num($col($ic, 'valorliquido'));
+            // Exportação: o preço é o Vr Unitário em R$ faturado (Vr Total ÷ Qtd, a tela arredonda em 2 casas) e
+            // entra como Preço Tabela do pedido, sem descontos.
+            if ($exportacao && $it['qtd'] > 0) $preco = $it['valor_total'] / $it['qtd'];
             // Item com %Descto mas Valor Unitário do pedido = Preço Tabela (ex.: Amazon, Accademia): o preço já vem
             // líquido e o desconto não foi aplicado — considera %Descto 0 (regra do usuário). No PD0303F o Valor
             // Unitário é o faturado; o do pedido sai do Valor Negociado ÷ (1 − %Negociação).
@@ -3570,10 +3581,16 @@ function calcularMargemPedidoAEM(array $p): array {
 
     $cli  = null;
     $cnpj = preg_replace('/\D/', '', (string)($p['cnpj'] ?? ''));
-    if ($cnpj !== '') {
+    if (trim($cnpj, '0') !== '') {
         $cq = db()->prepare("SELECT id, estado, regime_tributario, canal_venda_id, moeda FROM clientes
                              WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ? LIMIT 1");
         $cq->execute([$cnpj]);
+        $cli = $cq->fetch() ?: null;
+    }
+    // Cliente do exterior (CNPJ zerado/vazio): pelo código do A&M.
+    if (!$cli && ($cod = preg_replace('/\D/', '', (string)($p['codigo'] ?? ''))) !== '') {
+        $cq = db()->prepare('SELECT id, estado, regime_tributario, canal_venda_id, moeda FROM clientes WHERE codigo_cliente = ? LIMIT 1');
+        $cq->execute([$cod]);
         $cli = $cq->fetch() ?: null;
     }
     $flagAcc   = $p['pedido_accademia'] ?? null;

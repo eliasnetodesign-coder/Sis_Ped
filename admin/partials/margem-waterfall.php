@@ -90,6 +90,7 @@
                                     <th></th><th></th>
                                     <th class="text-end fw-normal">Valor Unitário</th>
                                     <th class="text-end fw-normal">Valor Total (Pedido)</th>
+                                    <th class="text-end fw-normal" title="% sobre Resultado após Descontos">%</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -97,50 +98,58 @@
                                     <td>Valor por Produto</td><td></td>
                                     <td class="text-end"><?= moedaBR($it['precoPadrao']) ?></td>
                                     <td class="text-end text-muted"><?= moedaBR($it['precoPadrao'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <tr>
                                     <td class="ps-4 text-muted">(-) Desconto Canal (<?= $pctFmt($it['descCanalPct']) ?>)</td><td></td>
                                     <td class="text-end text-danger">-<?= moedaBR($it['vCanal']) ?></td>
                                     <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vCanal'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <tr>
                                     <td class="ps-4 text-muted">(-) Desconto Cliente (<?= $pctFmt($it['descClientePct']) ?>)</td><td></td>
                                     <td class="text-end text-danger">-<?= moedaBR($it['vCliente']) ?></td>
                                     <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vCliente'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <tr>
                                     <td class="ps-4 text-muted">(-) Desconto Pedido (<?= $pctFmt($it['descPedidoPct']) ?>)</td><td></td>
                                     <td class="text-end text-danger">-<?= moedaBR($it['vPedido']) ?></td>
                                     <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vPedido'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <?php if ($it['descCampanhaPct'] > 0): ?>
                                 <tr>
                                     <td class="ps-4 text-muted">(-) Desconto Campanha (<?= $pctFmt($it['descCampanhaPct']) ?>)</td><td></td>
                                     <td class="text-end text-danger">-<?= moedaBR($it['vCampanha']) ?></td>
                                     <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vCampanha'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <?php endif; ?>
                                 <tr class="table-light fw-semibold">
                                     <td>Resultado após Descontos</td><td></td>
                                     <td class="text-end"><?= moedaBR($it['resAposDescontos']) ?></td>
                                     <td class="text-end text-muted"><?= moedaBR($it['resAposDescontos'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <?php if ($it['vCredito'] > 0): ?>
                                 <tr>
                                     <td class="ps-4 text-muted">(-) Crédito Aplicado (<?= $pctFmt($it['pctCredito']) ?>)</td><td></td>
                                     <td class="text-end text-danger">-<?= moedaBR($it['vCredito']) ?></td>
                                     <td class="text-end text-danger text-opacity-75">-<?= moedaBR($it['vCredito'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <tr class="table-light fw-semibold">
                                     <td>Resultado após Crédito</td><td></td>
                                     <td class="text-end"><?= moedaBR($it['resAposCredito']) ?></td>
                                     <td class="text-end text-muted"><?= moedaBR($it['resAposCredito'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <?php endif; ?>
 
                                 <?php if ($it['netNome']): ?>
                                 <tr>
-                                    <td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">
+                                    <td colspan="5" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">
                                         Imposto <?= e($it['netNome']) ?> <span class="text-muted text-lowercase fw-normal">— base: <?= e($it['netBaseLabel']) ?> <?= moedaBR($it['precoNetwork']) ?><?php if (!$it['temAccademia']): ?> (<?= moedaBR($it['resAposCredito']) ?> ÷ (1 + <?= $pctFmt($it['ipiNetPct']) ?>))<?php else: ?> (PIS/COFINS: <?= moedaBR($it['precoNetwork']) ?> − ICMS <?= moedaBR($it['icmsNetVal']) ?> = <?= moedaBR($it['pisCofinsBase']) ?>)<?php endif; ?></span>
                                     </td>
                                 </tr>
@@ -152,22 +161,25 @@
                                     <td></td>
                                     <td class="text-end text-danger">-<?= moedaBR($tx['val']) ?></td>
                                     <td class="text-end text-danger text-opacity-75">-<?= moedaBR($tx['val'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <?php endforeach; ?>
                                 <tr class="table-light fw-semibold">
                                     <td>Resultado após <?= e($it['netNome']) ?></td><td></td>
                                     <td class="text-end"><?= moedaBR($it['resAposNet']) ?></td>
                                     <td class="text-end text-muted"><?= moedaBR($it['resAposNet'] * $it['qtd']) ?></td>
+                                    <td class="text-end text-muted"><?= $pctFmt($it['resAposDescontos'] > 0 ? $it['resAposNet'] / $it['resAposDescontos'] * 100 : 0) ?></td>
                                 </tr>
                                 <?php endif; ?>
 
                                 <?php foreach ($it['blocosOutros'] as $bl): ?>
-                                <tr><td colspan="4" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Impostos <?= e($bl['nome']) ?> <span class="text-muted text-lowercase fw-normal">— base: Result. após Crédito − Preço Network − IPI Network = <?= moedaBR($it['baseOutras']) ?></span></td></tr>
+                                <tr><td colspan="5" class="pt-3 pb-1 fw-semibold text-uppercase small text-muted">Impostos <?= e($bl['nome']) ?> <span class="text-muted text-lowercase fw-normal">— base: Result. após Crédito − Preço Network − IPI Network = <?= moedaBR($it['baseOutras']) ?></span></td></tr>
                                 <?php foreach ($bl['taxes'] as $tx): ?>
                                 <tr>
                                     <td class="ps-4 text-muted">(-) <?= e($tx['label']) ?> (<?= $pctFmt($tx['pct']) ?>)</td><td></td>
                                     <td class="text-end text-danger">-<?= moedaBR($tx['val']) ?></td>
                                     <td class="text-end text-danger text-opacity-75">-<?= moedaBR($tx['val'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php endforeach; ?>
@@ -176,6 +188,7 @@
                                     <td>Resultado após Academia</td><td></td>
                                     <td class="text-end"><?= moedaBR($it['resAposImpostos']) ?></td>
                                     <td class="text-end text-muted"><?= moedaBR($it['resAposImpostos'] * $it['qtd']) ?></td>
+                                    <td class="text-end text-muted"><?= $pctFmt($it['resAposDescontos'] > 0 ? $it['resAposImpostos'] / $it['resAposDescontos'] * 100 : 0) ?></td>
                                 </tr>
                                 <?php endif; ?>
 
@@ -193,11 +206,13 @@
                                     <td></td>
                                     <td class="text-end text-danger"><?= $it['custoMP'] > 0 ? '-' . moedaBR($it['custoMP']) : '—' ?></td>
                                     <td class="text-end text-danger text-opacity-75"><?= $it['custoMP'] > 0 ? '-' . moedaBR($it['custoMP'] * $it['qtd']) : '—' ?></td>
+                                    <td></td>
                                 </tr>
                                 <tr class="table-light fw-semibold">
                                     <td>Resultado após Custo MP</td><td></td>
                                     <td class="text-end"><?= moedaBR($it['resAposMP']) ?></td>
                                     <td class="text-end text-muted"><?= moedaBR($it['resAposMP'] * $it['qtd']) ?></td>
+                                    <td class="text-end text-muted"><?= $pctFmt($it['resAposDescontos'] > 0 ? $it['resAposMP'] / $it['resAposDescontos'] * 100 : 0) ?></td>
                                 </tr>
 
                                 <tr>
@@ -211,6 +226,7 @@
                                     <td></td>
                                     <td class="text-end text-danger"><?= $it['vCF'] > 0 ? '-' . moedaBR($it['vCF']) : '—' ?></td>
                                     <td class="text-end text-danger text-opacity-75"><?= $it['vCF'] > 0 ? '-' . moedaBR($it['vCF'] * $it['qtd']) : '—' ?></td>
+                                    <td></td>
                                 </tr>
                                 <?php if ($it['descFinanceiroPct'] > 0): ?>
                                 <tr>
@@ -223,6 +239,7 @@
                                     <td></td>
                                     <td class="text-end text-danger"><?= $it['vDescFinanceiro'] > 0 ? '-' . moedaBR($it['vDescFinanceiro']) : '—' ?></td>
                                     <td class="text-end text-danger text-opacity-75"><?= $it['vDescFinanceiro'] > 0 ? '-' . moedaBR($it['vDescFinanceiro'] * $it['qtd']) : '—' ?></td>
+                                    <td></td>
                                 </tr>
                                 <?php endif; ?>
                                 <tr class="<?= $it['resultadoIni'] >= 0 ? 'table-success' : 'table-danger' ?> fw-bold" style="font-size:.95rem">
@@ -232,6 +249,7 @@
                                         <span class="text-muted small fw-normal d-block">(<?= $itMargem ?> margem)</span>
                                     </td>
                                     <td class="text-end <?= $it['resultadoIni'] >= 0 ? '' : 'text-danger' ?>"><?= moedaBR($it['resultadoIni'] * $it['qtd']) ?></td>
+                                    <td></td>
                                 </tr>
                             </tbody>
                         </table>
