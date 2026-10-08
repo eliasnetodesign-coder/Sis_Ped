@@ -1,5 +1,32 @@
 <?php
 require_once __DIR__ . '/../../config.php';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $login = trim($_POST['login'] ?? '');
+    $senha = trim($_POST['senha'] ?? '');
+
+    if ($login && $senha) {
+        // Verificar usuários admin pelo e-mail
+        $stmt = db()->prepare('SELECT * FROM usuarios WHERE email = ? AND status = "ativo"');
+        $stmt->execute([$login]);
+        $usuario = $stmt->fetch();
+
+        if ($usuario && $usuario['senha'] === $senha) {
+            $sessionUser = [
+                'id'    => $usuario['id'],
+                'nome'  => $usuario['nome'],
+                'email' => $usuario['email'],
+                'tipo'  => $usuario['tipo_acesso'],
+                'must_change' => ((int)($usuario['senha_temporaria'] ?? 0) === 1),
+            ];
+            $_SESSION['usuario'] = $sessionUser;
+        }else{
+            dd($cliente, $senha, $login);
+            die('no fez login');
+        }
+    }
+}
+
 requireComercial();
 
 // Contadores do mês corrente (pedidos distintos, agrupados por lote).

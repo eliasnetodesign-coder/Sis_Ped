@@ -25,6 +25,30 @@ define('AEM_URL_ALT', 'http://italliansp.ddns.com.br:3000');
 define('AEM_LOGIN', 'I003');
 define('AEM_SENHA', 'Itallian142');
 
+function dd(...$vars)
+{
+    echo '<style>
+        pre {
+            background-color: #2d2d2d;
+            color: #ccc;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>';
+
+    foreach ($vars as $var) {
+        echo '<pre>';
+        var_dump($var);
+        echo '</pre>';
+    }
+
+    //die();
+}
+
 /**
  * Base da URL do sistema A&M a usar nesta requisição: testa AEM_URL (endereço principal) com
  * timeout curto e, se não responder (fora do ar, rede etc.), cai para AEM_URL_ALT (DDNS direto
