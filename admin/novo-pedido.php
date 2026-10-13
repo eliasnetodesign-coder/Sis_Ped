@@ -829,7 +829,7 @@ function recalcularTodas() {
         if (precoCell) {
             var baseFormatado = precoComDesc > 0 ? fmtBRL(precoComDesc) : (precoBase > 0 ? fmtBRL(precoBase) : '—');
             if (campDesc > 0) {
-                precoCell.innerHTML = baseFormatado + ' <span class="badge bg-success ms-1" style="font-size:.7em">-' + campDesc + '%</span>';
+                precoCell.innerHTML = precoCampanhaHTML(baseFormatado, fmtBRL(preco), campDesc);
             } else {
                 precoCell.textContent = baseFormatado;
             }
@@ -841,6 +841,13 @@ function recalcularTodas() {
             row.querySelector('.row-total').textContent = '—';
         }
     });
+}
+
+// Preço com desconto de campanha: original riscado acima, preço final + badge abaixo.
+function precoCampanhaHTML(origFmt, finalFmt, desc) {
+    return '<div class="text-muted text-decoration-line-through lh-1" style="font-size:.75em">' + origFmt + '</div>'
+        + '<div class="lh-sm"><span class="fw-semibold text-success">' + finalFmt + '</span>'
+        + ' <span class="badge bg-success ms-1" style="font-size:.7em">-' + desc + '%</span></div>';
 }
 
 function atualizarQtd(visualInput) {
@@ -871,6 +878,7 @@ function getItens() {
                 codigo:   row.dataset.codigo,
                 linha:    row.dataset.linha || '',
                 preco:    preco,
+                precoOrig: precoComDesc,
                 campDesc: campDesc,
                 visual:   visual,
                 multiplo: multiplo,
@@ -965,7 +973,9 @@ document.getElementById('btnAvancar').addEventListener('click', function() {
                 + '<td class="fw-semibold">' + i.nome + campBadge + '</td>'
                 + '<td class="text-muted small">' + i.codigo + '</td>'
                 + '<td class="text-center small">' + qtdDesc + '</td>'
-                + '<td class="text-end">' + simboloMoedaJS() + ' ' + i.preco.toFixed(2).replace('.', ',') + '</td>'
+                + '<td class="text-end">' + (i.campDesc > 0
+                    ? precoCampanhaHTML(fmtBRL(i.precoOrig), fmtBRL(i.preco), i.campDesc)
+                    : simboloMoedaJS() + ' ' + i.preco.toFixed(2).replace('.', ',')) + '</td>'
                 + '<td class="text-end fw-semibold text-primary">' + fmtBRL(i.sub) + '</td>'
                 + '</tr>';
         }).join('');

@@ -1269,7 +1269,7 @@ function recalcularTodas() {
         var precoCell = row.querySelector('.preco-unit-col');
         if (precoCell) {
             if (campDesc > 0) {
-                precoCell.innerHTML = fmtBRL(preco) + ' <span class="badge bg-success ms-1" style="font-size:.7em">-' + campDesc + '%</span>';
+                precoCell.innerHTML = precoCampanhaHTML(precoCell.dataset.precoFmt, fmtBRL(preco), campDesc);
             } else {
                 precoCell.textContent = precoCell.dataset.precoFmt;
             }
@@ -1281,6 +1281,13 @@ function recalcularTodas() {
             row.querySelector('.row-total').textContent = '—';
         }
     });
+}
+
+// Preço com desconto de campanha: original riscado acima, preço final + badge abaixo.
+function precoCampanhaHTML(origFmt, finalFmt, desc) {
+    return '<div class="text-muted text-decoration-line-through lh-1" style="font-size:.75em">' + origFmt + '</div>'
+        + '<div class="lh-sm"><span class="fw-semibold text-success">' + finalFmt + '</span>'
+        + ' <span class="badge bg-success ms-1" style="font-size:.7em">-' + desc + '%</span></div>';
 }
 
 // Atualiza as barras de progresso e o multiplicador das campanhas.
@@ -1493,7 +1500,9 @@ function gerarResumo() {
                 + '<td class="text-muted small ps-3">'  + (i.codigo || '—') + '</td>'
                 + '<td class="text-muted small">'        + (i.barra  || '—') + '</td>'
                 + '<td class="fw-semibold">'              + i.nome + campBadge + '</td>'
-                + '<td class="text-end small pe-3">'      + fmtBRL(i.preco) + '</td>'
+                + '<td class="text-end small pe-3">'      + (i.campDesc > 0
+                    ? precoCampanhaHTML(fmtBRL(i.precoBase), fmtBRL(i.preco), i.campDesc)
+                    : fmtBRL(i.preco)) + '</td>'
                 + '<td class="text-center small">'        + (i.multiplo > 1 ? i.multiplo : '—') + '</td>'
                 + '<td class="text-center" style="width:100px">'
                 + '<input type="number" class="form-control form-control-sm text-center resumo-qtd-input mx-auto" '
