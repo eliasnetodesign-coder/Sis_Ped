@@ -775,14 +775,6 @@ require_once LAYOUT_PATH . '/header.php';
                 <?= $renderBarras($c) ?>
             </div>
             <?php else: ?>
-            <?php if ($c['faixas'] !== null):
-                $maxPct = max(array_merge([(float)$c['desconto']], array_column($c['faixas'], 'pct')));
-                $maxTxt = rtrim(rtrim(number_format($maxPct, 2, ',', '.'), '0'), ',');
-            ?>
-            <span class="badge bg-success fs-6 fw-bold px-2 camp-pct-badge" data-codigo="<?= e($c['codigo_campanha']) ?>" data-max="<?= e($maxTxt) ?>"><small class="fw-normal"><?= et('até') ?></small> −<?= $maxTxt ?>%</span>
-            <?php else: ?>
-            <span class="badge bg-success fs-6 fw-bold px-2">−<?= $pct ?>%</span>
-            <?php endif; ?>
             <div style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?> <span class="camp-mult badge bg-success ms-1" style="display:none"><i class="bi bi-check-lg me-1"></i><?= et('atingida') ?></span></div>
                 <?php if ($c['gatilho'] !== ''): ?>
@@ -1158,7 +1150,6 @@ var T = {
     podeEscolherAte: <?= json_encode(t('Você pode escolher até')) ?>,
     campAtingidaNx:  <?= json_encode(t('campanha atingida %1×')) ?>,
     un:              <?= json_encode(t('un.')) ?>,
-    ate:             <?= json_encode(t('até')) ?>,
     faixa:           <?= json_encode(t('Faixa')) ?>,
     de:              <?= json_encode(t('de')) ?>,
     e:               <?= json_encode(t('E')) ?>,
@@ -1559,13 +1550,9 @@ function atualizarBarrasCampanha(itens, valorTotal) {
             }
             rg.querySelector('.rg-msg').innerHTML = msg;
         }
-        var melhor = nv ? nv.pct : 0;
-
         var chip = box.closest('.camp-chip');
         var badge = chip ? chip.querySelector('.camp-mult') : null;
         if (badge) badge.style.display = mult >= 1 ? '' : 'none';   // só indica que foi atingida (sem nº de vezes)
-        var pb = chip ? chip.querySelector('.camp-pct-badge') : null;
-        if (pb) pb.innerHTML = melhor > 0 ? '−' + _campFmtPct(melhor) + '%' : '<small class="fw-normal">' + T.ate + '</small> −' + pb.dataset.max + '%';
     });
 }
 

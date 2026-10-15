@@ -485,6 +485,10 @@ require_once LAYOUT_PATH . '/header.php';
 <style>
 #bonifWrapTable, #condTableWrap, #alvoTableWrap, #poolTableWrap { max-height: 240px; overflow-y: auto; }
 #campAlvoWrap.sem-pct .alvo-pct-col { display: none; }
+/* modal-dialog-scrollable só rola se o .modal-body for filho direto do .modal-content;
+   aqui há um <form> no meio — ele vira a coluna flexível para o corpo rolar (zoom alto/telas baixas). */
+#modal .modal-dialog-scrollable .modal-content > form { display: flex; flex-direction: column; min-height: 0; max-height: 100%; }
+#modal .modal-dialog-scrollable .modal-body { overflow-y: auto; min-height: 0; }
 #condTableWrap .fx-col { width: 110px; background: #f3fbf6; }
 </style>
 <div class="modal fade" id="modal" tabindex="-1">
