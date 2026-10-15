@@ -30,7 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Bonificação usa preço network (BRL); não converte. Demais usam a cotação do dia.
     $cotacaoPedido = ($tipoVenda === 'bonificacao') ? null : cotacaoDia($cli['moeda'] ?? 'BRL');
     $data          = date('Y-m-d');
-    $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas')->fetchAll();
+    $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas WHERE COALESCE(ativo,1) = 1')->fetchAll();
     $canalVendaId  = (int)($cli['canal_venda_id'] ?? 0);
     $criados       = 0;
     $ids_criados   = [];
@@ -185,7 +185,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $clientes  = db()->query('SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, canal_venda_id, idioma, moeda FROM clientes WHERE status = "ativo" ORDER BY razao_social')->fetchAll();
-$campanhas = db()->query('SELECT c.*, p.descricao_pt, cv.canal FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id ORDER BY c.codigo_campanha')->fetchAll();
+$campanhas = db()->query('SELECT c.*, p.descricao_pt, cv.canal FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id WHERE COALESCE(c.ativo,1) = 1 ORDER BY c.codigo_campanha')->fetchAll();
 
 // Produtos bonificados por campanha (chips de campanhas de bonificação)
 $bonifByCode = [];      // com "Nx" (modo fixo)
@@ -220,7 +220,7 @@ foreach ($condRows as $cc) {
 // Alvos explícitos do desconto por código de campanha
 $alvoByCode = [];
 try {
-    $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id
+    $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id, desconto
         FROM campanha_desconto_alvo ORDER BY id')->fetchAll();
 } catch (PDOException $e) {
     try { $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor FROM campanha_desconto_alvo ORDER BY id')->fetchAll(); }
@@ -248,6 +248,11 @@ foreach ($campanhas as $c) {
             'bonif_modo'         => $c['bonif_modo'] ?? 'fixo',
             'bonif_limite_tipo'  => $c['bonif_limite_tipo'] ?? 'quantidade',
             'bonif_limite_valor' => $c['bonif_limite_valor'] ?? null,
+            'cond_operador'      => campanhaOperador([$c]),
+            'observacao'         => trim((string)($c['observacao'] ?? '')),
+            'total'              => campanhaTotalCond([$c]),
+            'faixas'             => (($c['tipo'] ?? 'desconto') === 'desconto' && ($c['desconto_modo'] ?? 'fixo') === 'faixas')
+                                    ? (campanhasFaixas()[$code] ?? []) : null,
             'alvos'              => [],
         ];
     }
@@ -265,15 +270,32 @@ $critTexto = function($cd) use ($prodNomeById) {
     if (!empty($cd['grupo']))    $parts[] = 'Grupo '    . $cd['grupo'];
     if (!empty($cd['subgrupo'])) $parts[] = 'Subgrupo ' . $cd['subgrupo'];
     if (!empty($cd['produto']))  $parts[] = 'Produto '  . ($prodNomeById[(int)$cd['produto']] ?? ('#' . $cd['produto']));
-    $alvo = ($cd['modo'] ?? 'quantidade') === 'valor'
+    $ehVal = ($cd['modo'] ?? 'quantidade') === 'valor';
+    if (($ehVal ? (float)($cd['valor_min'] ?? 0) : (int)$cd['quantidade']) <= 0) return implode(' · ', $parts);
+    $alvo = $ehVal
         ? '≥ ' . moedaBR((float)($cd['valor_min'] ?? 0))
         : '≥ ' . (int)$cd['quantidade'] . ' un.';
     return implode(' · ', $parts) . ' ' . $alvo;
 };
 foreach ($campGroup as $code => &$g) {
     $conds = $condByCode[$code] ?? [];
-    if ($conds) {
-        $g['gatilho'] = implode(' E ', array_map($critTexto, $conds));
+    // Faixas escalonadas: "F2: Grupo X ≥ 504 un. E Grupo Y ≥ 42 un. → 8%"
+    $g['faixas_txt'] = [];
+    foreach (($g['faixas'] ?? []) as $k => $fx) {
+        $cs = array_values($conds);
+        foreach ($cs as $i => &$cd) {
+            if (!array_key_exists($i, $fx['mins'])) continue;
+            if (($cd['modo'] ?? 'quantidade') === 'valor') $cd['valor_min'] = $fx['mins'][$i]; else $cd['quantidade'] = (int)$fx['mins'][$i];
+        }
+        unset($cd);
+        $tot = $g['total'] && $fx['total_min'] !== null ? ' · Total ≥ ' . ($g['total']['modo'] === 'valor' ? moedaBR($fx['total_min']) : (int)$fx['total_min'] . ' un.') : '';
+        $g['faixas_txt'][] = ['F' . $k, implode(' ' . $g['cond_operador'] . ' ', array_map($critTexto, $cs)) . $tot, $fx['pct']];
+    }
+    if ($g['observacao'] !== '') {
+        $g['gatilho'] = $g['observacao'];   // observação da campanha substitui o texto da condição
+    } elseif ($conds) {
+        $g['gatilho'] = implode(' ' . $g['cond_operador'] . ' ', array_map($critTexto, $conds))
+                      . ($g['total'] ? ' · Total ≥ ' . ($g['total']['modo'] === 'valor' ? moedaBR($g['total']['min']) : (int)$g['total']['min'] . ' un.') : '');
     } elseif ((float)$g['valor_alvo'] > 0 && $g['alvos'] === ['Todos os produtos']) {
         $g['gatilho'] = 'Valor ≥ ' . moedaBR((float)$g['valor_alvo']);
     } else {
@@ -358,10 +380,24 @@ require_once LAYOUT_PATH . '/header.php';
                 </div>
             </div>
             <?php else: ?>
+            <?php if ($c['faixas'] !== null):
+                $fmtP = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',');
+                $maxPct = max(array_merge([(float)$c['desconto']], array_column($c['faixas'], 'pct')));
+            ?>
+            <span class="badge bg-success fs-6 fw-bold px-2"><small class="fw-normal">até</small> −<?= $fmtP($maxPct) ?>%</span>
+            <?php else: ?>
             <span class="badge bg-success fs-6 fw-bold px-2">−<?= $pct ?>%</span>
+            <?php endif; ?>
             <div style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
                 <div style="font-size:.76rem;color:var(--brand-dark)"><?= e($c['gatilho']) ?></div>
+                <?php if ($c['faixas'] !== null): ?>
+                <div style="font-size:.72rem" class="text-success"><strong>F1:</strong> <?= $fmtP($c['desconto']) ?>%
+                    <?php foreach ($c['faixas_txt'] as [$fn, $ft, $fp]): ?>
+                    <div><strong><?= e($fn) ?>:</strong> <?= e($ft) ?> → <?= $fmtP($fp) ?>%</div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
             </div>
             <?php endif; ?>
         </div>
@@ -629,14 +665,18 @@ var _campCondicoes = <?= json_encode((function () use ($campanhas, $condByCode, 
         $out[] = [
             'canal_id'  => $c['canal_venda_id'] ? (int)$c['canal_venda_id'] : null,
             'desconto'  => (float)$c['desconto'],
-            'conds'     => array_map(fn($cd) => [
+            'total'     => campanhaTotalCond([$c]),
+            'ou'        => campanhaOperador([$c]) === 'OU',
+            'conds'     => $cj = array_values(array_map(fn($cd) => [
                 'linha'    => $cd['linha'], 'grupo' => $cd['grupo'], 'subgrupo' => $cd['subgrupo'], 'produto' => (int)($cd['produto'] ?: 0),
                 'modo'     => $cd['modo'] ?? 'quantidade',
                 'qtd'      => (int)$cd['quantidade'],
                 'valorMin' => (float)($cd['valor_min'] ?? 0),
-            ], $conds),
+            ], $conds)),
+            'niveis'    => campanhaNiveisJs((string)$code, $c, $cj, campanhaTotalCond([$c])),
             'alvos'     => array_map(fn($a) => [
                 'linha' => $a['linha'], 'grupo' => $a['grupo'], 'subgrupo' => $a['subgrupo'], 'produto' => (int)($a['produto'] ?: 0),
+                'desconto' => $a['desconto'] ?? null,
             ], $alvoByCode[$code] ?? []),
         ];
     }
@@ -734,6 +774,57 @@ function _alvoFiltro(a) {
     return a;
 }
 
+// Soma qtd ou valor dos itens que batem em QUALQUER filtro (sem contar em dobro)
+function _campSomaFiltros(itens, filtros, criterio) {
+    var tot = 0;
+    itens.forEach(function(it) {
+        if (filtros.some(function(f) { return _matchFiltro(it, f); })) tot += criterio === 'valor' ? it.val : it.qtd;
+    });
+    return tot;
+}
+// Gatilho de uma campanha do novo modelo — espelha avaliarCampanhaTrigger (PHP).
+// Condição com mínimo 0 é só filtro; o mínimo total (se houver) é exigido além do E/OU.
+function _campAvaliar(c, itens) {
+    var nao = { acionada: false, mult: 0, atingidas: [] };
+    if (!c.conds || !c.conds.length) return nao;
+    var temMin = false, allMet = true, atingidas = [], minMult = Infinity, maxMult = 0;
+    c.conds.forEach(function(cd) {
+        var q = 0, v = 0;
+        itens.forEach(function(it) { if (_matchFiltro(it, cd)) { q += it.qtd; v += it.val; } });
+        var porValor = (cd.modo || 'quantidade') === 'valor';
+        var min = porValor ? cd.valorMin : cd.qtd;
+        if (!(min > 0)) { atingidas.push(cd); return; }
+        temMin = true;
+        var m = Math.floor((porValor ? v : q) / min);
+        if (m >= 1) { atingidas.push(cd); minMult = Math.min(minMult, m); maxMult = Math.max(maxMult, m); }
+        else allMet = false;
+    });
+    var multTotal = Infinity;
+    if (c.total) {
+        var soma = _campSomaFiltros(itens, c.conds, c.total.modo);
+        if (soma + 0.0001 < c.total.min) return nao;
+        multTotal = Math.floor((soma + 0.0001) / c.total.min);
+    } else if (!temMin) return nao;
+    if (c.ou) {
+        if (temMin && maxMult < 1) return nao;
+        return { acionada: true, mult: Math.min(temMin ? maxMult : Infinity, multTotal), atingidas: atingidas };
+    }
+    if (!allMet) return nao;
+    var mult = Math.min(minMult, multTotal);
+    return mult >= 1 ? { acionada: true, mult: mult, atingidas: c.conds } : nao;
+}
+
+// Maior faixa atingida (campanha sem faixas = um nível só, com o % padrão). Espelha campanhaFaixaAtingida (PHP).
+function _campNivel(c, itens) {
+    var niveis = c.niveis || [{ faixa: 1, pct: c.desconto, total: c.total, conds: c.conds }];
+    for (var i = niveis.length - 1; i >= 0; i--) {
+        var nv = niveis[i];
+        var av = _campAvaliar({ ou: c.ou, total: nv.total, conds: nv.conds }, itens);
+        if (av.acionada) return { faixa: nv.faixa, pct: nv.pct, av: av, conds: nv.conds, idx: i };
+    }
+    return null;
+}
+
 function recalcularTodas() {
     // Soma quantidades/valores por categoria/produto + lista de itens
     var totLinha = {}, totGrupo = {}, totSub = {}, totProd = {}, valorTotal = 0, itens = [];
@@ -760,22 +851,29 @@ function recalcularTodas() {
         totCamp[cod] = soma;
     });
 
-    // Campanhas de desconto do novo modelo: aciona se TODAS as condições (E) — cada
-    // uma um filtro composto, mínimo por qtd OU valor — forem atingidas. Espelha o PHP.
+    // Campanhas de desconto do novo modelo: aciona se TODAS (E) ou QUALQUER UMA (OU)
+    // das condições — cada uma um filtro composto, mínimo por qtd OU valor — for
+    // atingida. No OU, sem alvo explícito, o desconto vai só nas condições atingidas. Espelha o PHP.
     var descAvancados = [];
     _campCondicoes.forEach(function(c) {
         if (c.canal_id && c.canal_id !== _canalId) return; // filtra por canal do cliente
-        var allMet = c.conds.length > 0;
-        c.conds.forEach(function(cd) {
-            var q = 0, v = 0;
-            itens.forEach(function(it) { if (_matchFiltro(it, cd)) { q += it.qtd; v += it.val; } });
-            if ((cd.modo || 'quantidade') === 'valor') {
-                if (!(cd.valorMin > 0 && v >= cd.valorMin)) allMet = false;
-            } else {
-                if (!(cd.qtd > 0 && q >= cd.qtd)) allMet = false;
-            }
-        });
-        if (allMet) descAvancados.push({ desconto: c.desconto, alvos: (c.alvos && c.alvos.length ? c.alvos : c.conds) });
+        var nv = _campNivel(c, itens);
+        if (!nv) return;
+        var atingidas = nv.av.atingidas;
+        // Faixas escalonadas: o % da maior faixa atingida vai para os alvos (ou itens das condições)
+        if (c.niveis) {
+            if (nv.pct > 0) descAvancados.push({ desconto: nv.pct, alvos: (c.alvos && c.alvos.length ? c.alvos : (c.ou ? atingidas : nv.conds)) });
+            return;
+        }
+        // Alvo com % próprio vira entrada separada; os demais (ou as condições) usam o % padrão
+        if (c.alvos && c.alvos.length) {
+            c.alvos.forEach(function(a) {
+                var pct = (a.desconto !== null && a.desconto !== undefined) ? a.desconto : c.desconto;
+                if (pct > 0) descAvancados.push({ desconto: pct, alvos: [a] });
+            });
+        } else if (c.desconto > 0) {
+            descAvancados.push({ desconto: c.desconto, alvos: (c.ou ? atingidas : c.conds) });
+        }
     });
 
     document.querySelectorAll('.produto-row').forEach(function(row) {

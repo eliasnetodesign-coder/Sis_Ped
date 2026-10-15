@@ -238,6 +238,16 @@ function db() {
             // condição por produto, alvo explícito do desconto e pool selecionável por categoria.
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN ativo TINYINT NOT NULL DEFAULT 1"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN bonif_selec_modo VARCHAR(20) NOT NULL DEFAULT 'produtos'"); } catch (PDOException $e) {}
+            // Operador entre as condições da campanha: E (todas) ou OU (qualquer uma).
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN cond_operador VARCHAR(3) NOT NULL DEFAULT 'E'"); } catch (PDOException $e) {}
+            // Observação da campanha: quando preenchida, substitui o texto da condição nas telas de pedido.
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN observacao TEXT NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // Mínimo TOTAL das condições (soma dos itens de todas as condições, qtd ou valor),
+            // independente do mínimo de cada condição. NULL = não usa.
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN cond_total_modo VARCHAR(20) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN cond_total_min DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // Forma do desconto: 'fixo' (% padrão / % por alvo) ou 'faixas' (faixas escalonadas das condições).
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN desconto_modo VARCHAR(10) NOT NULL DEFAULT 'fixo'"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN criterio_modo VARCHAR(20) NOT NULL DEFAULT 'quantidade'"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN valor_min DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             // Condição = filtro composto (linha E grupo E subgrupo E produto). Ex.: "linha X do grupo Y".
@@ -264,6 +274,27 @@ function db() {
             try { $pdo->exec("ALTER TABLE campanha_desconto_alvo ADD COLUMN alvo_grupo VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_desconto_alvo ADD COLUMN alvo_subgrupo VARCHAR(100) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_desconto_alvo ADD COLUMN alvo_produto_id INT NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // % de desconto próprio do alvo (NULL = usa o % padrão da campanha).
+            try { $pdo->exec("ALTER TABLE campanha_desconto_alvo ADD COLUMN desconto DECIMAL(10,4) NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // Desconto por faixas da CONDIÇÃO: a faixa 1 é a própria campanha (mínimos das condições,
+            // mínimo total e % padrão); as faixas 2..N guardam o % e os mínimos mais altos.
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_faixas (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_campanha VARCHAR(50) NOT NULL,
+                faixa           INT NOT NULL,
+                percentual      DECIMAL(10,4) NOT NULL DEFAULT 0,
+                total_min       DECIMAL(12,2) NULL DEFAULT NULL,
+                KEY idx_camp_faixas (codigo_campanha)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Mínimo de cada condição (pela ordem da condição, 0..n) em cada faixa 2..N
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_faixa_minimos (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_campanha VARCHAR(50) NOT NULL,
+                faixa           INT NOT NULL,
+                cond_idx        INT NOT NULL,
+                minimo          DECIMAL(12,2) NOT NULL DEFAULT 0,
+                KEY idx_camp_faixa_min (codigo_campanha)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_bonif_pool (
                 id              INT AUTO_INCREMENT PRIMARY KEY,
                 codigo_campanha VARCHAR(50)  NOT NULL,
@@ -2726,21 +2757,13 @@ function statusBadge($s) {
  */
 function campanhasAgrupadas(): array {
     // Só campanhas ativas participam da avaliação (ativo ausente = legado = ativo).
-    try {
-        $rows = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id,
-                                    quantidade, desconto, tipo, valor_alvo, bonif_modo, bonif_limite_tipo,
-                                    bonif_limite_valor, bonif_selec_modo
-                             FROM campanhas WHERE COALESCE(ativo,1) = 1")->fetchAll();
-    } catch (PDOException $e) {
-        $rows = db()->query("SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id,
-                                    quantidade, desconto, tipo, valor_alvo, bonif_modo, bonif_limite_tipo, bonif_limite_valor
-                             FROM campanhas")->fetchAll();
-    }
+    try { $rows = db()->query("SELECT * FROM campanhas WHERE COALESCE(ativo,1) = 1")->fetchAll(); }
+    catch (PDOException $e) { $rows = db()->query("SELECT * FROM campanhas")->fetchAll(); }
     $conds = [];
     try {
         $conds = db()->query("SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade, criterio_modo, valor_min,
                                      cond_linha, cond_grupo, cond_subgrupo, cond_produto_id
-                              FROM campanha_condicoes")->fetchAll();
+                              FROM campanha_condicoes ORDER BY id")->fetchAll();
     } catch (PDOException $e) {
         try {
             $conds = db()->query("SELECT codigo_campanha, criterio_tipo, criterio_valor, quantidade, criterio_modo, valor_min
@@ -2767,7 +2790,7 @@ function campanhasAgrupadas(): array {
  */
 function alvosDescontoCampanha(string $codigo, array $gruposAlvo): array {
     try {
-        $st = db()->prepare("SELECT alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id
+        $st = db()->prepare("SELECT alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id, desconto
                               FROM campanha_desconto_alvo WHERE codigo_campanha = ?");
         $st->execute([$codigo]);
         $alvos = array_map(fn($a) => alvoFiltro($a), $st->fetchAll());
@@ -2821,8 +2844,123 @@ function ctxCampanha(array $itensVenda, int $canalVendaId): array {
 }
 
 /**
+ * Mínimo TOTAL das condições da campanha: ['modo'=>'quantidade'|'valor','min'=>float] ou null.
+ */
+function campanhaTotalCond(array $rows): ?array {
+    $modo = $rows[0]['cond_total_modo'] ?? null;
+    $min  = (float)($rows[0]['cond_total_min'] ?? 0);
+    if (!in_array($modo, ['quantidade', 'valor'], true) || $min <= 0) return null;
+    return ['modo' => $modo, 'min' => $min];
+}
+
+/**
+ * Faixas 2..N das campanhas com desconto escalonado (cache por requisição).
+ * @return array codigo => [faixa => ['pct'=>float,'total_min'=>?float,'mins'=>[cond_idx=>float]]]
+ */
+function campanhasFaixas(): array {
+    static $cache = null;
+    if ($cache !== null) return $cache;
+    $cache = [];
+    try {
+        foreach (db()->query("SELECT codigo_campanha, faixa, percentual, total_min FROM campanha_faixas ORDER BY faixa")->fetchAll() as $f) {
+            $cache[$f['codigo_campanha']][(int)$f['faixa']] = [
+                'pct' => (float)$f['percentual'],
+                'total_min' => $f['total_min'] !== null ? (float)$f['total_min'] : null,
+                'mins' => [],
+            ];
+        }
+        foreach (db()->query("SELECT codigo_campanha, faixa, cond_idx, minimo FROM campanha_faixa_minimos")->fetchAll() as $m) {
+            if (isset($cache[$m['codigo_campanha']][(int)$m['faixa']])) {
+                $cache[$m['codigo_campanha']][(int)$m['faixa']]['mins'][(int)$m['cond_idx']] = (float)$m['minimo'];
+            }
+        }
+    } catch (PDOException $e) { $cache = []; }
+    return $cache;
+}
+
+/**
+ * Níveis (faixas) de uma campanha: a faixa 1 é a campanha como cadastrada; as faixas 2..N
+ * trocam os mínimos das condições, o mínimo total e o %. Campanha sem faixas = 1 nível.
+ * @return array [['faixa'=>int,'pct'=>float,'rows'=>[...],'conds'=>[...]], ...] (faixa 1 primeiro)
+ */
+function campanhaNiveisFaixa(string $code, array $rows, array $conds): array {
+    $niveis = [['faixa' => 1, 'pct' => (float)($rows[0]['desconto'] ?? 0), 'rows' => $rows, 'conds' => $conds]];
+    if (($rows[0]['desconto_modo'] ?? 'fixo') !== 'faixas') return $niveis;
+    foreach (campanhasFaixas()[$code] ?? [] as $k => $fx) {
+        $r = $rows; $c = array_values($conds);
+        if ($fx['total_min'] !== null) $r[0]['cond_total_min'] = $fx['total_min'];
+        foreach ($c as $i => &$cd) {
+            if (!array_key_exists($i, $fx['mins'])) continue;
+            if (($cd['criterio_modo'] ?? 'quantidade') === 'valor') $cd['valor_min'] = $fx['mins'][$i];
+            else $cd['quantidade'] = (int)$fx['mins'][$i];
+        }
+        unset($cd);
+        $niveis[] = ['faixa' => $k, 'pct' => $fx['pct'], 'rows' => $r, 'conds' => $c];
+    }
+    return $niveis;
+}
+
+/**
+ * Faixas de uma campanha no formato usado pelo JS das telas de pedido.
+ * @param array  $condsJs condições já no formato JS ([..., 'modo','qtd','valorMin']), na ordem da campanha
+ * @param ?array $total   mínimo total da faixa 1 (campanhaTotalCond) ou null
+ * @return array|null [['faixa'=>1,'pct'=>..,'total'=>..,'conds'=>[...]], ...] ou null se a campanha não usa faixas
+ */
+function campanhaNiveisJs(string $code, array $row, array $condsJs, ?array $total): ?array {
+    if (($row['tipo'] ?? 'desconto') !== 'desconto' || ($row['desconto_modo'] ?? 'fixo') !== 'faixas') return null;
+    $condsJs = array_values($condsJs);
+    $niveis = [['faixa' => 1, 'pct' => (float)$row['desconto'], 'total' => $total, 'conds' => $condsJs]];
+    foreach (campanhasFaixas()[$code] ?? [] as $k => $fx) {
+        $c = $condsJs;
+        foreach ($c as $i => &$cd) {
+            if (!array_key_exists($i, $fx['mins'])) continue;
+            if (($cd['modo'] ?? 'quantidade') === 'valor') $cd['valorMin'] = $fx['mins'][$i];
+            else $cd['qtd'] = (int)$fx['mins'][$i];
+        }
+        unset($cd);
+        $t = $total && $fx['total_min'] !== null ? ['modo' => $total['modo'], 'min' => $fx['total_min']] : $total;
+        $niveis[] = ['faixa' => $k, 'pct' => $fx['pct'], 'total' => $t, 'conds' => $c];
+    }
+    return $niveis;
+}
+
+/**
+ * Maior faixa atingida de uma campanha (de cima para baixo). Sem faixas = a própria campanha.
+ * @return array|null ['faixa','pct','rows','conds','trigger'=>avaliarCampanhaTrigger()] ou null
+ */
+function campanhaFaixaAtingida(string $code, array $rows, array $conds, array $ctx): ?array {
+    foreach (array_reverse(campanhaNiveisFaixa($code, $rows, $conds)) as $nv) {
+        $r = avaliarCampanhaTrigger($nv['rows'], $nv['conds'], $ctx);
+        if ($r['acionada']) return $nv + ['trigger' => $r];
+    }
+    return null;
+}
+
+/** Soma qtd ou valor dos itens do contexto que batem em QUALQUER um dos filtros (sem contar em dobro). */
+function campanhaSomaFiltros(array $itens, array $filtros, string $criterio): float {
+    $tot = 0.0;
+    foreach ($itens as $it) {
+        foreach ($filtros as $f) {
+            if (itemMatchFiltro($it, $f)) { $tot += $criterio === 'valor' ? (float)$it['valor'] : (int)$it['qtd']; break; }
+        }
+    }
+    return $tot;
+}
+
+/**
+ * Operador entre as condições da campanha: 'E' (todas) ou 'OU' (qualquer uma).
+ */
+function campanhaOperador(array $rows): string {
+    return strtoupper((string)($rows[0]['cond_operador'] ?? 'E')) === 'OU' ? 'OU' : 'E';
+}
+
+/**
  * Avalia o gatilho de UMA campanha contra o contexto da venda.
- * Novo modelo (tem condições): TODAS as condições precisam ser atingidas (E).
+ * Novo modelo (tem condições): conforme o operador da campanha, TODAS (E) ou
+ * QUALQUER UMA (OU) das condições precisa ser atingida. No OU, o multiplicador
+ * é o maior entre as condições atingidas e só elas viram grupos-alvo.
+ * Condição com mínimo 0 é só filtro (conta para o mínimo total, sem exigência própria).
+ * Mínimo TOTAL (opcional): soma dos itens de todas as condições; é exigido além do E/OU.
  * Cada condição pode exigir uma quantidade mínima OU um valor mínimo (somado
  * dentro da própria categoria/produto da condição). Modelo legado (sem
  * condições): produtos somados / categoria, como historicamente.
@@ -2839,9 +2977,13 @@ function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
     //      composto (linha E grupo E subgrupo E produto) com mínimo por qtd OU valor ----
     if ($conds) {
         $itens = $ctx['itens'] ?? [];
+        $ou = campanhaOperador($rows) === 'OU';
+        $temMinimo = false;
         $gruposAlvo = [];
+        $gruposAtingidos = [];
         $allMet = true;
         $minMult = PHP_INT_MAX;
+        $maxMult = 0;
         foreach ($conds as $c) {
             $f = condFiltro($c);
             if (!filtroValido($f)) { $allMet = false; continue; }
@@ -2852,18 +2994,43 @@ function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
                 if (!itemMatchFiltro($it, $f)) continue;
                 $totQ += (int)$it['qtd']; $totV += (float)$it['valor'];
             }
-            if (($c['criterio_modo'] ?? 'quantidade') === 'valor') {
-                $alvoMin = (float)($c['valor_min'] ?? 0);
-                if ($alvoMin > 0 && $totV >= $alvoMin) $minMult = min($minMult, (int)floor($totV / $alvoMin));
-                else $allMet = false;
+            $m = 0;
+            $ehValor = ($c['criterio_modo'] ?? 'quantidade') === 'valor';
+            $minCond = $ehValor ? (float)($c['valor_min'] ?? 0) : (int)$c['quantidade'];
+            if ($minCond <= 0) { $gruposAtingidos[] = $f; continue; }   // só filtro (vale o mínimo total)
+            $temMinimo = true;
+            if ($ehValor) {
+                if ($totV >= $minCond) $m = (int)floor($totV / $minCond);
             } else {
-                $q = (int)$c['quantidade'];
-                if ($q > 0 && $totQ >= $q) $minMult = min($minMult, intdiv($totQ, $q));
-                else $allMet = false;
+                if ($totQ >= $minCond) $m = intdiv($totQ, (int)$minCond);
+            }
+            if ($m >= 1) {
+                $minMult = min($minMult, $m);
+                $maxMult = max($maxMult, $m);
+                $gruposAtingidos[] = $f;
+            } else {
+                $allMet = false;
             }
         }
-        if ($allMet && $gruposAlvo && $minMult >= 1) {
-            return ['acionada' => true, 'mult' => $minMult, 'gruposAlvo' => $gruposAlvo];
+        // Mínimo total (soma dos itens de todas as condições)
+        $multTotal = PHP_INT_MAX;
+        $total = campanhaTotalCond($rows);
+        if ($total) {
+            $soma = campanhaSomaFiltros($itens, $gruposAlvo, $total['modo']);
+            if ($soma + 0.0001 < $total['min']) return ['acionada' => false, 'mult' => 0, 'gruposAlvo' => $gruposAlvo];
+            $multTotal = (int)floor(($soma + 0.0001) / $total['min']);
+        } elseif (!$temMinimo) {
+            return ['acionada' => false, 'mult' => 0, 'gruposAlvo' => $gruposAlvo];   // sem nenhum mínimo
+        }
+        if (!$gruposAlvo) return ['acionada' => false, 'mult' => 0, 'gruposAlvo' => []];
+        if ($ou) {
+            if ($temMinimo && $maxMult < 1) return ['acionada' => false, 'mult' => 0, 'gruposAlvo' => $gruposAlvo];
+            $mult = min($temMinimo ? $maxMult : PHP_INT_MAX, $multTotal);
+            return ['acionada' => true, 'mult' => $mult, 'gruposAlvo' => $gruposAtingidos];
+        }
+        if ($allMet) {
+            $mult = min($minMult, $multTotal);
+            if ($mult >= 1) return ['acionada' => true, 'mult' => $mult, 'gruposAlvo' => $gruposAlvo];
         }
         return ['acionada' => false, 'mult' => 0, 'gruposAlvo' => $gruposAlvo];
     }
@@ -2929,6 +3096,8 @@ function alvoFiltro(array $a): array {
         if ($tipo === 'produto') $f['produto'] = (int)$val;
         elseif (in_array($tipo, ['linha', 'grupo', 'subgrupo'], true)) $f[$tipo] = $val;
     }
+    // % próprio do alvo (null = usa o % padrão da campanha)
+    $f['desconto'] = isset($a['desconto']) && $a['desconto'] !== null && $a['desconto'] !== '' ? (float)$a['desconto'] : null;
     return $f;
 }
 
@@ -3009,6 +3178,11 @@ function campanhasAtingidasResumo(array $ctxCamp): array {
         $alvos = [];
         foreach ($res['gruposAlvo'] as $ga) $alvos[] = rotuloFiltro(alvoParaFiltro($ga), $prodNome);
 
+        $nivel = null;
+        if ($conds && ($rows[0]['tipo'] ?? 'desconto') === 'desconto' && ($rows[0]['desconto_modo'] ?? 'fixo') === 'faixas') {
+            $nivel = campanhaFaixaAtingida((string)$code, $rows, $conds, $ctxCamp);
+            if ($nivel) { $rows = $nivel['rows']; $conds = $nivel['conds']; }
+        }
         if ($conds) {
             $partes = [];
             foreach ($conds as $c) {
@@ -3019,16 +3193,23 @@ function campanhasAtingidasResumo(array $ctxCamp): array {
                     ? rotuloFiltro($f, $prodNome) . ': ' . moedaBR($tv) . '/' . moedaBR((float)($c['valor_min'] ?? 0))
                     : rotuloFiltro($f, $prodNome) . ': ' . $tq . '/' . (int)$c['quantidade'] . ' un.';
             }
-            $detalhe = implode(' · E · ', $partes);
+            $detalhe = implode(' · ' . campanhaOperador($rows) . ' · ', $partes);
+            if ($tot = campanhaTotalCond($rows)) {
+                $fs = array_values(array_filter(array_map('condFiltro', $conds), 'filtroValido'));
+                $sm = campanhaSomaFiltros($itens, $fs, $tot['modo']);
+                $detalhe .= ' · Total: ' . ($tot['modo'] === 'valor' ? moedaBR($sm) . '/' . moedaBR($tot['min']) : (int)$sm . '/' . (int)$tot['min'] . ' un.');
+            }
         } else {
             $min = (int)($rows[0]['quantidade'] ?? 0);
             $detalhe = 'atingido ' . ($res['mult'] * $min) . ' un. (mín. ' . $min . ')';
         }
 
+        $descResumo = $nivel ? $nivel['pct'] : (float)$rows[0]['desconto'];
+        if ($nivel) $detalhe = 'Faixa ' . $nivel['faixa'] . ' · ' . $detalhe;
         $out[] = [
             'codigo'   => $code,
             'tipo'     => $rows[0]['tipo'] ?? 'desconto',
-            'desconto' => (float)$rows[0]['desconto'],
+            'desconto' => $descResumo,
             'bonus'    => $bonifMap[$code] ?? [],
             'alvo'     => implode(', ', array_unique($alvos)),
             'detalhe'  => $detalhe,
@@ -3041,6 +3222,9 @@ function campanhasAtingidasResumo(array $ctxCamp): array {
 /**
  * Campanhas de DESCONTO do NOVO modelo (com condições) que foram acionadas.
  * O modelo legado continua sendo avaliado item a item nas telas de pedido.
+ * Cada alvo explícito com % próprio vira uma entrada separada; os alvos sem %
+ * próprio (ou os grupos do gatilho, quando não há alvo explícito) usam o % padrão.
+ * Desconto por faixas: usa o % da maior faixa atingida (o % por alvo é ignorado).
  * @return array  [['desconto'=>float,'gruposAlvo'=>[['tipo','valor'],...]], ...]
  */
 function avaliarCampanhasDescontoAvancadas(array $ctx): array {
@@ -3048,12 +3232,19 @@ function avaliarCampanhasDescontoAvancadas(array $ctx): array {
     foreach (campanhasAgrupadas() as $code => $g) {
         if (empty($g['conds'])) continue;                                  // só novo modelo
         if (($g['rows'][0]['tipo'] ?? 'desconto') !== 'desconto') continue;
-        $r = avaliarCampanhaTrigger($g['rows'], $g['conds'], $ctx);
-        if (!$r['acionada']) continue;
-        $out[] = [
-            'desconto'   => (float)$g['rows'][0]['desconto'],
-            'gruposAlvo' => alvosDescontoCampanha((string)$code, $r['gruposAlvo']),
-        ];
+        $ehFaixas = ($g['rows'][0]['desconto_modo'] ?? 'fixo') === 'faixas';
+        // Faixas: vale a MAIOR faixa cujas condições foram atingidas; o % dela vai para os alvos
+        $nivel = campanhaFaixaAtingida((string)$code, $g['rows'], $g['conds'], $ctx);
+        if (!$nivel) continue;
+        $r = $nivel['trigger'];
+        $padrao = $nivel['pct'];
+        $porPct = [];
+        foreach (alvosDescontoCampanha((string)$code, $r['gruposAlvo']) as $ga) {
+            $pct = !$ehFaixas && isset($ga['desconto']) && $ga['desconto'] !== null ? (float)$ga['desconto'] : $padrao;
+            if ($pct <= 0) continue;
+            $porPct[(string)$pct][] = $ga;
+        }
+        foreach ($porPct as $pct => $grupos) $out[] = ['desconto' => (float)$pct, 'gruposAlvo' => $grupos];
     }
     return $out;
 }

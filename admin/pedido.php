@@ -37,7 +37,7 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
     $canalVendaId = (int)($canalData['canal_venda_id'] ?? 0);
     $colPreco     = colPrecoMoeda($canalData['moeda'] ?? 'BRL');
 
-    $camps = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas ORDER BY desconto DESC')->fetchAll();
+    $camps = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas WHERE COALESCE(ativo,1) = 1 ORDER BY desconto DESC')->fetchAll();
     // Campanhas por produto: código -> lista de produto_id (mínimo soma todos os produtos da campanha)
     $campProdIds = [];
     foreach ($camps as $camp) {
@@ -118,7 +118,7 @@ function recalcularDescontosCampanha(string $lote_id, float $dCliente, float $dC
 // Melhor desconto de campanha (modelo legado por quantidade + modelo avançado) para um item isolado.
 function melhorCampanhaItem(array $prod, int $qtd, int $canalVendaId): float {
     $campDesc = 0.0;
-    foreach (db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas')->fetchAll() as $camp) {
+    foreach (db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas WHERE COALESCE(ativo,1) = 1')->fetchAll() as $camp) {
         if ((int)$camp['quantidade'] <= 0) continue; // novo modelo (condições) — tratado pelo bloco avançado
         if ($qtd < (int)$camp['quantidade']) continue;
         if ($camp['produto_id'] && (int)$camp['produto_id'] !== (int)$prod['id']) continue;
@@ -291,7 +291,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $desconto    = ((float)($ped['desconto_cliente'] ?? 0) + (float)($ped['desconto_canal'] ?? 0)) / 100;
                 $valor_total = $qtd * (float)$prod['preco'] * (1 - $desconto);
                 // Aplica desconto de campanha
-                $camps_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas')->fetchAll();
+                $camps_all = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto FROM campanhas WHERE COALESCE(ativo,1) = 1')->fetchAll();
                 $campDesc  = 0;
                 foreach ($camps_all as $camp) {
                     if ((int)$camp['quantidade'] <= 0) continue; // novo modelo (condições) — tratado pelo bloco avançado
@@ -516,7 +516,7 @@ $margemNegociacao = (float)($pedido['margem_negociacao'] ?? 0);
 extract(calcularMargemPedido($pedidoId));
 
 $produtos = db()->query("SELECT p.id, p.descricao_pt, p.codigo_produto, p.codigo_barra, p.multiplo, p.linha, p.grupo, p.subgrupo, COALESCE($colPreco, p.vendas_varejo) as preco FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id WHERE p.status = \"ativo\" ORDER BY p.descricao_pt")->fetchAll();
-$campanhas_edit = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto, codigo_campanha FROM campanhas ORDER BY desconto DESC')->fetchAll();
+$campanhas_edit = db()->query('SELECT produto_id, linha, grupo, subgrupo, quantidade, desconto, codigo_campanha FROM campanhas WHERE COALESCE(ativo,1) = 1 ORDER BY desconto DESC')->fetchAll();
 
 // Logs do pedido — busca por numero_pedido para incluir todos os itens do lote
 $logsStmt = db()->prepare('SELECT * FROM pedido_logs WHERE numero_pedido = ? ORDER BY created_at DESC');

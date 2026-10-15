@@ -15,11 +15,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $tipo  = ($_POST['tipo'] ?? 'desconto') === 'bonificacao' ? 'bonificacao' : 'desconto';
             $canal = $_POST['canal_venda_id'] ?: null;
             $ativo = ($_POST['ativo'] ?? '1') === '0' ? 0 : 1;
-            $desc  = $tipo === 'bonificacao' ? 0.0 : (float)$_POST['desconto'];
-            if ($tipo === 'desconto' && $desc <= 0) throw new Exception('Informe o percentual de desconto.');
+            $desc  = $tipo === 'bonificacao' ? 0.0 : (float)str_replace(',', '.', $_POST['desconto'] ?? '0');
 
-            // Condições combinadas (E): cada condição é um filtro composto
-            // (linha E grupo E subgrupo E produto) + mínimo por quantidade OU valor.
+            // Condições combinadas (E ou OU, conforme o operador): cada condição é um filtro
+            // composto (linha E grupo E subgrupo E produto) + mínimo por quantidade OU valor.
+            $condOp = ($_POST['cond_operador'] ?? 'E') === 'OU' ? 'OU' : 'E';
+            $obsCamp = trim($_POST['observacao'] ?? '');
             $condClean = [];
             foreach (($_POST['cond'] ?? []) as $c) {
                 $fl = trim($c['linha']    ?? '');
@@ -28,16 +29,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $fp = (int)($c['produto']  ?? 0);
                 if ($fl === '' && $fg === '' && $fs === '' && $fp <= 0) continue; // sem nenhum filtro
                 $modo = ($c['modo'] ?? 'quantidade') === 'valor' ? 'valor' : 'quantidade';
-                $min  = (float)str_replace(',', '.', $c['min'] ?? '0');
-                if ($modo === 'valor') {
-                    if ($min <= 0) continue;
-                    $condClean[] = ['valor', 0, $min, $fl, $fg, $fs, $fp];
-                } else {
-                    if ((int)$min <= 0) continue;
-                    $condClean[] = ['quantidade', (int)$min, null, $fl, $fg, $fs, $fp];
-                }
+                $min  = max(0, (float)str_replace(',', '.', $c['min'] ?? '0'));   // 0 = sem mínimo próprio (só filtro)
+                $fxMin = [];   // mínimos desta condição nas faixas 2..N (desconto por faixas)
+                foreach (($c['fx'] ?? []) as $k => $v) $fxMin[(int)$k] = max(0, (float)str_replace(',', '.', $v));
+                if ($modo === 'valor') $condClean[] = ['valor', 0, $min, $fl, $fg, $fs, $fp, $fxMin];
+                else                   $condClean[] = ['quantidade', (int)$min, null, $fl, $fg, $fs, $fp, $fxMin];
             }
-            if (!$condClean) throw new Exception('Adicione ao menos uma condição (com categoria/produto e mínimo).');
+            if (!$condClean) throw new Exception('Adicione ao menos uma condição (com categoria/produto).');
+
+            // Mínimo TOTAL das condições (opcional): soma dos itens de todas as condições
+            $totModo = ($_POST['cond_total_modo'] ?? '') === 'valor' ? 'valor' : (($_POST['cond_total_modo'] ?? '') === 'quantidade' ? 'quantidade' : null);
+            $totMin  = (float)str_replace(',', '.', $_POST['cond_total_min'] ?? '0');
+            if (!$totModo || $totMin <= 0) { $totModo = null; $totMin = null; }
+            $semMinProprio = array_filter($condClean, fn($c) => ($c[0] === 'valor' ? $c[2] : $c[1]) <= 0);
+            if ($semMinProprio && !$totModo) throw new Exception('Informe o mínimo de cada condição ou um mínimo total das condições.');
 
             // Alvos do desconto (opcional): filtro composto (linha E grupo E subgrupo E produto)
             $alvoClean = [];
@@ -48,8 +53,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $fs = trim($al['subgrupo'] ?? '');
                     $fp = (int)($al['produto']  ?? 0);
                     if ($fl === '' && $fg === '' && $fs === '' && $fp <= 0) continue;
-                    $alvoClean[] = [$fl, $fg, $fs, $fp];
+                    $ad = trim(str_replace(',', '.', $al['desconto'] ?? ''));
+                    $ad = $ad === '' ? null : (float)$ad;   // vazio = usa o % padrão da campanha
+                    if ($ad !== null && $ad <= 0) $ad = null;
+                    $alvoClean[] = [$fl, $fg, $fs, $fp, $ad];
                 }
+            }
+
+            // Forma do desconto: fixo (% padrão / % por alvo) ou faixas escalonadas das condições.
+            // Faixa 1 = mínimos das condições + mínimo total + % padrão; faixas 2..N = mínimos/total/% mais altos.
+            $descModo = ($tipo === 'desconto' && ($_POST['desconto_modo'] ?? 'fixo') === 'faixas') ? 'faixas' : 'fixo';
+            $faixasClean = [];
+            if ($descModo === 'faixas') {
+                if ($desc <= 0) throw new Exception('Faixa 1: informe o percentual de desconto.');
+                foreach ($alvoClean as &$al) $al[4] = null;   // nas faixas o % vem da faixa (não por alvo)
+                unset($al);
+                $pctAnt = $desc;
+                foreach (($_POST['fx_pct'] ?? []) as $k => $pc) {
+                    $k = (int)$k; if ($k < 2) continue;
+                    $pc = (float)str_replace(',', '.', $pc);
+                    if ($pc <= 0) throw new Exception("Faixa $k: informe o percentual de desconto.");
+                    $mins = [];
+                    foreach ($condClean as $ci => $c) {
+                        $min1 = $c[0] === 'valor' ? $c[2] : $c[1];
+                        $mk   = $c[7][$k] ?? 0;
+                        if ($min1 > 0 && $mk <= 0) throw new Exception("Faixa $k: informe o mínimo de todas as condições.");
+                        $mins[$ci] = $mk;
+                    }
+                    $tk = null;
+                    if ($totModo) {
+                        $tk = (float)str_replace(',', '.', $_POST['fx_total'][$k] ?? '0');
+                        if ($tk <= 0) throw new Exception("Faixa $k: informe o mínimo total das condições.");
+                    }
+                    if ($pc <= $pctAnt) throw new Exception("Faixa $k: o percentual deve ser maior que o da faixa anterior.");
+                    $pctAnt = $pc;
+                    $faixasClean[$k] = ['pct' => $pc, 'total' => $tk, 'mins' => $mins];
+                }
+                if (!$faixasClean) throw new Exception('Adicione ao menos a Faixa 2 (ou use "Percentual fixo").');
+                ksort($faixasClean);
+            } elseif ($tipo === 'desconto') {
+                // % padrão é obrigatório, a menos que todos os alvos tenham % próprio
+                $semPct = !$alvoClean || array_filter($alvoClean, fn($al) => $al[4] === null);
+                if ($desc <= 0 && $semPct) throw new Exception('Informe o percentual de desconto padrão (ou um % em cada produto a conceder o desconto).');
             }
 
             // Bonificação: modo fixo ou selecionável; selecionável por lista de produtos ou categoria
@@ -97,15 +142,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 db()->prepare('DELETE FROM campanha_condicoes WHERE codigo_campanha=?')->execute([$delCod]);
                 try { db()->prepare('DELETE FROM campanha_desconto_alvo WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
                 try { db()->prepare('DELETE FROM campanha_bonif_pool WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
+                try { db()->prepare('DELETE FROM campanha_faixas WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
+                try { db()->prepare('DELETE FROM campanha_faixa_minimos WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
             }
 
             // Linha cabeçalho — parâmetros da campanha (gatilho fica nas condições)
             db()->prepare('INSERT INTO campanhas
-                (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo]);
+                (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo,cond_operador,observacao,cond_total_modo,cond_total_min,desconto_modo)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo, $condOp, $obsCamp !== '' ? $obsCamp : null, $totModo, $totMin, $descModo]);
 
-            // Condições (E) — filtro composto por condição
+            // Condições (E/OU) — filtro composto por condição
             $insC = db()->prepare('INSERT INTO campanha_condicoes
                 (codigo_campanha,criterio_tipo,criterio_valor,quantidade,criterio_modo,valor_min,cond_linha,cond_grupo,cond_subgrupo,cond_produto_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?)');
@@ -117,9 +164,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Alvos do desconto — filtro composto (linha, grupo, subgrupo, produto)
             if ($tipo === 'desconto' && $alvoClean) {
                 $insA = db()->prepare('INSERT INTO campanha_desconto_alvo
-                    (codigo_campanha,alvo_tipo,alvo_valor,alvo_linha,alvo_grupo,alvo_subgrupo,alvo_produto_id)
-                    VALUES (?,?,?,?,?,?,?)');
-                foreach ($alvoClean as $al) $insA->execute([$cod, 'composto', '', $al[0] ?: null, $al[1] ?: null, $al[2] ?: null, $al[3] ?: null]);
+                    (codigo_campanha,alvo_tipo,alvo_valor,alvo_linha,alvo_grupo,alvo_subgrupo,alvo_produto_id,desconto)
+                    VALUES (?,?,?,?,?,?,?,?)');
+                foreach ($alvoClean as $al) $insA->execute([$cod, 'composto', '', $al[0] ?: null, $al[1] ?: null, $al[2] ?: null, $al[3] ?: null, $al[4]]);
+            }
+            // Faixas escalonadas das condições (faixas 2..N; a faixa 1 é a própria campanha)
+            if ($faixasClean) {
+                $insF = db()->prepare('INSERT INTO campanha_faixas (codigo_campanha,faixa,percentual,total_min) VALUES (?,?,?,?)');
+                $insM = db()->prepare('INSERT INTO campanha_faixa_minimos (codigo_campanha,faixa,cond_idx,minimo) VALUES (?,?,?,?)');
+                foreach ($faixasClean as $k => $fx) {
+                    $insF->execute([$cod, $k, $fx['pct'], $fx['total']]);
+                    foreach ($fx['mins'] as $ci => $mn) $insM->execute([$cod, $k, $ci, $mn]);
+                }
             }
 
             // Bonificação: lista de produtos ou pool por categoria
@@ -165,6 +221,12 @@ foreach ($rows as $r) {
             'bonif_selec_modo'   => $r['bonif_selec_modo'] ?? 'produtos',
             'bonif_limite_tipo'  => $r['bonif_limite_tipo'] ?? 'quantidade',
             'bonif_limite_valor' => $r['bonif_limite_valor'] ?? null,
+            'cond_operador'      => ($r['cond_operador'] ?? 'E') === 'OU' ? 'OU' : 'E',
+            'observacao'         => (string)($r['observacao'] ?? ''),
+            'cond_total_modo'    => $r['cond_total_modo'] ?? null,
+            'cond_total_min'     => isset($r['cond_total_min']) ? (float)$r['cond_total_min'] : null,
+            'desconto_modo'      => ($r['desconto_modo'] ?? 'fixo') === 'faixas' ? 'faixas' : 'fixo',
+            'faixas'             => [],
             'produtos'           => [],   // legado (gatilho por produto)
             'bonificados'        => [],
             'condicoes'          => [],
@@ -200,7 +262,7 @@ foreach (db()->query('SELECT cb.codigo_campanha, cb.produto_id, cb.quantidade, p
     }
 }
 
-// Condições combinadas (E) por campanha — cada uma é um filtro composto
+// Condições combinadas (E/OU) por campanha — cada uma é um filtro composto
 $condCols = 'codigo_campanha, criterio_tipo, criterio_valor, quantidade, criterio_modo, valor_min, cond_linha, cond_grupo, cond_subgrupo, cond_produto_id';
 try { $condRows = db()->query("SELECT $condCols FROM campanha_condicoes ORDER BY id")->fetchAll(); }
 catch (PDOException $e) {
@@ -223,7 +285,7 @@ foreach ($condRows as $cc) {
 
 // Alvos de desconto por campanha — filtro composto (linha, grupo, subgrupo, produto)
 try {
-    $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id
+    $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor, alvo_linha, alvo_grupo, alvo_subgrupo, alvo_produto_id, desconto
         FROM campanha_desconto_alvo ORDER BY id')->fetchAll();
 } catch (PDOException $e) {
     try { $alvoRows = db()->query('SELECT codigo_campanha, alvo_tipo, alvo_valor FROM campanha_desconto_alvo ORDER BY id')->fetchAll(); }
@@ -231,6 +293,12 @@ try {
 }
 foreach ($alvoRows as $a) {
     if (isset($campanhas[$a['codigo_campanha']])) $campanhas[$a['codigo_campanha']]['desconto_alvos'][] = alvoFiltro($a);
+}
+
+// Faixas 2..N do desconto escalonado (a faixa 1 é a própria campanha)
+foreach (campanhasFaixas() as $code => $fxs) {
+    if (!isset($campanhas[$code])) continue;
+    foreach ($fxs as $k => $fx) $campanhas[$code]['faixas'][] = ['faixa' => $k, 'pct' => $fx['pct'], 'total_min' => $fx['total_min'], 'mins' => (object)$fx['mins']];
 }
 
 // Pool de bonificação por campanha (critério único: tipo + valor)
@@ -277,7 +345,8 @@ function critLabel(array $cd, array $prodById): string {
     if (!empty($cd['subgrupo'])) $parts[] = 'Subgrupo ' . $cd['subgrupo'];
     if (!empty($cd['produto']))  $parts[] = 'Produto ' . ($prodById[(int)$cd['produto']] ?? ('#' . $cd['produto']));
     $out = implode(' + ', $parts);
-    if (array_key_exists('modo', $cd)) {
+    $minCd = ($cd['modo'] ?? 'quantidade') === 'valor' ? (float)($cd['valor_min'] ?? 0) : (int)($cd['qtd'] ?? 0);
+    if (array_key_exists('modo', $cd) && $minCd > 0) {
         $out .= ($cd['modo'] ?? 'quantidade') === 'valor'
             ? ' ≥ ' . moedaBR($cd['valor_min'] ?? 0)
             : ' ≥ ' . (int)($cd['qtd'] ?? 0) . ' un.';
@@ -299,12 +368,33 @@ require_once LAYOUT_PATH . '/header.php';
         <div class="table-responsive">
         <table class="table table-hover mb-0 align-middle">
             <thead class="table-light">
-                <tr><th>Código</th><th>Status</th><th>Condições (E)</th><th>Canal</th><th>Tipo / Recompensa</th><th>Ações</th></tr>
+                <tr><th>Código</th><th>Status</th><th>Condições</th><th>Canal</th><th>Tipo / Recompensa</th><th>Ações</th></tr>
             </thead>
             <tbody>
             <?php if ($campanhas): foreach ($campanhas as $c):
                 $criterios = array_map(fn($cd) => critLabel($cd, $prodById), $c['condicoes']);
-                $alvos     = array_map(fn($cd) => critLabel($cd, $prodById), $c['desconto_alvos']);
+                $ehFaixas  = $c['tipo'] === 'desconto' && $c['desconto_modo'] === 'faixas';
+                $fmtPct    = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%';
+                // Linhas das faixas: "F1: Grupo X ≥ 100 un. E Grupo Y ≥ 10 un. → 5%"
+                $linhasFaixa = [];
+                if ($ehFaixas) {
+                    $fmtTot = fn($v) => $c['cond_total_modo'] === 'valor' ? moedaBR($v) : (int)$v . ' un.';
+                    $linhasFaixa[] = ['F1', implode(' ' . $c['cond_operador'] . ' ', $criterios)
+                        . ($c['cond_total_modo'] && $c['cond_total_min'] > 0 ? ' · Σ ≥ ' . $fmtTot($c['cond_total_min']) : ''), $fmtPct($c['desconto'])];
+                    foreach ($c['faixas'] as $fx) {
+                        $mins = (array)$fx['mins'];
+                        $partes = [];
+                        foreach ($c['condicoes'] as $ci => $cd) {
+                            $cd2 = $cd;
+                            if (($cd['modo'] ?? 'quantidade') === 'valor') $cd2['valor_min'] = $mins[$ci] ?? 0; else $cd2['qtd'] = (int)($mins[$ci] ?? 0);
+                            $partes[] = critLabel($cd2, $prodById);
+                        }
+                        $linhasFaixa[] = ['F' . $fx['faixa'], implode(' ' . $c['cond_operador'] . ' ', $partes)
+                            . ($fx['total_min'] ? ' · Σ ≥ ' . $fmtTot($fx['total_min']) : ''), $fmtPct($fx['pct'])];
+                    }
+                }
+                $alvos     = array_map(fn($cd) => critLabel($cd, $prodById)
+                    . ' (' . rtrim(rtrim(number_format($cd['desconto'] ?? (float)$c['desconto'], 2, ',', '.'), '0'), ',') . '%)', $c['desconto_alvos']);
             ?>
                 <tr class="<?= $c['ativo'] ? '' : 'opacity-50' ?>">
                     <td><strong><?= e($c['codigo_campanha']) ?></strong></td>
@@ -316,8 +406,25 @@ require_once LAYOUT_PATH . '/header.php';
                         <?php endif; ?>
                     </td>
                     <td class="small">
-                        <?php if ($criterios): ?>
-                            <?= e(implode(' E ', $criterios)) ?>
+                        <?php if ($ehFaixas): ?>
+                            <span class="badge bg-info text-dark me-1"><?= $c['cond_operador'] === 'OU' ? 'Qualquer uma (OU)' : 'Todas (E)' ?></span>
+                            <?php foreach ($linhasFaixa as [$fxNome, $fxTxt, $fxPct]): ?>
+                                <div><strong><?= e($fxNome) ?>:</strong> <?= e($fxTxt) ?> <span class="badge bg-success"><?= e($fxPct) ?></span></div>
+                            <?php endforeach; ?>
+                            <?php if ($c['observacao'] !== ''): ?>
+                                <div class="text-primary mt-1" title="Observação — exibida no pedido no lugar da condição"><i class="bi bi-chat-left-text me-1"></i><?= e($c['observacao']) ?></div>
+                            <?php endif; ?>
+                        <?php elseif ($criterios): ?>
+                            <?php if (count($criterios) > 1): ?>
+                                <span class="badge <?= $c['cond_operador'] === 'OU' ? 'bg-warning text-dark' : 'bg-info text-dark' ?> me-1"><?= $c['cond_operador'] === 'OU' ? 'Qualquer uma (OU)' : 'Todas (E)' ?></span>
+                            <?php endif; ?>
+                            <?= e(implode(' ' . $c['cond_operador'] . ' ', $criterios)) ?>
+                            <?php if ($c['cond_total_modo'] && $c['cond_total_min'] > 0): ?>
+                                <div class="fw-semibold mt-1"><i class="bi bi-sigma me-1"></i>Total das condições ≥ <?= $c['cond_total_modo'] === 'valor' ? e(moedaBR($c['cond_total_min'])) : (int)$c['cond_total_min'] . ' un.' ?></div>
+                            <?php endif; ?>
+                            <?php if ($c['observacao'] !== ''): ?>
+                                <div class="text-primary mt-1" title="Observação — exibida no pedido no lugar da condição"><i class="bi bi-chat-left-text me-1"></i><?= e($c['observacao']) ?></div>
+                            <?php endif; ?>
                         <?php else: ?>
                             <span class="text-muted">—</span>
                         <?php endif; ?>
@@ -342,11 +449,19 @@ require_once LAYOUT_PATH . '/header.php';
                                 </div>
                             <?php endif; ?>
                         <?php else: ?>
-                            <span class="badge bg-success"><?= e($c['desconto']) ?>%</span>
+                            <?php if ($ehFaixas): ?>
+                                <span class="badge bg-success">Faixas <?= e($fmtPct($c['desconto'])) ?> → <?= e($fmtPct(max(array_merge([(float)$c['desconto']], array_column($c['faixas'], 'pct'))))) ?></span>
+                                <div class="small text-muted" style="max-width:300px">
+                                    <?php if ($alvos): ?>Aplica em: <?= e(implode(', ', array_map(fn($a) => preg_replace('/ \([^)]*%\)$/', '', $a), $alvos))) ?>
+                                    <?php else: ?><span class="text-muted">Aplica nos itens do gatilho</span><?php endif; ?>
+                                </div>
+                            <?php else: ?>
+                            <?php if ((float)$c['desconto'] > 0): ?><span class="badge bg-success"><?= e($c['desconto']) ?>%</span><?php endif; ?>
                             <div class="small text-muted" style="max-width:300px">
                                 <?php if ($alvos): ?>Aplica em: <?= e(implode(', ', $alvos)) ?>
                                 <?php else: ?><span class="text-muted">Aplica nos itens do gatilho</span><?php endif; ?>
                             </div>
+                            <?php endif; ?>
                         <?php endif; ?>
                     </td>
                     <td class="text-nowrap">
@@ -369,6 +484,8 @@ require_once LAYOUT_PATH . '/header.php';
 
 <style>
 #bonifWrapTable, #condTableWrap, #alvoTableWrap, #poolTableWrap { max-height: 240px; overflow-y: auto; }
+#campAlvoWrap.sem-pct .alvo-pct-col { display: none; }
+#condTableWrap .fx-col { width: 110px; background: #f3fbf6; }
 </style>
 <div class="modal fade" id="modal" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -414,13 +531,39 @@ require_once LAYOUT_PATH . '/header.php';
                             </select>
                         </div>
 
-                        <!-- Condições (E) — ambos os tipos -->
+                        <!-- Condições (E/OU) — ambos os tipos -->
                         <div class="col-12 camp-step d-none" data-step="cond">
                             <hr class="my-1">
-                            <label class="form-label fw-semibold">Condições <span class="text-muted small">(todas precisam ser atendidas — E)</span></label>
+                            <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                                <label class="form-label fw-semibold mb-0">Condições</label>
+                                <select name="cond_operador" id="f_cond_op" class="form-select form-select-sm" style="width:auto" onchange="condOpAtualizar()">
+                                    <option value="E">Todas precisam ser atendidas (E)</option>
+                                    <option value="OU">Basta qualquer uma (OU)</option>
+                                </select>
+                            </div>
                             <div class="text-muted small mb-2">
-                                Cada condição combina <strong>Linha + Grupo + Subgrupo + Produto</strong> (os preenchidos somam-se em <strong>E</strong>).
-                                Ex.: <em>Linha Itallian Color · Grupo Coloração ≥ 10 un.</em> <strong>E</strong> <em>Linha Itallian Color · Grupo Oxidante ≥ 5 un.</em>
+                                Cada condição combina <strong>Linha + Grupo + Subgrupo + Produto</strong> (os preenchidos dentro da mesma condição somam-se em <strong>E</strong>).
+                                Entre as condições vale o operador escolhido acima.
+                                Ex.: <em>Linha Itallian Color · Grupo Coloração ≥ 10 un.</em> <strong class="cond-op-txt">E</strong> <em>Linha Itallian Color · Grupo Oxidante ≥ 5 un.</em>
+                            </div>
+                            <div id="dmWrap" class="d-flex flex-wrap align-items-center gap-3 mb-2 p-2 rounded-3 bg-light border">
+                                <span class="fw-semibold small">Forma do desconto:</span>
+                                <div class="form-check form-check-inline mb-0">
+                                    <input class="form-check-input" type="radio" name="desconto_modo" id="f_dm_fixo" value="fixo" checked onchange="fxRender()">
+                                    <label class="form-check-label" for="f_dm_fixo">Percentual fixo</label>
+                                </div>
+                                <div class="form-check form-check-inline mb-0">
+                                    <input class="form-check-input" type="radio" name="desconto_modo" id="f_dm_faixas" value="faixas" onchange="fxRender()">
+                                    <label class="form-check-label" for="f_dm_faixas">Faixas escalonadas</label>
+                                </div>
+                                <div id="fxToolbar" class="d-none ms-auto">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="fxAdd()"><i class="bi bi-plus-lg me-1"></i>Adicionar faixa</button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="fxRemove()"><i class="bi bi-dash-lg me-1"></i>Remover última</button>
+                                </div>
+                                <div id="fxAjuda" class="small text-muted w-100 d-none">
+                                    Cada faixa é um conjunto de mínimos das condições (a Faixa 1 é o mínimo para a campanha valer).
+                                    Vale a <strong>maior faixa atingida</strong>, e o % dela (em "Percentual de Desconto padrão") vai para os produtos a conceder o desconto.
+                                </div>
                             </div>
                             <div class="table-responsive d-none" id="condTableWrap">
                                 <table class="table table-sm table-bordered align-middle mb-2">
@@ -431,8 +574,8 @@ require_once LAYOUT_PATH . '/header.php';
                                             <th style="min-width:140px">Subgrupo</th>
                                             <th style="min-width:160px">Produto</th>
                                             <th style="width:120px">Mínimo por</th>
-                                            <th style="width:110px" class="text-center">Mínimo</th>
-                                            <th style="width:46px" class="text-center">—</th>
+                                            <th style="width:110px" class="text-center" id="thCondMin">Mínimo</th>
+                                            <th style="width:46px" class="text-center" id="thCondDel">—</th>
                                         </tr>
                                     </thead>
                                     <tbody id="condBody"></tbody>
@@ -441,12 +584,39 @@ require_once LAYOUT_PATH . '/header.php';
                             <button type="button" class="btn btn-outline-success btn-sm" onclick="condAddRow()">
                                 <i class="bi bi-plus-lg me-1"></i>Adicionar condição
                             </button>
+                            <!-- Mínimo TOTAL das condições (opcional) -->
+                            <div class="border rounded-3 p-2 mt-3 bg-light">
+                                <div class="row g-2 align-items-end">
+                                    <div class="col-md-4">
+                                        <label class="form-label fw-semibold small mb-1"><i class="bi bi-sigma me-1"></i>Mínimo total das condições</label>
+                                        <select name="cond_total_modo" id="f_tot_modo" class="form-select form-select-sm" onchange="condTotalAtualizar()">
+                                            <option value="">Não usar</option>
+                                            <option value="quantidade">Quantidade total (un.)</option>
+                                            <option value="valor">Valor total (R$)</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="d-flex flex-wrap gap-2" id="fxTotWrap">
+                                            <div class="fx-par"><div class="fx-rot small text-muted d-none">Faixa 1</div>
+                                            <input type="number" step="0.01" min="0" name="cond_total_min" id="f_tot_min" class="form-control form-control-sm" placeholder="Mínimo" style="width:110px" disabled></div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4 small text-muted">
+                                        Soma os itens de <strong>todas</strong> as condições juntas. Com ele, o mínimo de cada condição
+                                        fica opcional (deixe 0 para a condição servir só como filtro).
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- DESCONTO -->
-                        <div class="col-md-4 camp-step d-none" data-step="desc" id="campDescWrap">
-                            <label class="form-label fw-semibold">Percentual de Desconto (%) <span class="text-danger">*</span></label>
-                            <input type="number" step="0.01" name="desconto" id="f_desc" class="form-control" value="0">
+                        <div class="col-12 camp-step d-none" data-step="desc" id="campDescWrap">
+                            <label class="form-label fw-semibold">Percentual de Desconto padrão (%)</label>
+                            <div class="d-flex flex-wrap gap-2" id="fxPctWrap">
+                                <div class="fx-par"><div class="fx-rot small text-muted d-none">Faixa 1</div>
+                                <input type="number" step="0.01" name="desconto" id="f_desc" class="form-control form-control-sm" value="0" style="width:140px"></div>
+                            </div>
+                            <div class="form-text" id="descAjuda">Vale para os itens sem % próprio na lista abaixo (ou para os itens do gatilho, se a lista estiver vazia).</div>
                         </div>
                         <div class="col-12 camp-step d-none" data-step="alvo" id="campAlvoWrap">
                             <label class="form-label fw-semibold">Produtos a conceder o desconto <span class="text-muted small">(opcional — vazio = itens do gatilho)</span></label>
@@ -458,6 +628,7 @@ require_once LAYOUT_PATH . '/header.php';
                                             <th style="min-width:140px">Grupo</th>
                                             <th style="min-width:140px">Subgrupo</th>
                                             <th style="min-width:160px">Produto</th>
+                                            <th style="width:110px" class="text-center alvo-pct-col">% Desconto</th>
                                             <th style="width:46px" class="text-center">—</th>
                                         </tr>
                                     </thead>
@@ -551,6 +722,14 @@ require_once LAYOUT_PATH . '/header.php';
                                 <button type="button" class="btn btn-outline-warning btn-sm" onclick="poolAddRow()"><i class="bi bi-plus-lg me-1"></i>Adicionar ao pool</button>
                             </div>
                         </div>
+
+                        <!-- Observação — última seção do formulário -->
+                        <div class="col-12 camp-step d-none" data-step="obs">
+                            <hr class="my-1">
+                            <label class="form-label fw-semibold mb-1">Observação <span class="text-muted small">(opcional)</span></label>
+                            <textarea name="observacao" id="f_obs" class="form-control form-control-sm" rows="2" maxlength="1000" placeholder="Ex.: Na compra de 504 un. de Coloração e 42 un. de Oxidação"></textarea>
+                            <div class="form-text">Se preenchida, aparece no pedido (área do cliente e admin) no lugar do texto da condição.</div>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -581,10 +760,12 @@ function campStep() {
     document.querySelectorAll('#modal .camp-step').forEach(function(el) {
         var step = el.dataset.step;
         var show = temCod;
-        if (step === 'desc' || step === 'alvo') show = temCod && document.getElementById('f_tipo').value === 'desconto';
+        var ehDesc = document.getElementById('f_tipo').value === 'desconto';
+        if (step === 'desc' || step === 'alvo') show = temCod && ehDesc;
         if (step === 'bonif')                   show = temCod && document.getElementById('f_tipo').value === 'bonificacao';
         el.classList.toggle('d-none', !show);
     });
+    fxRender();
 }
 
 // ---- Opções de Tipo / Categoria / Produto ----
@@ -615,7 +796,7 @@ function critOnTipoChange(sel, prefix) {
     cell.innerHTML = critValorCellHtml(prefix + '[' + idx + '][valor]', sel.value, '');
 }
 
-// ---- Condições (E) — filtro composto (linha + grupo + subgrupo + produto) ----
+// ---- Condições (E/OU) — filtro composto (linha + grupo + subgrupo + produto) ----
 function catSelect(name, tipo, val) {
     var lista = _campCats[tipo] || [];
     return '<select class="form-select form-select-sm" name="' + name + '"><option value="">— qualquer —</option>' +
@@ -630,11 +811,12 @@ function prodSelect(name, val) {
                    campEsc(p.codigo_produto) + ' — ' + campEsc(p.descricao_pt) + '</option>';
         }).join('') + '</select>';
 }
-function condAddRow(linha, grupo, subgrupo, produto, modo, qtd, valorMin) {
+function condAddRow(linha, grupo, subgrupo, produto, modo, qtd, valorMin, fxMins) {
     var i = _critSeq++;
     modo = modo === 'valor' ? 'valor' : 'quantidade';
-    var min = modo === 'valor' ? (parseFloat(valorMin) || '') : (parseInt(qtd, 10) || 1);
+    var min = modo === 'valor' ? (parseFloat(valorMin) || 0) : (qtd === undefined ? 1 : (parseInt(qtd, 10) || 0));
     var tr = document.createElement('tr');
+    tr.dataset.idx = i;
     tr.innerHTML =
         '<td>' + catSelect('cond[' + i + '][linha]',    'linha',    linha)    + '</td>' +
         '<td>' + catSelect('cond[' + i + '][grupo]',    'grupo',    grupo)    + '</td>' +
@@ -647,7 +829,87 @@ function condAddRow(linha, grupo, subgrupo, produto, modo, qtd, valorMin) {
         '<td><input type="number" step="0.01" min="0" value="' + min + '" name="cond[' + i + '][min]" class="form-control form-control-sm text-center"></td>' +
         '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" onclick="condRemove(this)"><i class="bi bi-x-lg"></i></button></td>';
     document.getElementById('condBody').appendChild(tr);
+    fxSyncRow(tr, fxMins);
     document.getElementById('condTableWrap').classList.remove('d-none');
+}
+function condTotalAtualizar() {
+    var on = document.getElementById('f_tot_modo').value !== '';
+    var inp = document.getElementById('f_tot_min');
+    inp.disabled = !on;
+    if (!on) inp.value = '';
+    fxRender();
+}
+
+// ---- Faixas escalonadas das condições ----
+// Faixa 1 = coluna "Mínimo" + mínimo total + % padrão; faixas 2..N = colunas/caixas extras.
+var _fxN = 1;
+function fxAtivo() {
+    return document.getElementById('f_tipo').value === 'desconto' && document.getElementById('f_dm_faixas').checked;
+}
+function fxAdd()    { _fxN++; fxRender(); }
+function fxRemove() { if (_fxN > 2) { _fxN--; fxRender(); } }
+// Ajusta um contêiner para ter exatamente "qtd" elementos extras (preserva os existentes)
+function fxSync(container, sel, qtd, criar) {
+    var atuais = container.querySelectorAll(sel);
+    for (var i = atuais.length - 1; i >= qtd; i--) atuais[i].remove();
+    for (var k = atuais.length; k < qtd; k++) criar(k + 2);
+}
+function fxCaixa(nome, k, valor, largura, desab) {
+    var d = document.createElement('div');
+    d.className = 'fx-par fx-extra';
+    d.innerHTML = '<div class="fx-rot small text-muted">Faixa ' + k + '</div>' +
+        '<input type="number" step="0.01" min="0" class="form-control form-control-sm" name="' + nome + '" value="' + (valor == null ? '' : valor) + '" style="width:' + largura + '"' + (desab ? ' disabled' : '') + '>';
+    return d;
+}
+function fxSyncRow(tr, mins) {
+    var n = fxAtivo() ? _fxN - 1 : 0, del = tr.lastElementChild, i = tr.dataset.idx;
+    fxSync(tr, 'td.fx-col', n, function(k) {
+        var td = document.createElement('td');
+        td.className = 'fx-col';
+        var v = mins && mins[k] != null ? mins[k] : '';
+        td.innerHTML = '<input type="number" step="0.01" min="0" value="' + v + '" name="cond[' + i + '][fx][' + k + ']" class="form-control form-control-sm text-center">';
+        tr.insertBefore(td, del);
+    });
+}
+function fxRender() {
+    var on = fxAtivo(), n = on ? _fxN - 1 : 0;
+    if (on && _fxN < 2) { _fxN = 2; n = 1; }
+    document.getElementById('dmWrap').classList.toggle('d-none', document.getElementById('f_tipo').value !== 'desconto');
+    document.getElementById('fxToolbar').classList.toggle('d-none', !on);
+    document.getElementById('fxAjuda').classList.toggle('d-none', !on);
+    document.querySelectorAll('.fx-rot').forEach(function(el) { el.classList.toggle('d-none', !on); });
+    document.getElementById('thCondMin').textContent = on ? 'Faixa 1' : 'Mínimo';
+    // cabeçalho das faixas 2..N
+    var thead = document.getElementById('thCondDel').parentNode;
+    fxSync(thead, 'th.fx-col', n, function(k) {
+        var th = document.createElement('th');
+        th.className = 'fx-col text-center';
+        th.textContent = 'Faixa ' + k;
+        thead.insertBefore(th, document.getElementById('thCondDel'));
+    });
+    document.querySelectorAll('#condBody tr').forEach(function(tr) { fxSyncRow(tr, null); });
+    // % e mínimo total por faixa
+    var pctWrap = document.getElementById('fxPctWrap');
+    fxSync(pctWrap, '.fx-extra', n, function(k) { pctWrap.appendChild(fxCaixa('fx_pct[' + k + ']', k, '', '140px', false)); });
+    var totWrap = document.getElementById('fxTotWrap'), totOn = document.getElementById('f_tot_modo').value !== '';
+    fxSync(totWrap, '.fx-extra', n, function(k) { totWrap.appendChild(fxCaixa('fx_total[' + k + ']', k, '', '110px', !totOn)); });
+    totWrap.querySelectorAll('.fx-extra input').forEach(function(inp) { inp.disabled = !totOn; if (!totOn) inp.value = ''; });
+    document.getElementById('campAlvoWrap').classList.toggle('sem-pct', on);
+    document.getElementById('descAjuda').textContent = on
+        ? 'Percentual de cada faixa — vale o da maior faixa atingida, aplicado nos produtos a conceder o desconto (ou nos itens das condições).'
+        : 'Vale para os itens sem % próprio na lista abaixo (ou para os itens do gatilho, se a lista estiver vazia).';
+}
+// Preenche % e totais das faixas 2..N (ao editar)
+function fxPreencher(faixas) {
+    (faixas || []).forEach(function(fx) {
+        var p = document.querySelector('[name="fx_pct[' + fx.faixa + ']"]');   if (p) p.value = parseFloat(fx.pct) || '';
+        var t = document.querySelector('[name="fx_total[' + fx.faixa + ']"]'); if (t && fx.total_min != null) t.value = parseFloat(fx.total_min) || '';
+    });
+}
+
+function condOpAtualizar() {
+    var op = document.getElementById('f_cond_op').value === 'OU' ? 'OU' : 'E';
+    document.querySelectorAll('.cond-op-txt').forEach(function(el) { el.textContent = op; });
 }
 function condRemove(btn) {
     btn.closest('tr').remove();
@@ -674,14 +936,16 @@ function alvoLikeRemove(btn, bodyId, wrapId) {
 function poolAddRow(tipo, valor) { alvoLikeAddRow('pool', 'poolBody', 'poolTableWrap', tipo, valor); }
 
 // ---- Alvo do desconto — filtro composto (linha + grupo + subgrupo + produto), igual às condições ----
-function alvoAddRow(linha, grupo, subgrupo, produto) {
+function alvoAddRow(linha, grupo, subgrupo, produto, desconto) {
     var i = _critSeq++;
+    var pct = (desconto === null || desconto === undefined || desconto === '') ? '' : (parseFloat(desconto) || '');
     var tr = document.createElement('tr');
     tr.innerHTML =
         '<td>' + catSelect('alvo[' + i + '][linha]',    'linha',    linha)    + '</td>' +
         '<td>' + catSelect('alvo[' + i + '][grupo]',    'grupo',    grupo)    + '</td>' +
         '<td>' + catSelect('alvo[' + i + '][subgrupo]', 'subgrupo', subgrupo) + '</td>' +
         '<td>' + prodSelect('alvo[' + i + '][produto]', produto) + '</td>' +
+        '<td class="alvo-pct-col"><input type="number" step="0.01" min="0" value="' + pct + '" name="alvo[' + i + '][desconto]" class="form-control form-control-sm text-center" placeholder="padrão"></td>' +
         '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" onclick="alvoRemove(this)"><i class="bi bi-x-lg"></i></button></td>';
     document.getElementById('alvoBody').appendChild(tr);
     document.getElementById('alvoTableWrap').classList.remove('d-none');
@@ -695,8 +959,6 @@ function alvoRemove(btn) {
 function campSetTipo(tipo) {
     var ehBonif = (tipo === 'bonificacao');
     document.getElementById('campBonifWrap').classList.toggle('d-none', !ehBonif);
-    document.getElementById('campDescWrap').classList.toggle('d-none', ehBonif);
-    document.getElementById('campAlvoWrap').classList.toggle('d-none', ehBonif);
     campStep();
 }
 
@@ -790,11 +1052,46 @@ function campValidar() {
         alert('Adicione ao menos uma condição.');
         return false;
     }
+    if (fxAtivo() && _fxN < 2) {
+        alert('Adicione ao menos a Faixa 2 (ou use "Percentual fixo").');
+        return false;
+    }
+    // Faixas: confere aqui (as mesmas regras do servidor) para não perder o que foi digitado
+    if (fxAtivo()) {
+        var num = function(el) { return el ? parseFloat(String(el.value).replace(',', '.')) || 0 : 0; };
+        var falha = function(el, msg) { alert(msg); if (el) { el.classList.add('is-invalid'); el.focus(); } return false; };
+        document.querySelectorAll('#modal .is-invalid').forEach(function(el) { el.classList.remove('is-invalid'); });
+        var pctAnt = num(document.getElementById('f_desc'));
+        if (pctAnt <= 0) return falha(document.getElementById('f_desc'), 'Faixa 1: informe o percentual de desconto.');
+        var totOn = document.getElementById('f_tot_modo').value !== '';
+        for (var k = 2; k <= _fxN; k++) {
+            var pEl = document.querySelector('[name="fx_pct[' + k + ']"]'), pct = num(pEl);
+            if (pct <= 0) return falha(pEl, 'Faixa ' + k + ': informe o percentual de desconto.');
+            if (pct <= pctAnt) return falha(pEl, 'Faixa ' + k + ': o percentual deve ser maior que o da faixa anterior (' + pctAnt + '%).');
+            pctAnt = pct;
+            var rows = document.querySelectorAll('#condBody tr');
+            for (var r = 0; r < rows.length; r++) {
+                var min1 = num(rows[r].querySelector('[name$="[min]"]'));
+                var mEl = rows[r].querySelector('[name$="[fx][' + k + ']"]');
+                if (min1 > 0 && num(mEl) <= 0) return falha(mEl, 'Faixa ' + k + ': informe o mínimo da condição ' + (r + 1) + '.');
+            }
+            var tEl = document.querySelector('[name="fx_total[' + k + ']"]');
+            if (totOn && num(tEl) <= 0) return falha(tEl, 'Faixa ' + k + ': informe o mínimo total das condições.');
+        }
+    }
     return true;
 }
 
 // ---- Reset / abrir modal ----
 function campLimpar() {
+    document.getElementById('f_obs').value = '';
+    document.getElementById('f_tot_modo').value = '';
+    condTotalAtualizar();
+    document.getElementById('f_dm_fixo').checked = true;
+    _fxN = 1;
+    fxRender();
+    document.getElementById('f_cond_op').value = 'E';
+    condOpAtualizar();
     document.getElementById('condBody').innerHTML = '';
     document.getElementById('condTableWrap').classList.add('d-none');
     document.getElementById('alvoBody').innerHTML = '';
@@ -834,11 +1131,25 @@ function editarReg(d) {
     document.getElementById('f_cod').value      = d.codigo_campanha || '';
     document.getElementById('f_canal').value    = d.canal_venda_id  || '';
     document.getElementById('f_ativo').value    = String(d.ativo == null ? 1 : d.ativo);
-    document.getElementById('f_desc').value     = d.desconto || 0;
+    document.getElementById('f_desc').value     = parseFloat(d.desconto) || 0;
     document.getElementById('f_tipo').value     = d.tipo || 'desconto';
     campLimpar();
-    (d.condicoes || []).forEach(function(c) { condAddRow(c.linha, c.grupo, c.subgrupo, c.produto, c.modo, c.qtd, c.valor_min); });
-    (d.desconto_alvos || []).forEach(function(a) { alvoAddRow(a.linha, a.grupo, a.subgrupo, a.produto); });
+    document.getElementById('f_cond_op').value = d.cond_operador === 'OU' ? 'OU' : 'E';
+    condOpAtualizar();
+    document.getElementById('f_obs').value = d.observacao || '';
+    document.getElementById('f_tot_modo').value = d.cond_total_modo || '';
+    condTotalAtualizar();
+    if (d.cond_total_modo) document.getElementById('f_tot_min').value = parseFloat(d.cond_total_min || 0) || '';
+    document.getElementById(d.desconto_modo === 'faixas' ? 'f_dm_faixas' : 'f_dm_fixo').checked = true;
+    _fxN = 1 + (d.faixas || []).length;
+    fxRender();
+    fxPreencher(d.faixas);
+    (d.condicoes || []).forEach(function(c, ci) {
+        var mins = {};
+        (d.faixas || []).forEach(function(fx) { if (fx.mins && fx.mins[ci] != null) mins[fx.faixa] = parseFloat(fx.mins[ci]); });
+        condAddRow(c.linha, c.grupo, c.subgrupo, c.produto, c.modo, c.qtd, c.valor_min, mins);
+    });
+    (d.desconto_alvos || []).forEach(function(a) { alvoAddRow(a.linha, a.grupo, a.subgrupo, a.produto, a.desconto); });
     (d.bonif_pool || []).forEach(function(a) { poolAddRow(a.tipo, a.valor); });
     document.getElementById('f_bonif_modo').value       = d.bonif_modo || 'fixo';
     document.getElementById('f_bonif_selec_modo').value = d.bonif_selec_modo || 'produtos';
