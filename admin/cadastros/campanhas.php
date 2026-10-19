@@ -44,9 +44,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $semMinProprio = array_filter($condClean, fn($c) => ($c[0] === 'valor' ? $c[2] : $c[1]) <= 0);
             if ($semMinProprio && !$totModo) throw new Exception('Informe o mínimo de cada condição ou um mínimo total das condições.');
 
-            // Alvos do desconto (opcional): filtro composto (linha E grupo E subgrupo E produto)
+            // Onde o desconto incide: nos itens das condições (sem alvos) ou em outros produtos
+            // (alvos explícitos: filtro composto linha E grupo E subgrupo E produto).
+            $descItensCond = ($_POST['desc_itens_cond'] ?? '1') !== '0';
             $alvoClean = [];
-            if ($tipo === 'desconto') {
+            if ($tipo === 'desconto' && !$descItensCond) {
                 foreach (($_POST['alvo'] ?? []) as $al) {
                     $fl = trim($al['linha']    ?? '');
                     $fg = trim($al['grupo']    ?? '');
@@ -58,6 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($ad !== null && $ad <= 0) $ad = null;
                     $alvoClean[] = [$fl, $fg, $fs, $fp, $ad];
                 }
+                if (!$alvoClean) throw new Exception('Escolha ao menos um produto a conceder o desconto (ou marque "Sim, nos itens das condições").');
             }
 
             // Forma do desconto: fixo (% padrão / % por alvo) ou faixas escalonadas das condições.
@@ -331,6 +334,17 @@ $grupos    = db()->query("SELECT DISTINCT grupo    FROM produtos WHERE grupo    
 $subgrupos = db()->query("SELECT DISTINCT subgrupo FROM produtos WHERE subgrupo IS NOT NULL AND subgrupo <> '' ORDER BY subgrupo")->fetchAll(PDO::FETCH_COLUMN);
 $canais    = db()->query('SELECT id, canal FROM canal_venda ORDER BY canal')->fetchAll();
 
+// Lista compacta para a tabela: mostra os $max primeiros itens e esconde o resto atrás de "+N mais".
+function listaCompacta(array $itens, string $sep = ', ', int $max = 3): string {
+    $itens = array_values($itens);
+    if (count($itens) <= $max) return e(implode($sep, $itens));
+    $vis  = e(implode($sep, array_slice($itens, 0, $max)));
+    $resto = e($sep . implode($sep, array_slice($itens, $max)));
+    return $vis . '<span class="lc-resto d-none">' . $resto . '</span> '
+         . '<a href="#" class="lc-toggle text-nowrap" data-mais="+' . (count($itens) - $max) . ' mais" onclick="return lcAlternar(this)">+'
+         . (count($itens) - $max) . ' mais</a>';
+}
+
 // Rótulo legível de uma condição composta OU de um alvo/pool single {tipo,valor}
 function critLabel(array $cd, array $prodById): string {
     if (isset($cd['tipo'])) { // alvo de desconto / pool de bonificação (critério único)
@@ -393,8 +407,14 @@ require_once LAYOUT_PATH . '/header.php';
                             . ($fx['total_min'] ? ' · Σ ≥ ' . $fmtTot($fx['total_min']) : ''), $fmtPct($fx['pct'])];
                     }
                 }
+                $alvoTemPctProprio = !$ehFaixas && array_filter($c['desconto_alvos'], fn($a) => $a['desconto'] !== null);
                 $alvos     = array_map(fn($cd) => critLabel($cd, $prodById)
-                    . ' (' . rtrim(rtrim(number_format($cd['desconto'] ?? (float)$c['desconto'], 2, ',', '.'), '0'), ',') . '%)', $c['desconto_alvos']);
+                    . ($alvoTemPctProprio ? ' (' . $fmtPct($cd['desconto'] ?? (float)$c['desconto']) . ')' : ''), $c['desconto_alvos']);
+                // alvos = exatamente os filtros das condições (e sem % próprio) → resumo curto
+                $chaveF = fn($f) => implode('|', [$f['linha'] ?? '', $f['grupo'] ?? '', $f['subgrupo'] ?? '', (int)($f['produto'] ?? 0)]);
+                $fAlvos = array_map($chaveF, $c['desconto_alvos']); sort($fAlvos);
+                $fConds = array_map($chaveF, $c['condicoes']);      sort($fConds);
+                $alvosIguaisCond = $alvos && !$alvoTemPctProprio && $fAlvos === array_values(array_unique($fConds));
             ?>
                 <tr class="<?= $c['ativo'] ? '' : 'opacity-50' ?>">
                     <td><strong><?= e($c['codigo_campanha']) ?></strong></td>
@@ -418,7 +438,8 @@ require_once LAYOUT_PATH . '/header.php';
                             <?php if (count($criterios) > 1): ?>
                                 <span class="badge <?= $c['cond_operador'] === 'OU' ? 'bg-warning text-dark' : 'bg-info text-dark' ?> me-1"><?= $c['cond_operador'] === 'OU' ? 'Qualquer uma (OU)' : 'Todas (E)' ?></span>
                             <?php endif; ?>
-                            <?= e(implode(' ' . $c['cond_operador'] . ' ', $criterios)) ?>
+                            <?php if (count($criterios) > 3): ?><span class="text-muted">(<?= count($criterios) ?>)</span><?php endif; ?>
+                            <?= listaCompacta($criterios, ' ' . $c['cond_operador'] . ' ') ?>
                             <?php if ($c['cond_total_modo'] && $c['cond_total_min'] > 0): ?>
                                 <div class="fw-semibold mt-1"><i class="bi bi-sigma me-1"></i>Total das condições ≥ <?= $c['cond_total_modo'] === 'valor' ? e(moedaBR($c['cond_total_min'])) : (int)$c['cond_total_min'] . ' un.' ?></div>
                             <?php endif; ?>
@@ -437,29 +458,31 @@ require_once LAYOUT_PATH . '/header.php';
                                 <div class="small text-muted">Limite: <?= $c['bonif_limite_tipo'] === 'valor' ? moedaBR($c['bonif_limite_valor']) : ((int)$c['bonif_limite_valor'] . ' un.') ?></div>
                                 <div class="small text-muted" style="max-width:300px">
                                     <?php if ($c['bonif_selec_modo'] === 'categoria'): ?>
-                                        Pool: <?= $c['bonif_pool'] ? e(implode(', ', array_map(fn($p) => critLabel($p, $prodById), $c['bonif_pool']))) : '<span class="text-danger">vazio</span>' ?>
+                                        Pool: <?= $c['bonif_pool'] ? listaCompacta(array_map(fn($p) => critLabel($p, $prodById), $c['bonif_pool'])) : '<span class="text-danger">vazio</span>' ?>
                                     <?php else: ?>
-                                        <?= $c['bonificados'] ? e(implode(', ', array_map(fn($b) => $b['descricao_pt'] ?: $b['codigo_produto'], $c['bonificados']))) : '<span class="text-danger">sem produtos</span>' ?>
+                                        <?= $c['bonificados'] ? listaCompacta(array_map(fn($b) => $b['descricao_pt'] ?: $b['codigo_produto'], $c['bonificados'])) : '<span class="text-danger">sem produtos</span>' ?>
                                     <?php endif; ?>
                                 </div>
                             <?php else: ?>
                                 <span class="badge bg-warning text-dark mb-1"><i class="bi bi-gift me-1"></i>Bonificação fixa</span>
                                 <div class="small text-muted" style="max-width:300px">
-                                    <?= $c['bonificados'] ? e(implode(', ', array_map(fn($b) => $b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']), $c['bonificados']))) : '<span class="text-danger">sem produtos</span>' ?>
+                                    <?= $c['bonificados'] ? listaCompacta(array_map(fn($b) => $b['quantidade'] . 'x ' . ($b['descricao_pt'] ?: $b['codigo_produto']), $c['bonificados'])) : '<span class="text-danger">sem produtos</span>' ?>
                                 </div>
                             <?php endif; ?>
                         <?php else: ?>
                             <?php if ($ehFaixas): ?>
                                 <span class="badge bg-success">Faixas <?= e($fmtPct($c['desconto'])) ?> → <?= e($fmtPct(max(array_merge([(float)$c['desconto']], array_column($c['faixas'], 'pct'))))) ?></span>
                                 <div class="small text-muted" style="max-width:300px">
-                                    <?php if ($alvos): ?>Aplica em: <?= e(implode(', ', array_map(fn($a) => preg_replace('/ \([^)]*%\)$/', '', $a), $alvos))) ?>
-                                    <?php else: ?><span class="text-muted">Aplica nos itens do gatilho</span><?php endif; ?>
+                                    <?php if ($alvosIguaisCond): ?>Aplica nos mesmos produtos das condições
+                                    <?php elseif ($alvos): ?>Aplica em: <?= listaCompacta($alvos) ?>
+                                    <?php else: ?><span class="text-muted">Aplica nos itens das condições</span><?php endif; ?>
                                 </div>
                             <?php else: ?>
-                            <?php if ((float)$c['desconto'] > 0): ?><span class="badge bg-success"><?= e($c['desconto']) ?>%</span><?php endif; ?>
+                            <?php if ((float)$c['desconto'] > 0): ?><span class="badge bg-success"><?= e($fmtPct($c['desconto'])) ?></span><?php endif; ?>
                             <div class="small text-muted" style="max-width:300px">
-                                <?php if ($alvos): ?>Aplica em: <?= e(implode(', ', $alvos)) ?>
-                                <?php else: ?><span class="text-muted">Aplica nos itens do gatilho</span><?php endif; ?>
+                                <?php if ($alvosIguaisCond): ?>Aplica nos mesmos produtos das condições
+                                <?php elseif ($alvos): ?>Aplica em: <?= listaCompacta($alvos) ?>
+                                <?php else: ?><span class="text-muted">Aplica nos itens das condições</span><?php endif; ?>
                             </div>
                             <?php endif; ?>
                         <?php endif; ?>
@@ -620,10 +643,22 @@ require_once LAYOUT_PATH . '/header.php';
                                 <div class="fx-par"><div class="fx-rot small text-muted d-none">Faixa 1</div>
                                 <input type="number" step="0.01" name="desconto" id="f_desc" class="form-control form-control-sm" value="0" style="width:140px"></div>
                             </div>
-                            <div class="form-text" id="descAjuda">Vale para os itens sem % próprio na lista abaixo (ou para os itens do gatilho, se a lista estiver vazia).</div>
+                            <div class="form-text" id="descAjuda">Vale para os itens das condições (ou para os produtos escolhidos abaixo que não tenham % próprio).</div>
                         </div>
                         <div class="col-12 camp-step d-none" data-step="alvo" id="campAlvoWrap">
-                            <label class="form-label fw-semibold">Produtos a conceder o desconto <span class="text-muted small">(opcional — vazio = itens do gatilho)</span></label>
+                            <label class="form-label fw-semibold d-block mb-1">O desconto será aplicado sobre os itens das condições?</label>
+                            <div class="mb-2">
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="desc_itens_cond" id="f_dic_sim" value="1" checked onchange="alvoModoAtualizar()">
+                                    <label class="form-check-label" for="f_dic_sim">Sim, nos itens das condições</label>
+                                </div>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="desc_itens_cond" id="f_dic_nao" value="0" onchange="alvoModoAtualizar()">
+                                    <label class="form-check-label" for="f_dic_nao">Não, escolher os produtos</label>
+                                </div>
+                            </div>
+                            <div id="alvoEscolha" class="d-none">
+                            <label class="form-label fw-semibold">Produtos a conceder o desconto</label>
                             <div class="table-responsive d-none" id="alvoTableWrap">
                                 <table class="table table-sm table-bordered align-middle mb-2">
                                     <thead class="table-light">
@@ -640,8 +675,9 @@ require_once LAYOUT_PATH . '/header.php';
                                 </table>
                             </div>
                             <button type="button" class="btn btn-outline-primary btn-sm" onclick="alvoAddRow()">
-                                <i class="bi bi-plus-lg me-1"></i>Adicionar alvo
+                                <i class="bi bi-plus-lg me-1"></i>Adicionar produto
                             </button>
+                            </div>
                         </div>
 
                         <!-- BONIFICAÇÃO -->
@@ -844,6 +880,13 @@ function condTotalAtualizar() {
     fxRender();
 }
 
+// Lista compacta da tabela: mostra/esconde o restante dos itens
+function lcAlternar(a) {
+    var resto = a.previousElementSibling, aberto = resto.classList.toggle('d-none') === false;
+    a.textContent = aberto ? 'menos' : a.dataset.mais;
+    return false;
+}
+
 // ---- Faixas escalonadas das condições ----
 // Faixa 1 = coluna "Mínimo" + mínimo total + % padrão; faixas 2..N = colunas/caixas extras.
 var _fxN = 1;
@@ -900,8 +943,8 @@ function fxRender() {
     totWrap.querySelectorAll('.fx-extra input').forEach(function(inp) { inp.disabled = !totOn; if (!totOn) inp.value = ''; });
     document.getElementById('campAlvoWrap').classList.toggle('sem-pct', on);
     document.getElementById('descAjuda').textContent = on
-        ? 'Percentual de cada faixa — vale o da maior faixa atingida, aplicado nos produtos a conceder o desconto (ou nos itens das condições).'
-        : 'Vale para os itens sem % próprio na lista abaixo (ou para os itens do gatilho, se a lista estiver vazia).';
+        ? 'Percentual de cada faixa — vale o da maior faixa atingida, aplicado nos itens das condições (ou nos produtos escolhidos abaixo).'
+        : 'Vale para os itens das condições (ou para os produtos escolhidos abaixo que não tenham % próprio).';
 }
 // Preenche % e totais das faixas 2..N (ao editar)
 function fxPreencher(faixas) {
@@ -953,6 +996,12 @@ function alvoAddRow(linha, grupo, subgrupo, produto, desconto) {
         '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" onclick="alvoRemove(this)"><i class="bi bi-x-lg"></i></button></td>';
     document.getElementById('alvoBody').appendChild(tr);
     document.getElementById('alvoTableWrap').classList.remove('d-none');
+}
+// "O desconto será aplicado sobre os itens das condições?" — Não = escolher os produtos
+function alvoModoAtualizar() {
+    var escolher = document.getElementById('f_dic_nao').checked;
+    document.getElementById('alvoEscolha').classList.toggle('d-none', !escolher);
+    if (escolher && !document.querySelectorAll('#alvoBody tr').length) alvoAddRow();
 }
 function alvoRemove(btn) {
     btn.closest('tr').remove();
@@ -1060,6 +1109,13 @@ function campValidar() {
         alert('Adicione ao menos a Faixa 2 (ou use "Percentual fixo").');
         return false;
     }
+    // Desconto em outros produtos: precisa de ao menos um produto/categoria escolhido
+    if (document.getElementById('f_tipo').value === 'desconto' && document.getElementById('f_dic_nao').checked) {
+        var temAlvo = Array.prototype.some.call(document.querySelectorAll('#alvoBody tr'), function(tr) {
+            return Array.prototype.some.call(tr.querySelectorAll('select'), function(sl) { return sl.value !== ''; });
+        });
+        if (!temAlvo) { alert('Escolha ao menos um produto a conceder o desconto (ou marque "Sim, nos itens das condições").'); return false; }
+    }
     // Faixas: confere aqui (as mesmas regras do servidor) para não perder o que foi digitado
     if (fxAtivo()) {
         var num = function(el) { return el ? parseFloat(String(el.value).replace(',', '.')) || 0 : 0; };
@@ -1099,6 +1155,8 @@ function campLimpar() {
     document.getElementById('condBody').innerHTML = '';
     document.getElementById('condTableWrap').classList.add('d-none');
     document.getElementById('alvoBody').innerHTML = '';
+    document.getElementById('f_dic_sim').checked = true;
+    document.getElementById('alvoEscolha').classList.add('d-none');
     document.getElementById('alvoTableWrap').classList.add('d-none');
     document.getElementById('poolBody').innerHTML = '';
     document.getElementById('poolTableWrap').classList.add('d-none');
@@ -1154,6 +1212,8 @@ function editarReg(d) {
         condAddRow(c.linha, c.grupo, c.subgrupo, c.produto, c.modo, c.qtd, c.valor_min, mins);
     });
     (d.desconto_alvos || []).forEach(function(a) { alvoAddRow(a.linha, a.grupo, a.subgrupo, a.produto, a.desconto); });
+    document.getElementById((d.desconto_alvos || []).length ? 'f_dic_nao' : 'f_dic_sim').checked = true;
+    alvoModoAtualizar();
     (d.bonif_pool || []).forEach(function(a) { poolAddRow(a.tipo, a.valor); });
     document.getElementById('f_bonif_modo').value       = d.bonif_modo || 'fixo';
     document.getElementById('f_bonif_selec_modo').value = d.bonif_selec_modo || 'produtos';

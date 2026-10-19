@@ -667,22 +667,33 @@ require_once LAYOUT_PATH . '/header.php';
     box-shadow: 0 2px 8px rgba(255, 70, 30, .35);
 }
 .camp-obs .bi { font-size: 1rem; line-height: 1.2; color: #ffe066; animation: campObsPulse 1.6s ease-in-out infinite; }
-/* Régua das faixas escalonadas (passos) */
-.camp-regua { margin-top: .5rem; padding: .45rem .55rem .4rem; border-radius: .5rem; background: #f3fbf6; border: 1px solid #cdebd8; }
-.camp-regua .rg-passos { display: flex; justify-content: space-between; position: relative; margin-bottom: .3rem; }
-.camp-regua .rg-passos::before { content: ''; position: absolute; top: 11px; left: 12px; right: 12px; height: 3px; background: #dfe7e2; }
-.camp-regua .rg-passo { position: relative; display: flex; flex-direction: column; align-items: center; line-height: 1.1; min-width: 44px; }
-.camp-regua .rg-bola  { width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 2px solid #c5d3cb; color: #8a9a90;
-                        font-size: .7rem; font-weight: 700; display: flex; align-items: center; justify-content: center; z-index: 1; }
-.camp-regua .rg-passo b { font-size: .8rem; color: #6c757d; margin-top: .15rem; }
-.camp-regua .rg-passo small { font-size: .62rem; color: #999; }
-.camp-regua .rg-passo.ok .rg-bola { background: #198754; border-color: #198754; color: #fff; }
-.camp-regua .rg-passo.ok b { color: #198754; }
-.camp-regua .rg-passo.prox .rg-bola { border-color: #d63384; color: #d63384; animation: campObsPulse 1.6s ease-in-out infinite; }
-.camp-regua .rg-passo.prox b { color: #d63384; }
+/* Quadro de campanhas: grade de cartões, condições excedentes recolhidas, quadro recolhível */
+.campanhas-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: .5rem; }
+.camp-chip { background: #f8fffe; min-width: 0; }
+.camp-chip .min-w-0 { min-width: 0; }
+.camp-chip .camp-obs { font-size: .78rem; padding: .3rem .55rem; }
+.camp-progress .camp-bar-extra { display: none; }
+.camp-progress.aberto .camp-bar-extra { display: block; }
+.camp-ver-mais { font-size: .7rem; margin-top: -.15rem; }
+.camp-ver-mais .vm-menos, .camp-progress.aberto .camp-ver-mais .vm-mais { display: none; }
+.camp-progress.aberto .camp-ver-mais .vm-menos { display: inline; }
+#campBox .cb-exp, #campBox.recolhido .cb-rec { display: none; }
+#campBox.recolhido .cb-exp { display: inline; }
+#campBox.recolhido .campanhas-grid { display: none; }
+/* Faixas escalonadas: marcas das faixas em cada barra de condição + frase do que falta */
+.camp-bar-fx { margin-bottom: .35rem !important; }
+.camp-bar-fx .progress { position: relative; overflow: visible; height: 7px !important; background: #e3e9e5; }
+.camp-bar-fx .fx-marcas { position: relative; height: 1.05rem; }
+.camp-bar-fx .fx-tick  { position: absolute; top: -9px; width: 2px; height: 9px; margin-left: -1px; background: #adb5bd; }
+.camp-bar-fx .fx-marca { position: absolute; top: 1px; font-size: .62rem; line-height: 1; color: #8a949b; white-space: nowrap; }
+.camp-bar-fx .fx-marca b { font-size: .7rem; color: #6c757d; }
+.camp-bar-fx .fx-tick.ok { background: #198754; }
+.camp-bar-fx .fx-marca.ok, .camp-bar-fx .fx-marca.ok b { color: #198754; }
+.camp-bar-fx .fx-tick.prox { background: #d63384; }
+.camp-bar-fx .fx-marca.prox, .camp-bar-fx .fx-marca.prox b { color: #d63384; }
+.camp-regua { margin-top: .35rem; padding: .35rem .55rem; border-radius: .5rem; background: #f3fbf6; border: 1px solid #cdebd8; }
 .camp-regua .rg-msg { font-size: .74rem; color: #146c43; }
 .camp-regua .rg-msg strong { color: #d63384; }
-@media (prefers-reduced-motion: reduce) { .camp-regua .rg-passo.prox .rg-bola { animation: none; } }
 /* brilho que atravessa a faixa, chamando o olhar sem atrapalhar a leitura */
 .camp-obs::after {
     content: ''; position: absolute; top: 0; left: -60%; width: 40%; height: 100%;
@@ -696,12 +707,18 @@ require_once LAYOUT_PATH . '/header.php';
 }
 </style>
 <?php if ($campanhas && !$modoMA): ?>
-<div class="mb-3 p-3 rounded-3 border bg-white shadow-sm campanhas-box">
-    <div class="d-flex align-items-center gap-2 mb-2">
+<div class="mb-3 px-3 py-2 rounded-3 border bg-white shadow-sm campanhas-box" id="campBox">
+    <div class="d-flex align-items-center gap-2 camp-box-topo">
         <i class="bi bi-megaphone-fill text-primary"></i>
         <span class="fw-semibold text-primary small text-uppercase"><?= et('Campanhas Ativas') ?></span>
+        <span class="badge rounded-pill text-bg-light border"><?= count($campGroup) ?></span>
+        <span class="badge rounded-pill bg-success d-none" id="campAtingidasQtd"></span>
+        <button type="button" class="btn btn-sm btn-link ms-auto p-0 text-decoration-none small" id="campBoxToggle" onclick="campBoxAlternar()">
+            <span class="cb-rec"><?= et('Recolher') ?> <i class="bi bi-chevron-up"></i></span>
+            <span class="cb-exp"><?= et('Mostrar') ?> <i class="bi bi-chevron-down"></i></span>
+        </button>
     </div>
-    <div class="d-flex flex-wrap gap-2">
+    <div class="campanhas-grid mt-2">
         <?php
         $renderBarras = function($c) use ($condByCode, $prodNomeById) {
             $conds = $condByCode[$c['codigo_campanha']] ?? [];
@@ -710,37 +727,40 @@ require_once LAYOUT_PATH . '/header.php';
             // condição sem mínimo próprio é só filtro (entra no total) — sem barra
             $conds = array_filter($conds, fn($cd) => (($cd['modo'] ?? 'quantidade') === 'valor' ? (float)($cd['valor_min'] ?? 0) : (int)$cd['quantidade']) > 0);
             $h = '<div class="camp-progress mt-1" data-codigo="' . e($c['codigo_campanha']) . '" data-op="' . e($c['cond_operador'] ?? 'E') . '" style="min-width:230px">';
+            $maxVis = 3;   // condições visíveis; as demais ficam em "ver mais"
+            $pos = 0;
             foreach ($conds as $ci => $cd) {
-                $parts = [];
-                if (!empty($cd['linha']))    $parts[] = t('Linha')    . ' ' . $cd['linha'];
-                if (!empty($cd['grupo']))    $parts[] = t('Grupo')    . ' ' . $cd['grupo'];
-                if (!empty($cd['subgrupo'])) $parts[] = t('Subgrupo') . ' ' . $cd['subgrupo'];
-                if (!empty($cd['produto']))  $parts[] = t('Produto')  . ' ' . ($prodNomeById[(int)$cd['produto']] ?? ('#' . $cd['produto']));
-                $lbl   = implode(' · ', $parts);
+                $parts = []; $curto = [];
+                if (!empty($cd['linha']))    { $parts[] = t('Linha')    . ' ' . $cd['linha'];    $curto[] = $cd['linha']; }
+                if (!empty($cd['grupo']))    { $parts[] = t('Grupo')    . ' ' . $cd['grupo'];    $curto[] = $cd['grupo']; }
+                if (!empty($cd['subgrupo'])) { $parts[] = t('Subgrupo') . ' ' . $cd['subgrupo']; $curto[] = $cd['subgrupo']; }
+                if (!empty($cd['produto']))  { $n = $prodNomeById[(int)$cd['produto']] ?? ('#' . $cd['produto']); $parts[] = t('Produto') . ' ' . $n; $curto[] = $n; }
+                $lbl   = implode(' · ', array_map(fn($x) => ltrim($x, '- '), $curto));
+                $tip   = implode(' · ', $parts);
+                $extra = $pos++ >= $maxVis;
                 $ehVal = ($cd['modo'] ?? 'quantidade') === 'valor';
                 $meta  = $ehVal ? (float)($cd['valor_min'] ?? 0) : (int)$cd['quantidade'];
                 $txt   = $ehVal ? (moedaBR(0) . '/' . moedaBR($meta)) : ('0/' . (int)$meta);
-                $h .= '<div class="camp-bar mb-1" data-idx="' . $ci . '" data-linha="' . e($cd['linha']) . '" data-grupo="' . e($cd['grupo']) . '" data-subgrupo="' . e($cd['subgrupo']) . '" data-produto="' . (int)($cd['produto'] ?: 0) . '" data-meta="' . $meta . '" data-modo="' . ($ehVal ? 'valor' : 'qtd') . '">'
-                    . '<div class="d-flex justify-content-between" style="font-size:.68rem"><span>' . e($lbl) . '</span><span class="bar-txt">' . $txt . '</span></div>'
+                $h .= '<div class="camp-bar mb-1' . ($c['niveis'] ? ' camp-bar-fx' : '') . ($extra ? ' camp-bar-extra' : '') . '" title="' . e($tip) . '" data-idx="' . $ci . '" data-linha="' . e($cd['linha']) . '" data-grupo="' . e($cd['grupo']) . '" data-subgrupo="' . e($cd['subgrupo']) . '" data-produto="' . (int)($cd['produto'] ?: 0) . '" data-meta="' . $meta . '" data-modo="' . ($ehVal ? 'valor' : 'qtd') . '">'
+                    . '<div class="d-flex justify-content-between gap-2" style="font-size:.68rem"><span class="text-truncate">' . e($lbl) . '</span><span class="bar-txt text-nowrap">' . $txt . '</span></div>'
                     . '<div class="progress" style="height:5px"><div class="progress-bar ' . ($ehVal ? 'bg-info' : 'bg-warning') . '" style="width:0%"></div></div>'
+                    . ($c['niveis'] ? '<div class="fx-marcas"></div>' : '')
                     . '</div>';
+            }
+            if ($pos > $maxVis) {
+                $h .= '<button type="button" class="btn btn-link btn-sm p-0 camp-ver-mais" onclick="this.closest(\'.camp-progress\').classList.toggle(\'aberto\')">'
+                    . '<span class="vm-mais">+ ' . et('ver mais') . ' ' . ($pos - $maxVis) . '</span><span class="vm-menos">' . et('ver menos') . '</span></button>';
             }
             if ($tot = $c['total']) {
                 $ehVal = $tot['modo'] === 'valor';
-                $h .= '<div class="camp-bar mb-1" data-tipo="total" data-meta="' . $tot['min'] . '" data-modo="' . ($ehVal ? 'valor' : 'qtd') . '">'
+                $h .= '<div class="camp-bar mb-1' . ($c['niveis'] ? ' camp-bar-fx' : '') . '" data-tipo="total" data-meta="' . $tot['min'] . '" data-modo="' . ($ehVal ? 'valor' : 'qtd') . '">'
                     . '<div class="d-flex justify-content-between fw-semibold" style="font-size:.68rem"><span>Σ ' . et('Total das condições') . '</span><span class="bar-txt">' . ($ehVal ? moedaBR(0) . '/' . moedaBR($tot['min']) : '0/' . (int)$tot['min']) . '</span></div>'
                     . '<div class="progress" style="height:5px"><div class="progress-bar ' . ($ehVal ? 'bg-info' : 'bg-warning') . '" style="width:0%"></div></div>'
+                    . ($c['niveis'] ? '<div class="fx-marcas"></div>' : '')
                     . '</div>';
             }
-            if ($c['niveis']) {
-                // Passos das faixas: F1 5% → F2 8% → F3 12%
-                $h .= '<div class="camp-regua"><div class="rg-passos">';
-                foreach ($c['niveis'] as $i => $nv) {
-                    $h .= '<div class="rg-passo" data-i="' . $i . '"><span class="rg-bola">' . ($i + 1) . '</span>'
-                        . '<b>' . rtrim(rtrim(number_format($nv['pct'], 2, ',', '.'), '0'), ',') . '%</b><small>' . et('Faixa') . ' ' . $nv['faixa'] . '</small></div>';
-                }
-                $h .= '</div><div class="rg-msg"></div></div>';
-            }
+            // Faixas: o que falta para a próxima (as marcas das faixas ficam em cada barra acima)
+            if ($c['niveis']) $h .= '<div class="camp-regua"><div class="rg-msg"></div></div>';
             if ($valorAlvo > 0) {
                 $h .= '<div class="camp-bar mb-1" data-tipo="valor" data-meta="' . $valorAlvo . '" data-modo="valor">'
                     . '<div class="d-flex justify-content-between" style="font-size:.68rem"><span>' . ($conds ? t('ou Valor') : t('Valor')) . '</span><span class="bar-txt">' . moedaBR(0) . '/' . moedaBR($valorAlvo) . '</span></div>'
@@ -757,10 +777,10 @@ require_once LAYOUT_PATH . '/header.php';
                 ? moedaBR((float)$c['bonif_limite_valor'])
                 : ((int)$c['bonif_limite_valor'] . ' ' . t('un.'));
         ?>
-        <div class="camp-chip d-flex align-items-start gap-2 border rounded-3 px-3 py-2" style="background:#f8fffe">
+        <div class="camp-chip d-flex align-items-start gap-2 border rounded-3 px-2 py-2">
             <?php if ($ehBonif): ?>
             <span class="badge bg-warning text-dark fs-6 fw-bold px-2"><i class="bi bi-gift"></i></span>
-            <div style="line-height:1.3">
+            <div class="flex-grow-1 min-w-0" style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?> <span class="camp-mult badge bg-success ms-1" style="display:none"><i class="bi bi-check-lg me-1"></i><?= et('atingida') ?></span></div>
                 <?php if ($c['gatilho'] !== ''): ?>
                 <div class="camp-obs my-1"><i class="bi bi-fire"></i><span><?= e($c['gatilho']) ?></span></div>
@@ -775,7 +795,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <?= $renderBarras($c) ?>
             </div>
             <?php else: ?>
-            <div style="line-height:1.3">
+            <div class="flex-grow-1 min-w-0" style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?> <span class="camp-mult badge bg-success ms-1" style="display:none"><i class="bi bi-check-lg me-1"></i><?= et('atingida') ?></span></div>
                 <?php if ($c['gatilho'] !== ''): ?>
                 <div class="camp-obs my-1"><i class="bi bi-fire"></i><span><?= e($c['gatilho']) ?></span></div>
@@ -1151,6 +1171,7 @@ var T = {
     campAtingidaNx:  <?= json_encode(t('campanha atingida %1×')) ?>,
     un:              <?= json_encode(t('un.')) ?>,
     faixa:           <?= json_encode(t('Faixa')) ?>,
+    campAtingidas:   <?= json_encode(t('%1 atingida(s)')) ?>,
     de:              <?= json_encode(t('de')) ?>,
     e:               <?= json_encode(t('E')) ?>,
     ou:              <?= json_encode(t('OU')) ?>,
@@ -1471,9 +1492,21 @@ function precoCampanhaHTML(origFmt, finalFmt, desc) {
 var _campFaixaAtual = {}; // código -> {faixa, pct} (maior faixa atingida, p/ o pop-up)
 function _campFmtMeta(v, porValor) { return porValor ? fmtBRL(Math.round(v * 100) / 100) : (Math.round(v) + ' ' + T.un); }
 function _campFmtPct(v) { return String(Math.round(v * 100) / 100).replace('.', ','); }
+// Recolher/mostrar o quadro de campanhas (preferência guardada neste navegador)
+function campBoxAlternar(forcar) {
+    var box = document.getElementById('campBox');
+    if (!box) return;
+    var rec = typeof forcar === 'boolean' ? forcar : !box.classList.contains('recolhido');
+    box.classList.toggle('recolhido', rec);
+    try { localStorage.setItem('sisped.campBoxRecolhido', rec ? '1' : '0'); } catch (e) {}
+    window.dispatchEvent(new Event('resize'));   // reposiciona o cabeçalho fixo da tabela
+}
+try { if (localStorage.getItem('sisped.campBoxRecolhido') === '1') campBoxAlternar(true); } catch (e) {}
+
 function atualizarBarrasCampanha(itens, valorTotal) {
     itens = itens || [];
     _campFaixaAtual = {};
+    var qtdAtingidas = 0;
     document.querySelectorAll('.camp-progress').forEach(function(box) {
         var code = box.dataset.codigo, trg = _campTriggers[code];
         // Faixas: as barras mostram o caminho até a PRÓXIMA faixa (ou a última, se já atingida)
@@ -1502,6 +1535,26 @@ function atualizarBarrasCampanha(itens, valorTotal) {
             }
             var done = meta > 0 && atual >= meta;
             var pct  = meta > 0 ? Math.min(100, atual / meta * 100) : 0;
+            var marcas = bar.querySelector('.fx-marcas');
+            if (marcas && trg && trg.niveis) {
+                // mínimo desta linha em cada faixa; a barra vai de 0 até o da última faixa
+                var mins = trg.niveis.map(function(lv) {
+                    if (tipo === 'total') return lv.total ? lv.total.min : 0;
+                    var cdL = lv.conds[parseInt(bar.dataset.idx)];
+                    return cdL ? (porValor ? cdL.valorMin : cdL.qtd) : 0;
+                });
+                var topo = Math.max.apply(null, mins) || 1;
+                pct = Math.min(100, atual / topo * 100);
+                marcas.innerHTML = trg.niveis.map(function(lv, i) {
+                    if (!(mins[i] > 0)) return '';
+                    var left = Math.min(100, mins[i] / topo * 100);
+                    var cls = (atual + 0.0001 >= mins[i] ? ' ok' : '') + (i === idxAt + 1 ? ' prox' : '');
+                    var pos = left >= 99.5 ? 'translateX(-100%)' : (left < 6 ? 'none' : 'translateX(-50%)');
+                    return '<span class="fx-tick' + cls + '" style="left:' + left + '%"></span>'
+                         + '<span class="fx-marca' + cls + '" style="left:' + left + '%;transform:' + pos + '"><b>' + _campFmtPct(lv.pct) + '%</b> '
+                         + (porValor ? fmtBRL(mins[i]) : Math.round(mins[i])) + '</span>';
+                }).join('');
+            }
             var pb   = bar.querySelector('.progress-bar');
             pb.style.width = pct.toFixed(0) + '%';
             pb.classList.toggle('bg-success', done);
@@ -1521,11 +1574,6 @@ function atualizarBarrasCampanha(itens, valorTotal) {
         var rg = box.querySelector('.camp-regua');
         if (rg && trg && trg.niveis) {
             var ultimo = trg.niveis.length - 1;
-            rg.querySelectorAll('.rg-passo').forEach(function(ps) {
-                var i = parseInt(ps.dataset.i);
-                ps.classList.toggle('ok', i <= idxAt);
-                ps.classList.toggle('prox', i === idxAt + 1);
-            });
             var msg;
             if (idxAt === ultimo) {
                 msg = '<i class="bi bi-trophy-fill me-1"></i><strong>' + _tfmt(T.rgMaximo, { '%1': _campFmtPct(nv.pct) }) + '</strong>';
@@ -1553,7 +1601,13 @@ function atualizarBarrasCampanha(itens, valorTotal) {
         var chip = box.closest('.camp-chip');
         var badge = chip ? chip.querySelector('.camp-mult') : null;
         if (badge) badge.style.display = mult >= 1 ? '' : 'none';   // só indica que foi atingida (sem nº de vezes)
+        if (mult >= 1) qtdAtingidas++;
     });
+    var cnt = document.getElementById('campAtingidasQtd');
+    if (cnt) {
+        cnt.textContent = _tfmt(T.campAtingidas, { '%1': qtdAtingidas });
+        cnt.classList.toggle('d-none', qtdAtingidas === 0);
+    }
 }
 
 function atualizarQtd(visualInput) {
