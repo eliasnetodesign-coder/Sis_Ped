@@ -20,9 +20,10 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
     <?php if ($_usuario && $_usuario['tipo'] !== 'cliente'): ?>
     <script>(function(){try{if(localStorage.getItem('sisped-theme')==='dark')document.documentElement.setAttribute('data-bs-theme','dark');}catch(e){}})();</script>
     <?php endif; ?>
+    <script>(function(){try{if(localStorage.getItem('sisped-sidebar')==='collapsed')document.documentElement.classList.add('sidebar-collapsed');}catch(e){}})();</script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="<?= ASSETS_URL ?>/css/style.css" rel="stylesheet">
+    <link href="<?= ASSETS_URL ?>/css/style.css?v=<?= @filemtime(__DIR__ . '/../assets/css/style.css') ?>" rel="stylesheet">
 </head>
 <body>
 
@@ -35,6 +36,11 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
                  onerror="this.style.display='none'">
         </a>
         <?php if ($_usuario): ?>
+        <button type="button" class="btn btn-link text-white d-none d-md-inline-block p-1 ms-2 border-0 lh-1"
+                id="sidebarToggle"
+                title="<?= et('Mostrar/ocultar menu') ?>" aria-label="<?= et('Mostrar/ocultar menu') ?>">
+            <i class="bi bi-layout-sidebar fs-5" id="sidebarToggleIcon"></i>
+        </button>
         <button class="btn btn-link text-white d-md-none p-1 ms-2 border-0"
                 type="button"
                 data-bs-toggle="offcanvas"
@@ -571,6 +577,51 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
             var t = document.getElementById(p[0]);
             if (m && m.style.display === 'block' && t) showFlyout(t, m);
         });
+    }, true);
+}());
+
+// Recolher/expandir sidebar (desktop): recolhido mostra só os ícones — persiste em localStorage
+(function () {
+    var btn = document.getElementById('sidebarToggle');
+    var sidebar = document.getElementById('sidebarMenu');
+    if (!btn || !sidebar) return;
+    var root = document.documentElement;
+    var icon = document.getElementById('sidebarToggleIcon');
+
+    // Tooltip com o nome do item (útil quando só o ícone aparece)
+    sidebar.querySelectorAll('.nav-link, .btn').forEach(function (el) {
+        if (!el.title) el.title = el.textContent.replace(/\s+/g, ' ').trim();
+    });
+
+    function isCollapsed() { return root.classList.contains('sidebar-collapsed'); }
+    function setCollapsed(c) {
+        root.classList.toggle('sidebar-collapsed', c);
+        // Fecha flyouts abertos (ficam ancorados ao sidebar)
+        document.querySelectorAll('body > .sidebar-flyout-menu').forEach(function (m) { m.style.display = 'none'; });
+        sidebar.querySelectorAll('.sidebar-chevron').forEach(function (ch) { ch.style.transform = ''; });
+        try { localStorage.setItem('sisped-sidebar', c ? 'collapsed' : 'expanded'); } catch (err) {}
+        paint();
+    }
+    function paint() {
+        var c = isCollapsed();
+        if (icon) icon.className = 'bi fs-5 ' + (c ? 'bi-layout-sidebar-inset' : 'bi-layout-sidebar');
+        btn.setAttribute('aria-expanded', c ? 'false' : 'true');
+    }
+    paint();
+
+    btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setCollapsed(!isCollapsed());
+    });
+
+    // Recolhido: clicar em qualquer ícone expande o menu (e abre o submenu, se for um grupo)
+    sidebar.addEventListener('click', function (e) {
+        if (!isCollapsed() || window.innerWidth < 768) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var grupo = e.target.closest('.sidebar-flyout-wrap > .nav-link');
+        setCollapsed(false);
+        if (grupo) setTimeout(function () { grupo.click(); }, 0);
     }, true);
 }());
 

@@ -360,6 +360,32 @@ body > .sidebar-flyout-menu {
     }
 }
 
+/* Sidebar recolhida pelo botão da navbar (desktop): só ícones */
+@media (min-width: 768px) {
+    html.sidebar-collapsed #sidebarMenu {
+        --bs-offcanvas-width: 64px;
+        width: 64px !important;
+        min-width: 64px;
+        cursor: pointer;
+    }
+    html.sidebar-collapsed #sidebarMenu .text-uppercase,
+    html.sidebar-collapsed #sidebarMenu .sidebar-chevron,
+    html.sidebar-collapsed #sidebarMenu .btn strong { display: none !important; }
+    html.sidebar-collapsed #sidebarMenu .nav-link,
+    html.sidebar-collapsed #sidebarMenu .btn {
+        font-size: 0;
+        justify-content: center !important;
+        text-align: center;
+        padding-left: 0;
+        padding-right: 0;
+    }
+    html.sidebar-collapsed #sidebarMenu .nav-link i,
+    html.sidebar-collapsed #sidebarMenu .btn i {
+        font-size: 1.15rem;
+        margin: 0 !important;
+    }
+}
+
 /* Página sem scroll horizontal (clip não cria contêiner de rolagem → não quebra position:sticky) */
 body { overflow-x: clip; }
 

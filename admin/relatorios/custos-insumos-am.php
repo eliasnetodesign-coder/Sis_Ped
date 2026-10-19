@@ -43,6 +43,7 @@ $fimB = $dataOk($_GET['fim_b'] ?? null) ?: $fim;
 $iniA = $dataOk($_GET['ini_a'] ?? null) ?: date('Y-m-d', strtotime($iniB . ' -3 months'));
 $fimA = $dataOk($_GET['fim_a'] ?? null) ?: date('Y-m-d', strtotime($iniB . ' -1 day'));
 $soAmbos = ($_GET['ambos'] ?? '1') === '1';
+$modoPreco = ($_GET['preco'] ?? 'fixo') === 'medio' ? 'medio' : 'fixo';   // padrão = Fixo (pedido do usuário)
 
 // Opções dos filtros (do tipo escolhido, todas as datas)
 $st = db()->prepare('SELECT fornecedor_codigo, MAX(fornecedor_nome) AS nome FROM custos_insumos_compras WHERE tipo = ?
@@ -68,9 +69,10 @@ $compras = $buscar($ini, $fim);
 // Agrupamento por insumo + unidade (o mesmo insumo pode vir em unidades diferentes — ex.: fita em M e PC —
 // e preço por metro não se compara com preço por peça). Preço médio = ponderado pela quantidade.
 $chave = fn($c) => $c['insumo_codigo'] . '|' . $c['unidade'];
-$novoAcc = fn() => ['n' => 0, 'qtd' => 0.0, 'valor' => 0.0, 'min' => null, 'max' => null];
+$novoAcc = fn() => ['n' => 0, 'qtd' => 0.0, 'valor' => 0.0, 'min' => null, 'max' => null, 'ult' => null];
 $acumula = function (array &$a, array $c) {
     $vu = (float)$c['valor_unitario'];
+    $a['ult'] = $vu;                                       // compras em ordem de data, id → fica a última
     $a['n']++;
     $a['qtd']   += (float)$c['quantidade'];
     $a['valor'] += (float)$c['quantidade'] * $vu;
@@ -78,18 +80,25 @@ $acumula = function (array &$a, array $c) {
     if ($a['min'] === null || $vu <= $a['min']) { $a['min'] = $vu; $a['min_data'] = $c['data']; }
     if ($a['max'] === null || $vu >= $a['max']) { $a['max'] = $vu; $a['max_data'] = $c['data']; }
 };
-$pm = fn(array $a) => $a['qtd'] > 0 ? $a['valor'] / $a['qtd'] : ($a['n'] ? $a['min'] : null);
+// Preço considerado em todas as abas: "medio" = médio ponderado; "fixo" = valor da ÚLTIMA compra do mês
+// (na evolução mensal) ou do período/fornecedor (no resumo, no A × B e por fornecedor).
+$pmMedio = fn(array $a) => $a['qtd'] > 0 ? $a['valor'] / $a['qtd'] : ($a['n'] ? $a['min'] : null);
+$pm = fn(array $a) => $modoPreco === 'fixo' ? $a['ult'] : $pmMedio($a);
+$rotPreco = $modoPreco === 'fixo' ? 'Preço fixo' : 'Preço médio';
 
 $insumos = []; $porForn = []; $meses = []; $totForn = []; $total = $novoAcc();
 foreach ($compras as $c) {
     $k = $chave($c);
     if (!isset($insumos[$k])) {
         $insumos[$k] = ['codigo' => $c['insumo_codigo'], 'nome' => $c['insumo_nome'], 'un' => $c['unidade'], 'acc' => $novoAcc(),
-                        'primeiro' => $c, 'ultimo' => $c, 'forn' => [], 'mes' => []];
+                        'penultimo' => null, 'ultimo' => null, 'forn' => [], 'mes' => []];
     }
     $I = &$insumos[$k];
     $acumula($I['acc'], $c);
-    $I['ultimo'] = $c;                                     // ordenado por data, id
+    $I['hist'][] = [$c['data'], $c['nf'], $c['fornecedor_nome'], (float)$c['quantidade'], (float)$c['valor_unitario']];
+    // Ordenado por data, id. Linhas da mesma NF na mesma data são UMA compra: não viram "penúltima".
+    if ($I['ultimo'] && ($I['ultimo']['nf'] !== $c['nf'] || $I['ultimo']['data'] !== $c['data'])) $I['penultimo'] = $I['ultimo'];
+    $I['ultimo'] = $c;
     $fk = $c['fornecedor_codigo'];
     if (!isset($I['forn'][$fk])) $I['forn'][$fk] = ['nome' => $c['fornecedor_nome'], 'acc' => $novoAcc(), 'ultimo' => $c];
     $acumula($I['forn'][$fk]['acc'], $c);
@@ -164,8 +173,8 @@ $mesNome = function (string $ym): string {
     static $n = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
     return $n[(int)substr($ym, 5, 2) - 1] . '/' . substr($ym, 2, 2);
 };
-$linkInsumo = function (string $codigo, string $nome, string $visaoDest = 'compras') use ($self, $tipo, $ini, $fim, $forn): string {
-    $u = $self . '?' . http_build_query(['tipo' => $tipo, 'ini' => $ini, 'fim' => $fim, 'fornecedor' => $forn, 'q' => $codigo, 'visao' => $visaoDest]);
+$linkInsumo = function (string $codigo, string $nome, string $visaoDest = 'compras') use ($self, $tipo, $ini, $fim, $forn, $modoPreco): string {
+    $u = $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim, 'fornecedor' => $forn, 'q' => $codigo, 'visao' => $visaoDest]);
     return '<a href="' . e($u) . '" class="text-reset text-decoration-none" title="Ver as compras deste insumo">' . e($nome) . '</a>';
 };
 $ordAttrs = function (array $o): string {
@@ -211,6 +220,15 @@ require_once LAYOUT_PATH . '/header.php';
                     <input type="radio" class="btn-check" name="tipo" id="tipo-<?= $tk ?>" value="<?= $tk ?>" <?= $tipo === $tk ? 'checked' : '' ?>
                            onchange="this.form.fornecedor.value='';this.form.q.value='';this.form.submit()">
                     <label class="btn btn-outline-primary" for="tipo-<?= $tk ?>"><i class="bi <?= $tk === 'mp' ? 'bi-droplet' : 'bi-box-seam' ?> me-1"></i><?= $tn ?></label>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="col-12 col-lg-auto">
+                <label class="form-label small fw-semibold mb-1">Preço</label>
+                <div class="btn-group w-100" role="group" title="Médio = ponderado pela quantidade; Fixo = valor da última compra do mês/período">
+                    <?php foreach (['medio' => 'Médio', 'fixo' => 'Fixo'] as $pk => $pn): ?>
+                    <input type="radio" class="btn-check" name="preco" id="preco-<?= $pk ?>" value="<?= $pk ?>" <?= $modoPreco === $pk ? 'checked' : '' ?> onchange="this.form.submit()">
+                    <label class="btn btn-outline-primary" for="preco-<?= $pk ?>"><?= $pn ?></label>
                     <?php endforeach; ?>
                 </div>
             </div>
@@ -265,6 +283,7 @@ require_once LAYOUT_PATH . '/header.php';
 .tbl-fixa .col-fixa{position:sticky;left:0;z-index:2;background:var(--bs-body-bg)}
 .tbl-fixa thead th.col-fixa{z-index:4}
 .grp-ini td{border-top:2px solid var(--bs-border-color)}
+tr[data-hist]{cursor:pointer}
 .badge-menor{background:#eaf5ef;color:#1e6b3a;border:1px solid #9ed3b1}
 .badge-maior{background:#fdecec;color:#a12828;border:1px solid #f1a9a9}
 [data-bs-theme="dark"] .badge-menor{background:rgba(86,141,102,.22);color:#9ed3b1;border-color:rgba(158,211,177,.35)}
@@ -319,19 +338,26 @@ $abas = [
 <table class="table table-hover table-sm align-middle mb-0 tbl-fixa" style="font-size:.85rem">
     <thead class="table-light"><tr><?= $thOrd([
         'codigo' => ['Código', '', 'num'], 'nome' => ['Insumo', '', 'txt'], 'un' => ['Un.', '', 'txt'], 'n' => ['Compras', 'text-end', 'num'],
-        'qtd' => ['Qtd. total', 'text-end', 'num'], 'valor' => ['Valor total', 'text-end', 'num'], 'pm' => ['Preço médio', 'text-end', 'num'],
-        'min' => ['Menor', 'text-end', 'num'], 'max' => ['Maior', 'text-end', 'num'], 'pri' => ['1º preço', 'text-end', 'num'],
-        'ult' => ['Último preço', 'text-end', 'num'], 'var' => ['Var. 1º → último', 'text-end', 'num'], 'nforn' => ['Forn.', 'text-end', 'num'],
+        'qtd' => ['Qtd. total', 'text-end', 'num'], 'valor' => ['Valor total', 'text-end', 'num'], 'pm' => [$rotPreco, 'text-end', 'num'],
+        'min' => ['Menor', 'text-end', 'num'], 'max' => ['Maior', 'text-end', 'num'], 'pen' => ['Penúltimo preço', 'text-end', 'num'],
+        'ult' => ['Último preço', 'text-end', 'num'], 'var' => ['Var. penúlt. → última', 'text-end', 'num'], 'nforn' => ['Forn.', 'text-end', 'num'],
     ]) ?></tr></thead>
     <tbody>
-    <?php foreach ($insumos as $I):
-        $a = $I['acc']; $p1 = (float)$I['primeiro']['valor_unitario']; $pu = (float)$I['ultimo']['valor_unitario'];
-        $var = $I['primeiro']['id'] !== $I['ultimo']['id'] && $p1 > 0 ? ($pu / $p1 - 1) * 100 : null; ?>
+    <?php $histJs = [];
+    foreach ($insumos as $I):
+        // Histórico de compras do insumo para o modal (abre ao clicar na linha).
+        $hIdx = count($histJs);
+        $histJs[] = ['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
+                     'url' => $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim,
+                                                              'fornecedor' => $forn, 'q' => $I['codigo'], 'visao' => 'compras'])];
+        $a = $I['acc']; $pu = (float)$I['ultimo']['valor_unitario'];
+        $pp = $I['penultimo'] ? (float)$I['penultimo']['valor_unitario'] : null;
+        $var = $pp > 0 ? ($pu / $pp - 1) * 100 : null; ?>
         <tr class="lin-ord"<?= $ordAttrs(['codigo' => $I['codigo'], 'nome' => $I['nome'], 'un' => $I['un'], 'n' => $a['n'], 'qtd' => $a['qtd'],
-            'valor' => round($a['valor'], 2), 'pm' => $pm($a), 'min' => $a['min'], 'max' => $a['max'], 'pri' => $p1, 'ult' => $pu,
-            'var' => $var ?? -99999, 'nforn' => count($I['forn'])]) ?>>
+            'valor' => round($a['valor'], 2), 'pm' => $pm($a), 'min' => $a['min'], 'max' => $a['max'], 'pen' => $pp ?? -1, 'ult' => $pu,
+            'var' => $var ?? -99999, 'nforn' => count($I['forn'])]) ?> data-hist="<?= $hIdx ?>" tabindex="0" title="Clique para ver o histórico de compras">
             <td class="text-muted"><?= e($I['codigo']) ?></td>
-            <td class="fw-semibold"><?= $linkInsumo($I['codigo'], $I['nome']) ?></td>
+            <td class="fw-semibold"><i class="bi bi-clock-history text-primary me-1 small"></i><?= e($I['nome']) ?></td>
             <td><?= e($I['un']) ?></td>
             <td class="text-end"><?= $a['n'] ?></td>
             <td class="text-end"><?= qtdFmt($a['qtd']) ?></td>
@@ -339,7 +365,7 @@ $abas = [
             <td class="text-end fw-semibold"><?= precoUn($pm($a)) ?></td>
             <td class="text-end"><?= precoUn($a['min']) ?><div class="small text-muted"><?= dataBR($a['min_data']) ?></div></td>
             <td class="text-end"><?= precoUn($a['max']) ?><div class="small text-muted"><?= dataBR($a['max_data']) ?></div></td>
-            <td class="text-end" title="<?= dataBR($I['primeiro']['data']) ?>"><?= precoUn($p1) ?><div class="small text-muted"><?= dataBR($I['primeiro']['data']) ?></div></td>
+            <td class="text-end"<?= $I['penultimo'] ? ' title="' . e($I['penultimo']['fornecedor_nome']) . '"' : '' ?>><?= precoUn($pp) ?><?php if ($I['penultimo']): ?><div class="small text-muted"><?= dataBR($I['penultimo']['data']) ?></div><?php endif; ?></td>
             <td class="text-end" title="<?= e($I['ultimo']['fornecedor_nome']) ?>"><?= precoUn($pu) ?><div class="small text-muted"><?= dataBR($I['ultimo']['data']) ?></div></td>
             <td class="text-end"><?= varPct($var) ?></td>
             <td class="text-end"><?= count($I['forn']) ?></td>
@@ -354,8 +380,10 @@ $abas = [
     <?php endif; ?>
 </table>
 </div></div></div>
-<p class="small text-muted mt-2 mb-0">Preço médio = ponderado pela quantidade (Σ qtd × valor unitário ÷ Σ qtd). “Var. 1º → último” compara o preço da primeira
-    e da última compra do período. O mesmo insumo em unidades diferentes (ex.: M e PC) aparece em linhas separadas. Clique no nome para ver as compras.</p>
+<p class="small text-muted mt-2 mb-0"><?= $modoPreco === 'fixo'
+        ? 'Preço fixo = valor unitário da última compra do período.'
+        : 'Preço médio = ponderado pela quantidade (Σ qtd × valor unitário ÷ Σ qtd).' ?>
+    “Var. penúlt. → última” compara o preço da penúltima com o da última compra do período (linhas da mesma NF contam como uma compra). O mesmo insumo em unidades diferentes (ex.: M e PC) aparece em linhas separadas. Clique na linha para ver o histórico de compras do insumo.</p>
 </div>
 
 <!-- ══ Período A × B ══ -->
@@ -404,8 +432,8 @@ $abas = [
 <table class="table table-hover table-sm align-middle mb-0 tbl-fixa" style="font-size:.85rem">
     <thead class="table-light"><tr><?= $thOrd([
         'codigo' => ['Código', '', 'num'], 'nome' => ['Insumo', '', 'txt'], 'un' => ['Un.', '', 'txt'],
-        'na' => ['Compras A', 'text-end', 'num'], 'qa' => ['Qtd. A', 'text-end', 'num'], 'pa' => ['Preço médio A', 'text-end', 'num'],
-        'nb' => ['Compras B', 'text-end', 'num'], 'qb' => ['Qtd. B', 'text-end', 'num'], 'pb' => ['Preço médio B', 'text-end', 'num'],
+        'na' => ['Compras A', 'text-end', 'num'], 'qa' => ['Qtd. A', 'text-end', 'num'], 'pa' => [$rotPreco . ' A', 'text-end', 'num'],
+        'nb' => ['Compras B', 'text-end', 'num'], 'qb' => ['Qtd. B', 'text-end', 'num'], 'pb' => [$rotPreco . ' B', 'text-end', 'num'],
         'dif' => ['Dif. R$/un.', 'text-end', 'num'], 'var' => ['Var. %', 'text-end', 'num'], 'imp' => ['Impacto em B', 'text-end', 'num'],
     ]) ?></tr></thead>
     <tbody>
@@ -438,7 +466,7 @@ $abas = [
     <?php endif; ?>
 </table>
 </div></div></div>
-<p class="small text-muted mt-2 mb-0">Preço médio ponderado pela quantidade em cada período. Impacto em B = Qtd. B × (Preço B − Preço A): quanto se pagou a mais (+, vermelho)
+<p class="small text-muted mt-2 mb-0"><?= $modoPreco === 'fixo' ? 'Preço fixo = valor da última compra de cada período.' : 'Preço médio ponderado pela quantidade em cada período.' ?> Impacto em B = Qtd. B × (Preço B − Preço A): quanto se pagou a mais (+, vermelho)
     ou a menos (−, verde) em B em relação aos preços de A. Variação ponderada = Σ Qtd. B × Preço B ÷ Σ Qtd. B × Preço A − 1, só com insumos dos dois períodos.</p>
 </div>
 
@@ -450,22 +478,22 @@ $abas = [
         <th class="col-ord col-fixa" data-col="nome" data-tipo="txt" tabindex="0" title="Clique para ordenar">Insumo<i class="bi bi-arrow-down-up ord-ico"></i></th>
         <th>Un.</th>
         <?php foreach ($meses as $m): ?><th class="text-end"><?= $mesNome($m) ?></th><?php endforeach; ?>
-        <th class="col-ord text-end" data-col="var" data-tipo="num" tabindex="0" title="Clique para ordenar">Var. 1º → último mês<i class="bi bi-arrow-down-up ord-ico"></i></th>
+        <th class="col-ord text-end" data-col="var" data-tipo="num" tabindex="0" title="Clique para ordenar">Var. penúlt. → último mês<i class="bi bi-arrow-down-up ord-ico"></i></th>
     </tr></thead>
     <tbody>
     <?php foreach ($insumos as $I):
-        $ant = null; $pPri = null; $pUlt = null; $cel = '';
+        $ant = null; $pPen = null; $pUlt = null; $cel = '';
         foreach ($meses as $m) {
             if (!isset($I['mes'][$m])) { $cel .= '<td class="text-end text-muted">·</td>'; continue; }
             $p = $pm($I['mes'][$m]);
-            $pPri = $pPri ?? $p; $pUlt = $p;
+            $pPen = $pUlt; $pUlt = $p;
             $cls = $ant === null || abs($p - $ant) < 0.00005 ? '' : ($p > $ant ? 'text-danger' : 'text-success');
             $tit = $I['mes'][$m]['n'] . ' compra(s), ' . qtdFmt($I['mes'][$m]['qtd']) . ' ' . $I['un'];
             if ($ant !== null && $ant > 0) $tit .= ', ' . ($p >= $ant ? '+' : '') . number_format(($p / $ant - 1) * 100, 2, ',', '.') . '% vs mês anterior com compra';
             $cel .= '<td class="text-end text-nowrap ' . $cls . '" title="' . e($tit) . '">' . precoUn($p) . '</td>';
             $ant = $p;
         }
-        $varM = $pPri && $pUlt !== null && count($I['mes']) > 1 ? ($pUlt / $pPri - 1) * 100 : null; ?>
+        $varM = $pPen > 0 && $pUlt !== null ? ($pUlt / $pPen - 1) * 100 : null; ?>
         <tr class="lin-ord"<?= $ordAttrs(['nome' => $I['nome'], 'var' => $varM ?? -99999]) ?>>
             <td class="fw-semibold col-fixa"><?= $linkInsumo($I['codigo'], $I['nome']) ?> <span class="text-muted fw-normal small"><?= e($I['codigo']) ?></span></td>
             <td><?= e($I['un']) ?></td>
@@ -478,7 +506,8 @@ $abas = [
     </tbody>
 </table>
 </div></div></div>
-<p class="small text-muted mt-2 mb-0">Preço médio ponderado de cada mês. Vermelho = mais caro que o mês anterior com compra; verde = mais barato; “·” = sem compra no mês.
+<p class="small text-muted mt-2 mb-0"><?= $modoPreco === 'fixo' ? 'Preço fixo = valor da última compra de cada mês.' : 'Preço médio ponderado de cada mês.' ?>
+    “Var. penúlt. → último mês” compara o penúltimo com o último mês com compra. Vermelho = mais caro que o mês anterior com compra; verde = mais barato; “·” = sem compra no mês.
     Passe o mouse no valor para ver as compras e a variação.</p>
 </div>
 
@@ -519,7 +548,7 @@ $abas = [
     <table class="table table-sm align-middle mb-0 tbl-fixa" id="tblMulti" style="font-size:.85rem">
         <thead class="table-light"><tr>
             <th>Insumo</th><th>Fornecedor</th><th class="text-end">Compras</th><th class="text-end">Qtd.</th>
-            <th class="text-end">Preço médio</th><th class="text-end">Menor</th><th class="text-end">Último preço</th><th class="text-end">vs. mais barato</th>
+            <th class="text-end"><?= $rotPreco ?></th><th class="text-end">Menor</th><th class="text-end">Último preço</th><th class="text-end">vs. mais barato</th>
         </tr></thead>
         <tbody>
         <?php foreach ($insumos as $I):
@@ -549,7 +578,8 @@ $abas = [
         </tbody>
     </table>
     </div></div></div>
-    <p class="small text-muted mt-2 mb-0">Fornecedores ordenados do menor para o maior preço médio no período. “vs. mais barato” = quanto o preço médio do fornecedor está acima do mais barato.</p>
+    <p class="small text-muted mt-2 mb-0">Fornecedores ordenados do menor para o maior <?= mb_strtolower($rotPreco) ?> no período<?= $modoPreco === 'fixo' ? ' (última compra de cada fornecedor)' : '' ?>.
+        “vs. mais barato” = quanto o <?= mb_strtolower($rotPreco) ?> do fornecedor está acima do mais barato.</p>
 </div>
 </div>
 </div>
@@ -589,6 +619,37 @@ $abas = [
 </div>
 
 </div><!-- /tab-content -->
+
+<!-- ══ Modal: histórico de compras do insumo (aba Resumo) ══ -->
+<div class="modal fade" id="modalHist" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0"><i class="bi bi-clock-history me-2"></i><span id="histTitulo"></span></h5>
+                    <div class="small text-muted" id="histSub"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 mb-3" id="histCards"></div>
+                <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0" style="font-size:.85rem">
+                    <thead class="table-light"><tr>
+                        <th>Data</th><th>NF</th><th>Fornecedor</th><th class="text-end">Qtd.</th>
+                        <th class="text-end">Valor unitário</th><th class="text-end">Var. vs compra anterior</th><th class="text-end">Total</th>
+                    </tr></thead>
+                    <tbody id="histCorpo"></tbody>
+                </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <a href="#" id="histLink" class="btn btn-outline-secondary btn-sm"><i class="bi bi-receipt me-1"></i>Abrir na aba Compras</a>
+                <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- ══ Modal de importação ══ -->
 <div class="modal fade" id="modalImportar" tabindex="-1">
@@ -687,6 +748,51 @@ function aplicarAB() {
     f.elements.visao.value = 'periodo';
     f.submit();
 }
+// Histórico de compras do insumo: [data, nf, fornecedor, qtd, valor unitário], em ordem de data.
+var HIST = <?= json_encode($histJs ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+var PERIODO = <?= json_encode(dataBR($ini) . ' a ' . dataBR($fim)) ?>;
+function hEsc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+function hPreco(v) { return 'R$ ' + v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 4}); }
+function hMoeda(v) { return 'R$ ' + v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+function hQtd(v) { return v.toLocaleString('pt-BR', {maximumFractionDigits: 3}); }
+function hData(d) { return d.split('-').reverse().join('/'); }
+function hVar(v) {
+    if (v === null) return '<span class="text-muted">—</span>';
+    if (Math.abs(v) < 0.005) return '<span class="text-muted">0,00%</span>';
+    return '<span class="fw-semibold text-nowrap ' + (v > 0 ? 'text-danger' : 'text-success') + '"><i class="bi ' + (v > 0 ? 'bi-arrow-up-short' : 'bi-arrow-down-short') + '"></i>'
+         + (v > 0 ? '+' : '') + v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '%</span>';
+}
+function abrirHist(i) {
+    var h = HIST[i]; if (!h) return;
+    var qtd = 0, valor = 0, min = null, max = null, forn = {}, nfs = {}, linhas = [], ant = null;
+    h.l.forEach(function (c, j) {
+        var tot = c[3] * c[4];
+        qtd += c[3]; valor += tot; forn[c[2]] = 1; nfs[c[0] + '|' + c[1]] = 1;
+        min = min === null ? c[4] : Math.min(min, c[4]); max = max === null ? c[4] : Math.max(max, c[4]);
+        // compara com a compra anterior (outra NF/data); linhas da mesma NF são a mesma compra
+        if (j > 0 && (h.l[j - 1][1] !== c[1] || h.l[j - 1][0] !== c[0])) ant = h.l[j - 1][4];
+        var v = ant ? (c[4] / ant - 1) * 100 : null;
+        linhas.push('<tr><td class="text-nowrap">' + hData(c[0]) + '</td><td>' + hEsc(c[1]) + '</td><td>' + hEsc(c[2]) + '</td>'
+            + '<td class="text-end">' + hQtd(c[3]) + ' ' + hEsc(h.u) + '</td><td class="text-end fw-semibold' + (c[4] === min ? ' text-success' : (c[4] === max ? ' text-danger' : '')) + '">' + hPreco(c[4]) + '</td>'
+            + '<td class="text-end">' + hVar(v) + '</td><td class="text-end">' + hMoeda(tot) + '</td></tr>');
+    });
+    document.getElementById('histTitulo').textContent = h.n;
+    document.getElementById('histSub').textContent = 'Código ' + h.c + ' · unidade ' + h.u + ' · ' + PERIODO;
+    var cards = [['Compras', Object.keys(nfs).length], ['Qtd. total', hQtd(qtd) + ' ' + h.u], ['Valor total', hMoeda(valor)],
+                 ['Preço médio', qtd > 0 ? hPreco(valor / qtd) : '—'], ['Menor / maior', hPreco(min) + ' / ' + hPreco(max)],
+                 ['Fornecedores', Object.keys(forn).length]];
+    document.getElementById('histCards').innerHTML = cards.map(function (c) {
+        return '<div class="col-6 col-md-4 col-xl-2"><div class="border rounded p-2 h-100"><div class="small text-muted text-uppercase fw-semibold">' + c[0]
+             + '</div><div class="fw-bold">' + c[1] + '</div></div></div>';
+    }).join('');
+    document.getElementById('histCorpo').innerHTML = linhas.reverse().join('');   // mais recente primeiro
+    document.getElementById('histLink').href = h.url;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('modalHist')).show();
+}
+Array.prototype.forEach.call(document.querySelectorAll('tr[data-hist]'), function (tr) {
+    tr.addEventListener('click', function () { abrirHist(+tr.dataset.hist); });
+    tr.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') abrirHist(+tr.dataset.hist); });
+});
 function filtraMulti() {
     var so = document.getElementById('chkMulti').checked;
     Array.prototype.forEach.call(document.querySelectorAll('#tblMulti tr.unico'), function (tr) { tr.classList.toggle('d-none', so); });
