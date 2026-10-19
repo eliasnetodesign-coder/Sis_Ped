@@ -53,6 +53,8 @@ $qLog = db()->prepare('SELECT COUNT(*) FROM descontos_diretoria_am_logs WHERE DA
 $qLog->execute([$ini, $fim]);
 $qtdLogAm = (int)$qLog->fetchColumn();
 
+$qtdInsumos = (int)db()->query("SELECT COUNT(DISTINCT tipo, insumo_codigo) FROM custos_insumos_compras")->fetchColumn();
+
 $quadros = [
     [
         'slug'  => 'margem-am',
@@ -91,6 +93,15 @@ $quadros = [
         'cor'   => 'primary',
         'contador' => $qtdLogAm,
         'contador_label' => 'gravações neste mês',
+    ],
+    [
+        'slug'  => 'custos-insumos-am',
+        'titulo'=> 'Custos de MP e Embalagem',
+        'desc'  => 'Preço pago nas compras de matéria-prima e de material de embalagem (Listagem Resumida do A&M, importada em Excel): evolução, comparativo entre períodos e entre fornecedores.',
+        'icon'  => 'bi-box2',
+        'cor'   => 'primary',
+        'contador' => $qtdInsumos,
+        'contador_label' => 'insumos com compras importadas',
     ],
 ];
 

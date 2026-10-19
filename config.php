@@ -397,6 +397,39 @@ function db() {
                 produto_nome   VARCHAR(180) NULL,
                 UNIQUE KEY uq_codigo (codigo_produto)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Compras de matéria-prima / material de embalagem importadas da "Listagem Resumida"
+            // do A&M (relatório Custos de MP e Embalagem — ver custosInsumosLerXlsx()).
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS custos_insumos_importacoes (
+                id            INT AUTO_INCREMENT PRIMARY KEY,
+                tipo          ENUM('mp','emb') NOT NULL,
+                empresa       VARCHAR(150) NULL,
+                periodo_ini   DATE NULL,
+                periodo_fim   DATE NULL,
+                arquivo       VARCHAR(200) NULL,
+                linhas        INT NOT NULL DEFAULT 0,
+                substituidas  INT NOT NULL DEFAULT 0,
+                usuario_id    INT NULL,
+                usuario_nome  VARCHAR(100) NULL,
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS custos_insumos_compras (
+                id                INT AUTO_INCREMENT PRIMARY KEY,
+                importacao_id     INT NULL,
+                tipo              ENUM('mp','emb') NOT NULL,
+                empresa           VARCHAR(150) NULL,
+                insumo_codigo     VARCHAR(30) NOT NULL,
+                insumo_nome       VARCHAR(200) NULL,
+                data              DATE NOT NULL,
+                valor_unitario    DECIMAL(16,6) NOT NULL DEFAULT 0,
+                quantidade        DECIMAL(16,4) NOT NULL DEFAULT 0,
+                unidade           VARCHAR(10) NULL,
+                nf                VARCHAR(30) NULL,
+                fornecedor_codigo VARCHAR(30) NULL,
+                fornecedor_nome   VARCHAR(200) NULL,
+                KEY idx_tipo_data (tipo, data),
+                KEY idx_insumo (insumo_codigo),
+                KEY idx_fornecedor (fornecedor_codigo)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
             try {
                 if ((int)$pdo->query('SELECT COUNT(*) FROM campanhas_am')->fetchColumn() === 0) {
                     campanhasAmSeedInicial($pdo);
@@ -4063,4 +4096,119 @@ function bonusExportacaoSelecionavel(float $valorBase, string $moeda = 'BRL'): a
         'moeda'       => strtoupper($moeda),
         'produtos'    => $produtos,
     ];
+}
+
+/**
+ * Lê a "Listagem Resumida" de compras do A&M (Matéria Prima ou Materiais de Embalagem) em .xlsx.
+ * Layout: linha 2 = empresa ("005 - NETWORK ..."), linha 3 = "Tipo: <tipo> De: dd/mm/aaaa Até: dd/mm/aaaa";
+ * depois blocos "Produto | <cód> - <nome>", cabeçalho "Data | Valor Unitário | Quantidade | Unidade | NF | Empresa"
+ * e as compras (Data = número de série do Excel; Empresa = fornecedor "<cód> - <nome>").
+ * Retorna ['tipo'=>'mp'|'emb'|null, 'empresa', 'ini', 'fim', 'linhas'=>[...], 'avisos'=>[...]] ou lança Exception.
+ */
+function custosInsumosLerXlsx(string $path): array {
+    $zip = new ZipArchive();
+    if ($zip->open($path) !== true) throw new Exception('Arquivo não é um .xlsx válido.');
+    $ss = [];
+    if (($xml = $zip->getFromName('xl/sharedStrings.xml')) !== false) {
+        $sx = simplexml_load_string($xml);
+        foreach ($sx->si as $si) {
+            $txt = isset($si->t) ? (string)$si->t : '';
+            if (isset($si->r)) { $txt = ''; foreach ($si->r as $r) $txt .= (string)$r->t; }
+            $ss[] = $txt;
+        }
+    }
+    $sheet = $zip->getFromName('xl/worksheets/sheet1.xml');
+    $zip->close();
+    if ($sheet === false) throw new Exception('Planilha não encontrada no arquivo.');
+    $sx = simplexml_load_string($sheet);
+
+    $colIdx = function (string $ref): int {
+        $n = 0;
+        foreach (str_split(preg_replace('/\d+/', '', $ref)) as $ch) $n = $n * 26 + ord($ch) - 64;
+        return $n - 1;
+    };
+    $codNome = function (string $s): array {
+        $s = trim(preg_replace('/\s+/u', ' ', $s));
+        return preg_match('/^(\S+)\s*-\s*(.*)$/u', $s, $m) ? [$m[1], trim($m[2])] : ['', $s];
+    };
+    $dataBr = fn($s) => preg_match('#(\d{2})/(\d{2})/(\d{4})#', $s, $m) ? "$m[3]-$m[2]-$m[1]" : null;
+
+    $res = ['tipo' => null, 'empresa' => null, 'ini' => null, 'fim' => null, 'linhas' => [], 'avisos' => []];
+    $insumo = null;
+    foreach ($sx->sheetData->row as $row) {
+        $c = [];
+        foreach ($row->c as $cell) {
+            $t = (string)$cell['t'];
+            $v = $t === 'inlineStr' ? (string)$cell->is->t : (string)$cell->v;
+            if ($t === 's') $v = $ss[(int)$v] ?? '';
+            $c[$colIdx((string)$cell['r'])] = trim($v);
+        }
+        $a = $c[0] ?? '';
+        if ($a === '' && empty(array_filter($c, 'strlen'))) continue;
+        if (preg_match('/^Tipo:\s*(.*?)\s+De:\s*(\S+)\s+At[ée]:\s*(\S+)/iu', $a, $m)) {
+            $tipoTxt = mb_strtolower($m[1]);
+            $res['tipo'] = strpos($tipoTxt, 'embalag') !== false ? 'emb' : (strpos($tipoTxt, 'mat') !== false ? 'mp' : null);
+            $res['ini'] = $dataBr($m[2]);
+            $res['fim'] = $dataBr($m[3]);
+            continue;
+        }
+        if ($res['empresa'] === null && preg_match('/^\d+\s*-\s*\S/u', $a) && !isset($c[1])) { $res['empresa'] = $a; continue; }
+        if (mb_strtolower($a) === 'produto') { $insumo = $codNome($c[1] ?? ''); continue; }
+        if (mb_strtolower($a) === 'data') continue;
+        if (!$insumo) continue;
+
+        if (is_numeric($a)) $data = gmdate('Y-m-d', ((int)$a - 25569) * 86400);
+        else $data = $dataBr($a);
+        $vu  = $c[1] ?? '';
+        $qtd = $c[2] ?? '';
+        if (!$data || !is_numeric($vu) || !is_numeric($qtd)) {
+            $res['avisos'][] = 'Linha ' . (int)$row['r'] . ' ignorada (data/valor/quantidade inválidos).';
+            continue;
+        }
+        [$fCod, $fNome] = $codNome($c[5] ?? '');
+        $res['linhas'][] = [
+            'insumo_codigo' => $insumo[0], 'insumo_nome' => $insumo[1], 'data' => $data,
+            'valor_unitario' => round((float)$vu, 6), 'quantidade' => round((float)$qtd, 4),
+            'unidade' => mb_strtoupper($c[3] ?? ''), 'nf' => $c[4] ?? '',
+            'fornecedor_codigo' => $fCod, 'fornecedor_nome' => $fNome,
+        ];
+    }
+    if (!$res['tipo']) throw new Exception('Não encontrei a linha "Tipo: ... De: ... Até: ..." — o arquivo não parece a Listagem Resumida de Matéria Prima ou Materiais de Embalagem do A&M.');
+    if (!$res['linhas']) throw new Exception('Nenhuma compra encontrada no arquivo.');
+    if (!$res['ini'] || !$res['fim']) {
+        $datas = array_column($res['linhas'], 'data');
+        $res['ini'] = min($datas); $res['fim'] = max($datas);
+    }
+    return $res;
+}
+
+/**
+ * Grava o resultado de custosInsumosLerXlsx(). Reimportação: apaga as compras do mesmo tipo/empresa
+ * dentro do período do arquivo (De/Até) e grava as novas — importar a mesma listagem de novo não duplica.
+ */
+function custosInsumosImportar(array $dados, string $arquivo): array {
+    $pdo = db();
+    $u = usuario();
+    $pdo->beginTransaction();
+    try {
+        $del = $pdo->prepare('DELETE FROM custos_insumos_compras WHERE tipo = ? AND COALESCE(empresa,"") = ? AND data BETWEEN ? AND ?');
+        $del->execute([$dados['tipo'], (string)$dados['empresa'], $dados['ini'], $dados['fim']]);
+        $subst = $del->rowCount();
+        $pdo->prepare('INSERT INTO custos_insumos_importacoes (tipo, empresa, periodo_ini, periodo_fim, arquivo, linhas, substituidas, usuario_id, usuario_nome)
+                       VALUES (?,?,?,?,?,?,?,?,?)')
+            ->execute([$dados['tipo'], $dados['empresa'], $dados['ini'], $dados['fim'], mb_substr($arquivo, 0, 200),
+                       count($dados['linhas']), $subst, $u['id'] ?? null, $u['nome'] ?? null]);
+        $impId = (int)$pdo->lastInsertId();
+        $ins = $pdo->prepare('INSERT INTO custos_insumos_compras (importacao_id, tipo, empresa, insumo_codigo, insumo_nome, data, valor_unitario,
+                                  quantidade, unidade, nf, fornecedor_codigo, fornecedor_nome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+        foreach ($dados['linhas'] as $l) {
+            $ins->execute([$impId, $dados['tipo'], $dados['empresa'], $l['insumo_codigo'], $l['insumo_nome'], $l['data'], $l['valor_unitario'],
+                           $l['quantidade'], $l['unidade'], $l['nf'], $l['fornecedor_codigo'], $l['fornecedor_nome']]);
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+    return ['importacao_id' => $impId, 'linhas' => count($dados['linhas']), 'substituidas' => $subst];
 }
