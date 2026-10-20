@@ -97,7 +97,9 @@ foreach ($compras as $c) {
     $acumula($I['acc'], $c);
     $I['hist'][] = [$c['data'], $c['nf'], $c['fornecedor_nome'], (float)$c['quantidade'], (float)$c['valor_unitario']];
     // Ordenado por data, id. Linhas da mesma NF na mesma data são UMA compra: não viram "penúltima".
-    if ($I['ultimo'] && ($I['ultimo']['nf'] !== $c['nf'] || $I['ultimo']['data'] !== $c['data'])) $I['penultimo'] = $I['ultimo'];
+    $novaCompra = !$I['ultimo'] || $I['ultimo']['nf'] !== $c['nf'] || $I['ultimo']['data'] !== $c['data'];
+    if ($novaCompra && $I['ultimo']) $I['penultimo'] = $I['ultimo'];
+    $I['ult_qtd'] = ($novaCompra ? 0 : $I['ult_qtd']) + (float)$c['quantidade'];   // qtd da última compra (todas as linhas da NF)
     $I['ultimo'] = $c;
     $fk = $c['fornecedor_codigo'];
     if (!isset($I['forn'][$fk])) $I['forn'][$fk] = ['nome' => $c['fornecedor_nome'], 'acc' => $novoAcc(), 'ultimo' => $c];
@@ -153,9 +155,8 @@ $st->execute([$tipo]);
 // ── Formatação ──
 function precoUn($v): string {
     if ($v === null) return '<span class="text-muted">—</span>';
-    $s = number_format((float)$v, 4, ',', '.');
-    $s = preg_replace('/(,\d\d)(\d*?)0+$/', '$1$2', $s);      // 4 casas só quando precisa (12,50 / 0,0975)
-    return 'R$ ' . $s;
+    // Sempre 2 casas, arredondamento comercial (meio para cima: 49,6584 → 49,66; 0,0975 → 0,10).
+    return 'R$ ' . number_format(round((float)$v, 2, PHP_ROUND_HALF_UP), 2, ',', '.');
 }
 function qtdFmt($v): string {
     $v = (float)$v;
@@ -344,6 +345,9 @@ $abas = [
     ]) ?></tr></thead>
     <tbody>
     <?php $histJs = [];
+    // Total da "Var. penúlt. → última": ponderada pela quantidade da última compra de cada insumo
+    // (Σ qtd × preço última ÷ Σ qtd × preço penúltima − 1), só insumos com as duas compras.
+    $vtPen = 0.0; $vtUlt = 0.0; $vtN = 0; $vtSobe = 0; $vtDesce = 0;
     foreach ($insumos as $I):
         // Histórico de compras do insumo para o modal (abre ao clicar na linha).
         $hIdx = count($histJs);
@@ -352,7 +356,11 @@ $abas = [
                                                               'fornecedor' => $forn, 'q' => $I['codigo'], 'visao' => 'compras'])];
         $a = $I['acc']; $pu = (float)$I['ultimo']['valor_unitario'];
         $pp = $I['penultimo'] ? (float)$I['penultimo']['valor_unitario'] : null;
-        $var = $pp > 0 ? ($pu / $pp - 1) * 100 : null; ?>
+        $var = $pp > 0 ? ($pu / $pp - 1) * 100 : null;
+        if ($var !== null) {
+            $vtPen += $I['ult_qtd'] * $pp; $vtUlt += $I['ult_qtd'] * $pu; $vtN++;
+            if ($var >= 0.005) $vtSobe++; elseif ($var <= -0.005) $vtDesce++;
+        } ?>
         <tr class="lin-ord"<?= $ordAttrs(['codigo' => $I['codigo'], 'nome' => $I['nome'], 'un' => $I['un'], 'n' => $a['n'], 'qtd' => $a['qtd'],
             'valor' => round($a['valor'], 2), 'pm' => $pm($a), 'min' => $a['min'], 'max' => $a['max'], 'pen' => $pp ?? -1, 'ult' => $pu,
             'var' => $var ?? -99999, 'nforn' => count($I['forn'])]) ?> data-hist="<?= $hIdx ?>" tabindex="0" title="Clique para ver o histórico de compras">
@@ -376,14 +384,18 @@ $abas = [
     </tbody>
     <?php if ($insumos): ?>
     <tfoot><tr class="fw-bold"><td colspan="3">Total</td><td class="text-end"><?= $total['n'] ?></td><td></td>
-        <td class="text-end"><?= moedaBR($total['valor']) ?></td><td colspan="7"></td></tr></tfoot>
+        <td class="text-end"><?= moedaBR($total['valor']) ?></td><td colspan="5"></td>
+        <td class="text-end" title="<?= e("Ponderada pela quantidade da última compra; $vtN insumos com penúltima e última compra — $vtSobe subiram, $vtDesce caíram. "
+            . 'Última compra: ' . moedaBR($vtUlt) . ' | mesma quantidade ao preço da penúltima: ' . moedaBR($vtPen)) ?>">
+            <?= varPct($vtPen > 0 ? ($vtUlt / $vtPen - 1) * 100 : null) ?></td><td></td></tr></tfoot>
     <?php endif; ?>
 </table>
 </div></div></div>
 <p class="small text-muted mt-2 mb-0"><?= $modoPreco === 'fixo'
         ? 'Preço fixo = valor unitário da última compra do período.'
         : 'Preço médio = ponderado pela quantidade (Σ qtd × valor unitário ÷ Σ qtd).' ?>
-    “Var. penúlt. → última” compara o preço da penúltima com o da última compra do período (linhas da mesma NF contam como uma compra). O mesmo insumo em unidades diferentes (ex.: M e PC) aparece em linhas separadas. Clique na linha para ver o histórico de compras do insumo.</p>
+    “Var. penúlt. → última” compara o preço da penúltima com o da última compra do período (linhas da mesma NF contam como uma compra); no Total, a variação é ponderada pela quantidade da última compra de cada insumo
+    (passe o mouse para ver os valores). O mesmo insumo em unidades diferentes (ex.: M e PC) aparece em linhas separadas. Clique na linha para ver o histórico de compras do insumo.</p>
 </div>
 
 <!-- ══ Período A × B ══ -->
@@ -752,7 +764,7 @@ function aplicarAB() {
 var HIST = <?= json_encode($histJs ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 var PERIODO = <?= json_encode(dataBR($ini) . ' a ' . dataBR($fim)) ?>;
 function hEsc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
-function hPreco(v) { return 'R$ ' + v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 4}); }
+function hPreco(v) { return hMoeda(Math.round((v + Number.EPSILON) * 100) / 100); }   // 2 casas, meio para cima (igual ao PHP)
 function hMoeda(v) { return 'R$ ' + v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
 function hQtd(v) { return v.toLocaleString('pt-BR', {maximumFractionDigits: 3}); }
 function hData(d) { return d.split('-').reverse().join('/'); }
