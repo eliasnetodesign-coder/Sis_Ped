@@ -242,6 +242,9 @@ function db() {
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN cond_operador VARCHAR(3) NOT NULL DEFAULT 'E'"); } catch (PDOException $e) {}
             // Observação da campanha: quando preenchida, substitui o texto da condição nas telas de pedido.
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN observacao TEXT NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // Observação para o A&M: texto levado ao campo "Obs" do pedido no A&M pelo "Importa Pedido"
+            // quando a campanha é atingida ("{pct}" vira o % atingido). Diferente de "observacao" (cliente).
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN obs_am VARCHAR(255) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             // Mínimo TOTAL das condições (soma dos itens de todas as condições, qtd ou valor),
             // independente do mínimo de cada condição. NULL = não usa.
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN cond_total_modo VARCHAR(20) NULL DEFAULT NULL"); } catch (PDOException $e) {}
@@ -1465,6 +1468,248 @@ function campanhasAmAvaliarPedido(array $itens, string $canal = 'todos'): array 
 }
 
 /**
+ * Check 4 (Campanhas) da Análise Financeira: confere os itens de UM pedido do A&M contra as
+ * campanhas ATIVAS do módulo Comercial > Campanhas (tabelas campanhas / campanha_condicoes /
+ * campanha_faixas / campanha_desconto_alvo / campanha_bonificacao) — o mesmo motor usado nos
+ * pedidos do SisPed (ctxCampanha() + campanhaFaixaAtingida()/avaliarCampanhaTrigger()).
+ *  - Produto do A&M -> produtos.codigo_produto (linha/grupo/subgrupo do SisPed). O critério
+ *    "valor" das condições usa o "Valor Total" do item no A&M (já com os descontos).
+ *  - % esperado do item = maior desconto das campanhas de desconto acionadas cujo alvo bate no
+ *    item (faixas: o % da maior faixa atingida). Só o %Diretoria do item é comparado.
+ *  - Item com %Diretoria > esperado (+0,01) é sinalizado: 'sem_campanha' (nenhuma campanha
+ *    acionada cobre o item), 'acima_da_faixa' ou 'nao_cadastrado' (código fora do SisPed).
+ *  - Bonificação FIXA acionada: confere no MESMO pedido a qtd dos produtos de brinde
+ *    (campanha_bonificacao × multiplicador); esses itens de brinde não passam pela regra do
+ *    %Diretoria. Bonificação selecionável não é conferida (o brinde é escolhido no pedido).
+ *
+ * @param array $itens itens do PD0303: ['codigo','nome','pct_diretoria','qtd',...]
+ * @return array mesmo formato de campanhasAmAvaliarPedido()
+ */
+function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array {
+    static $prodPorCodigo = null;
+    if ($prodPorCodigo === null) {
+        $prodPorCodigo = [];
+        $sql = "SELECT p.id, p.codigo_produto, p.descricao_pt, p.linha, p.grupo, p.subgrupo,
+                       COALESCE(t.preco_padrao, p.vendas_varejo, 0) AS preco
+                FROM produtos p LEFT JOIN tabela_precos t ON t.produto_id = p.id
+                ORDER BY (p.status = 'ativo') DESC, p.id";
+        foreach (db()->query($sql)->fetchAll() as $p) {
+            $cod = trim((string)$p['codigo_produto']);
+            if ($cod !== '' && !isset($prodPorCodigo[$cod])) $prodPorCodigo[$cod] = $p;
+        }
+    }
+
+    // Itens do pedido no formato do motor de campanhas (só os que existem no SisPed).
+    // Critério "valor": usa o "Valor Total" do item no próprio pedido do A&M (como no modelo
+    // antigo campanhas_am) — preço unitário = Valor Total ÷ Qtd; sem esse dado, tabela do SisPed.
+    $itensVenda = []; $itensMap = [];
+    foreach ($itens as $k => $it) {
+        $p = $prodPorCodigo[trim((string)($it['codigo'] ?? ''))] ?? null;
+        if (!$p) continue;
+        $q = (int)($it['qtd'] ?? 0);
+        $vAem = $it['valor_total'] ?? $it['valorTotal'] ?? null;
+        $itensMap[$k] = [
+            'produto_id' => (int)$p['id'], 'qtd' => $q,
+            'linha' => $p['linha'], 'grupo' => $p['grupo'], 'subgrupo' => $p['subgrupo'],
+            'preco' => ($vAem !== null && $q > 0) ? (float)$vAem / $q : (float)$p['preco'],
+        ];
+        $itensVenda[] = $itensMap[$k];
+    }
+    $ctx = ctxCampanha($itensVenda, $canalVendaId);
+
+    $agrupadas = campanhasAgrupadas();
+    $prodNome = [];
+    foreach ($prodPorCodigo as $p) $prodNome[(int)$p['id']] = $p['descricao_pt'] ?: $p['codigo_produto'];
+
+    // Detalhe por condição de uma campanha (num nível/faixa): o que o pedido comprou x o mínimo
+    // exigido, e quais itens do pedido entram em cada condição. Para exibir na tela.
+    $detalharCondicoes = function (array $rowsNv, array $condsNv) use ($ctx, $itens, $itensMap, $prodNome): array {
+        $out = []; $filtros = [];
+        foreach ($condsNv as $c) {
+            $f = condFiltro($c);
+            if (!filtroValido($f)) continue;
+            $filtros[] = $f;
+            $ehValor = ($c['criterio_modo'] ?? 'quantidade') === 'valor';
+            $min = $ehValor ? (float)($c['valor_min'] ?? 0) : (float)($c['quantidade'] ?? 0);
+            $totQ = 0; $totV = 0.0; $its = [];
+            foreach ($itensMap as $k => $iv) {
+                if (!itemMatchFiltro(['id' => $iv['produto_id']] + $iv, $f)) continue;
+                $totQ += $iv['qtd']; $totV += $iv['qtd'] * $iv['preco'];
+                $its[] = ['codigo' => $itens[$k]['codigo'] ?? '', 'nome' => $itens[$k]['nome'] ?? '', 'qtd' => $iv['qtd']];
+            }
+            $atingido = $ehValor ? $totV : $totQ;
+            $out[] = ['rotulo' => rotuloFiltro($f, $prodNome), 'criterio' => $ehValor ? 'valor' : 'quantidade',
+                      'atingido' => $atingido, 'minimo' => $min, 'ok' => $min <= 0 || $atingido + 0.0001 >= $min, 'itens' => $its];
+        }
+        if ($tot = campanhaTotalCond($rowsNv)) {
+            $sm = campanhaSomaFiltros($ctx['itens'], $filtros, $tot['modo']);
+            $out[] = ['rotulo' => 'Total da campanha', 'criterio' => $tot['modo'], 'atingido' => $sm, 'minimo' => $tot['min'],
+                      'ok' => $sm + 0.0001 >= $tot['min'], 'itens' => []];
+        }
+        return $out;
+    };
+
+    // 1) Campanhas de desconto acionadas -> lista de [pct, alvos] por campanha. As não acionadas
+    //    em que o pedido tem algum produto vão para $campanhasNaoAtingidas (com o que faltou).
+    $descontos = []; $campanhasAtingidas = []; $campanhasNaoAtingidas = [];
+    foreach ($agrupadas as $code => $g) {
+        $rows = $g['rows'];
+        if (($rows[0]['tipo'] ?? 'desconto') !== 'desconto') continue;
+        $nivel = campanhaFaixaAtingida((string)$code, $rows, $g['conds'], $ctx);
+        if (!$nivel) {
+            $canalCamp = (int)($rows[0]['canal_venda_id'] ?? 0);
+            if (!$g['conds'] || ($canalCamp && $canalCamp !== $canalVendaId)) continue;
+            $cond = $detalharCondicoes($rows, $g['conds']);
+            if (!array_filter($cond, fn($c) => $c['itens'])) continue;    // pedido sem nenhum produto da campanha
+            $campanhasNaoAtingidas[] = [
+                'nome' => (string)$code, 'operador' => campanhaOperador($rows),
+                'percentual' => (float)($rows[0]['desconto'] ?? 0), 'condicoes' => $cond,
+            ];
+            continue;
+        }
+        $ehFaixas = ($rows[0]['desconto_modo'] ?? 'fixo') === 'faixas';
+        $alvos = $g['conds'] ? alvosDescontoCampanha((string)$code, $nivel['trigger']['gruposAlvo']) : $nivel['trigger']['gruposAlvo'];
+        $porAlvo = [];
+        foreach ($alvos as $ga) {
+            $pct = !$ehFaixas && isset($ga['desconto']) && $ga['desconto'] !== null ? (float)$ga['desconto'] : (float)$nivel['pct'];
+            $porAlvo[] = ['pct' => $pct, 'alvo' => $ga];
+        }
+        $descontos[$code] = $porAlvo;
+
+        $itensC = []; $agQ = 0; $agV = 0.0;
+        foreach ($itensMap as $k => $iv) {
+            foreach ($porAlvo as $pa) {
+                if (itemBateGruposAlvo(['id' => $iv['produto_id']] + $iv, [$pa['alvo']])) {
+                    $itensC[] = $itens[$k]; $agQ += $iv['qtd']; $agV += $iv['qtd'] * $iv['preco']; break;
+                }
+            }
+        }
+        $total = campanhaTotalCond($nivel['rows']);
+        $criterio = $total['modo'] ?? (($g['conds'][0]['criterio_modo'] ?? 'quantidade') === 'valor' ? 'valor' : 'quantidade');
+        $pcts = array_column($porAlvo, 'pct');
+        $campanhasAtingidas[] = [
+            'campanha_id' => (string)$code, 'nome' => (string)$code,
+            'unidade' => $criterio === 'valor' ? '' : 'un.', 'criterio' => $criterio,
+            'agregado' => $criterio === 'valor' ? $agV : $agQ,
+            'percentual_esperado' => $pcts ? max($pcts) : (float)$nivel['pct'],
+            'faixa' => $ehFaixas ? (int)$nivel['faixa'] : null, 'itens' => $itensC,
+            'operador' => campanhaOperador($rows), 'condicoes' => $detalharCondicoes($nivel['rows'], $nivel['conds']),
+            'obs_am' => trim((string)($rows[0]['obs_am'] ?? '')),
+        ];
+    }
+
+    // 2) Bonificação fixa acionada: brinde esperado no mesmo pedido.
+    $qtdPorPid = [];
+    foreach ($itensMap as $iv) $qtdPorPid[$iv['produto_id']] = ($qtdPorPid[$iv['produto_id']] ?? 0) + $iv['qtd'];
+    $bonificacoes = []; $pidsBrinde = [];
+    $bp = db()->prepare('SELECT produto_id, quantidade FROM campanha_bonificacao WHERE codigo_campanha = ?');
+    foreach ($agrupadas as $code => $g) {
+        if (($g['rows'][0]['tipo'] ?? 'desconto') !== 'bonificacao' || ($g['rows'][0]['bonif_modo'] ?? 'fixo') !== 'fixo') continue;
+        $r = avaliarCampanhaTrigger($g['rows'], $g['conds'], $ctx);
+        if (!$r['acionada']) continue;
+        $mult = max(1, (int)$r['mult']);
+        $filtros = array_values(array_filter(array_map('condFiltro', $g['conds']), 'filtroValido'));
+        $qtdTrigger = $filtros ? (int)campanhaSomaFiltros($ctx['itens'], $filtros, 'quantidade') : $mult;
+        $bp->execute([$code]);
+        foreach ($bp->fetchAll() as $b) {
+            $pid = (int)$b['produto_id']; $esperado = (int)$b['quantidade'] * $mult;
+            if (!$pid || $esperado <= 0) continue;
+            $pidsBrinde[$pid] = true;
+            $codBonus = '';
+            foreach ($prodPorCodigo as $c => $p) if ((int)$p['id'] === $pid) { $codBonus = $c; break; }
+            $encontrado = $qtdPorPid[$pid] ?? 0;
+            $bonificacoes[] = [
+                'campanha_id' => (string)$code, 'nome' => (string)$code, 'qtd_trigger' => $qtdTrigger, 'mult' => $mult,
+                'produto_bonus_codigo' => $codBonus, 'produto_bonus_nome' => $prodNome[$pid] ?? '',
+                'qtd_bonus_esperada' => $esperado, 'qtd_bonus_encontrada' => $encontrado, 'ok' => $encontrado >= $esperado,
+            ];
+        }
+    }
+
+    // 3) % esperado de cada item (maior desconto das campanhas acionadas que cobrem o item)
+    //    x %Diretoria aplicado no A&M.
+    $itensForaCampanha = []; $esperadoPorCodigo = [];
+    foreach ($itens as $k => $it) {
+        $codIt = trim((string)($it['codigo'] ?? ''));
+        $pctEsp = 0.0; $campNome = null;
+        if (isset($itensMap[$k])) {
+            $iv = $itensMap[$k];
+            foreach ($descontos as $code => $porAlvo) {
+                foreach ($porAlvo as $pa) {
+                    if ($pa['pct'] > $pctEsp && itemBateGruposAlvo(['id' => $iv['produto_id']] + $iv, [$pa['alvo']])) {
+                        $pctEsp = $pa['pct']; $campNome = (string)$code;
+                    }
+                }
+            }
+            $esperadoPorCodigo[$codIt] = ['pct' => $pctEsp, 'campanha' => $campNome, 'brinde' => isset($pidsBrinde[$iv['produto_id']])];
+        }
+        $diretoria = (float)($it['pct_diretoria'] ?? 0);
+        if ($diretoria <= 0.005) continue;
+        if (!isset($itensMap[$k])) {
+            $itensForaCampanha[] = $it + ['motivo' => 'nao_cadastrado', 'percentual_esperado' => 0.0, 'campanha_nome' => null];
+            continue;
+        }
+        if (isset($pidsBrinde[$itensMap[$k]['produto_id']])) continue;
+        if ($diretoria > $pctEsp + 0.01) {
+            // Produto de uma campanha que o pedido não atingiu -> aponta qual (explica o "0%").
+            $campNaoAting = null;
+            if ($campNome === null) {
+                foreach ($campanhasNaoAtingidas as $cn) {
+                    foreach ($cn['condicoes'] as $cc) {
+                        foreach ($cc['itens'] as $ci) if ($ci['codigo'] === $codIt) { $campNaoAting = $cn['nome']; break 3; }
+                    }
+                }
+            }
+            $itensForaCampanha[] = $it + [
+                'motivo' => $campNome !== null ? 'acima_da_faixa' : ($campNaoAting !== null ? 'campanha_nao_atingida' : 'sem_campanha'),
+                'campanha_nao_atingida' => $campNaoAting,
+                'percentual_esperado' => $pctEsp, 'campanha_nome' => $campNome,
+            ];
+        }
+    }
+
+    $bonifOk = true;
+    foreach ($bonificacoes as $b) if (!$b['ok']) $bonifOk = false;
+    return [
+        'campanhas_atingidas'    => $campanhasAtingidas,
+        'itens_fora_campanha'    => $itensForaCampanha,
+        'tem_item_fora_campanha' => (bool)$itensForaCampanha,
+        'bonificacoes'           => $bonificacoes,
+        'check_campanha'         => !$itensForaCampanha && $bonifOk,
+        // codigo A&M => ['pct' => % esperado, 'campanha' => nome|null, 'brinde' => bool] (só itens no SisPed)
+        'esperado_por_codigo'    => $esperadoPorCodigo,
+        // campanhas de desconto não atingidas em que o pedido tem algum produto (com o detalhe por condição)
+        'campanhas_nao_atingidas' => $campanhasNaoAtingidas,
+    ];
+}
+
+/**
+ * Texto do campo "Obs" do pedido no A&M a partir das campanhas do Comercial atingidas: junta a
+ * "Observação para o A&M" (campanhas.obs_am) de cada campanha com desconto, separadas por ", ";
+ * "{pct}" no texto vira o % atingido (ex.: "Desc {pct} color" -> "Desc 12% color").
+ * null = nenhuma campanha atingida tem o campo preenchido (não mexe no Obs do A&M).
+ * @param array $campanhasAtingidas saída de campanhasComercialAvaliarPedido()['campanhas_atingidas']
+ */
+function campanhasComercialTextoObsAM(array $campanhasAtingidas): ?string {
+    $partes = [];
+    foreach ($campanhasAtingidas as $ca) {
+        $obs = trim((string)($ca['obs_am'] ?? ''));
+        $pct = (float)($ca['percentual_esperado'] ?? 0);
+        if ($obs === '' || $pct <= 0.005) continue;
+        $partes[] = str_replace('{pct}', rtrim(rtrim(number_format($pct, 2, ',', ''), '0'), ',') . '%', $obs);
+    }
+    return $partes ? implode(', ', array_unique($partes)) : null;
+}
+
+/** Canal de venda (canal_venda.id) de um pedido do A&M: "Pedido Accademia" SIM = Distribuidor, NAO = Varejo; sem o dado, $fallback. */
+function canalVendaIdAEM(?string $pedidoAccademia, int $fallback = 0): int {
+    if ($pedidoAccademia !== 'SIM' && $pedidoAccademia !== 'NAO') return $fallback;
+    $st = db()->prepare('SELECT id FROM canal_venda WHERE canal = ? LIMIT 1');
+    $st->execute([$pedidoAccademia === 'SIM' ? 'Distribuidor' : 'Varejo']);
+    return (int)($st->fetchColumn() ?: $fallback);
+}
+
+/**
  * Análise financeira (sob demanda, sem gravar nada) dos pedidos aguardando
  * liberação no sistema Itallian Hairtech (A&M). Reproduz o roteiro manual:
  *
@@ -1498,17 +1743,13 @@ function campanhasAmAvaliarPedido(array $itens, string $canal = 'todos'): array 
  *                                   "com Academia" quando o Cadastro de Distribuidores
  *                                   (CL200) marca PedidoAccademia = SIM para o Codigo;
  *                                   senão "sem Academia". null = UF fora da tabela.
- *   4) Campanhas                 -> gate pela coluna "Obs" do pedido no grid "Consulta/
- *                                   Reimprime" (PD0301): só roda a análise de campanha
- *                                   (campanhasAmAvaliarPedido()) quando Obs começa com "BF" — aí
- *                                   o %Diretoria de cada item não pode passar do % esperado pela
- *                                   faixa de quantidade/valor atingida na campanha (sem campanha
- *                                   = esperado 0); campanhas de bonificação (ex.: Camp 6)
- *                                   conferem se a qtd do produto de brinde bate com a qtd
- *                                   comprada do produto gatilho. SEM "BF" nenhuma campanha se
- *                                   aplica, então qualquer %Diretoria > 0 já é desconto não
- *                                   previsto — pedido não passa (absorveu o antigo check
- *                                   "Desconto Diretoria", removido por ficar redundante).
+ *   4) Campanhas                 -> todos os pedidos são avaliados contra as campanhas ativas do
+ *                                   Comercial > Campanhas (campanhasComercialAvaliarPedido()): o
+ *                                   %Diretoria de cada item não pode passar do % da campanha de
+ *                                   desconto acionada que cobre o item (sem campanha = esperado 0;
+ *                                   faixas = % da maior faixa atingida); bonificação fixa acionada
+ *                                   confere a qtd do brinde no mesmo pedido. Canal: "Pedido
+ *                                   Accademia" SIM = Distribuidor, NAO = Varejo.
  * Um pedido fica "conforme" (marcado por padrão) quando passa nos 4 requisitos.
  *
  * @param string|null $dataInicio dd/mm/aaaa (padrao: 01/01 do ano corrente)
@@ -1812,7 +2053,8 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
     $pre += $chamarVarios($reqs, $concorrencia);
 
     $stTab = stEstadosTabela();
-    $campanhasAmPorId = array_column(campanhasAmListar(), null, 'id');
+    $canaisPorNome = [];
+    foreach (db()->query('SELECT id, canal FROM canal_venda')->fetchAll() as $cv) $canaisPorNome[mb_strtolower(trim($cv['canal']))] = (int)$cv['id'];
     $analises = [];
     foreach ($porCodigo as $codigo => $rows) {
         // "Codigo Distribuidor" = Codigo sem o 1o e o ultimo digito (ex.: 141801 -> 4180); aqui
@@ -1906,6 +2148,14 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         $accademiaFlag = $mapAccademia[substr((string)$codigo, 0, 5)] ?? null;
         $comAcademia   = ($accademiaFlag === true);
         $stCol         = $comAcademia ? 'com_academia' : 'sem_academia';
+        // Canal de venda p/ as campanhas do Comercial: "Pedido Accademia" SIM = Distribuidor,
+        // NAO = Varejo (mesma leitura do ST); sem o dado, o canal do cliente local pelo código.
+        $canalVendaId = $accademiaFlag === null ? 0 : (int)($canaisPorNome[$comAcademia ? 'distribuidor' : 'varejo'] ?? 0);
+        if (!$canalVendaId) {
+            $cq = db()->prepare('SELECT canal_venda_id FROM clientes WHERE codigo_cliente = ? LIMIT 1');
+            $cq->execute([preg_replace('/\D/', '', (string)($rows[0]['codigo'] ?? ''))]);
+            $canalVendaId = (int)$cq->fetchColumn();
+        }
 
         // 3) ST por Estado e 4) Campanhas — detalhe de cada pedido (PD0303).
         $qtdAVista = 0; $qtdStOk = 0; $qtdStAval = 0;
@@ -1955,10 +2205,8 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             $rows[$i]['tem_descto_st']   = (bool)$itensDesctoST;
             if ($itensDesctoST)  $temItemDesctoST  = true;
 
-            // Coluna "Obs" do grid "Consulta/Reimprime" (PD0301) para ESTE pedido — gate do
-            // Check 5: só roda a análise de campanha quando os 2 primeiros caracteres são "BF".
-            // Sem "BF", o pedido não é de campanha; o Check 5 vira informativo (mostra os mesmos
-            // itens com %Diretoria do Check 4, sem comparar contra faixa nenhuma).
+            // Coluna "Obs" do grid "Consulta/Reimprime" (PD0301) para ESTE pedido — só
+            // informativa (não é mais filtro do check de campanhas: todo pedido é avaliado).
             $obsPedido = ''; $ehBf = false;
             $numeroBusca = preg_replace('/\D/', '', $r['numero'] ?? '');
             if ($numeroBusca !== '') {
@@ -1994,38 +2242,28 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
             $rows[$i]['obs']    = $obsPedido;
             $rows[$i]['eh_bf']  = $ehBf;
 
-            // Check 5: itens do pedido x campanhas "Beauty" cadastradas (campanhas_am) — só
-            // quando o pedido é marcado "BF" no Obs. Sem "BF" nenhuma campanha se aplica, então
-            // qualquer %Diretoria > 0 é desconto não previsto — sinalizado em vermelho igual ao
-            // check 4 (não fica "certo"), não fica neutro/informativo.
-            if ($ehBf) {
-                // Canal do cliente: "Pedido Accademia = SIM" no Cadastro de Distribuidores é
-                // Distribuidor; NAO (ou não localizado) é Varejo — mesma leitura usada no ST.
-                $avCampanha = campanhasAmAvaliarPedido($itensTodos, $comAcademia ? 'distribuidor' : 'varejo');
-            } else {
-                $itensSemBf = array_map(fn($it) => $it + ['motivo' => 'sem_bf', 'percentual_esperado' => 0.0, 'campanha_nome' => null], $itensDiretoria);
-                $avCampanha = [
-                    'campanhas_atingidas'    => [],
-                    'itens_fora_campanha'    => $itensSemBf,
-                    'tem_item_fora_campanha' => (bool)$itensSemBf,
-                    'bonificacoes'           => [],
-                    'check_campanha'         => !$itensSemBf,
-                ];
-            }
+            // Check 4: itens do pedido x campanhas ativas do Comercial > Campanhas — todos os
+            // pedidos são avaliados (sem filtro "BF").
+            $avCampanha = campanhasComercialAvaliarPedido($itensTodos, $canalVendaId);
             $rows[$i]['campanhas_atingidas']    = $avCampanha['campanhas_atingidas'];
             $rows[$i]['itens_fora_campanha']    = $avCampanha['itens_fora_campanha'];
             $rows[$i]['tem_item_fora_campanha'] = $avCampanha['tem_item_fora_campanha'];
             $rows[$i]['bonificacoes_campanha']  = $avCampanha['bonificacoes'];
+            $rows[$i]['campanhas_nao_atingidas'] = $avCampanha['campanhas_nao_atingidas'];
             $rows[$i]['check_campanha']         = $avCampanha['check_campanha'];
-            // Conta como "problema" tanto item com %Diretoria fora da faixa quanto bonificação
-            // (ex.: Camp 6) que não bateu — os dois fazem o check 5 falhar.
+            // Conta como "problema" tanto item com %Diretoria fora da campanha quanto bonificação
+            // que não bateu — os dois fazem o check 4 falhar.
             if (!$avCampanha['check_campanha']) $temItemForaCampanha = true;
             foreach ($avCampanha['campanhas_atingidas'] as $ca) {
                 $cid = $ca['campanha_id'];
                 if (!isset($resumoCampanhas[$cid])) {
-                    $resumoCampanhas[$cid] = ['nome' => $ca['nome'], 'criterio' => $ca['criterio'], 'unidade' => $ca['unidade'], 'agregado' => 0.0];
+                    $resumoCampanhas[$cid] = ['nome' => $ca['nome'], 'criterio' => $ca['criterio'], 'unidade' => $ca['unidade'],
+                                              'agregado' => 0.0, 'percentual' => 0.0, 'faixa' => null];
                 }
                 $resumoCampanhas[$cid]['agregado'] += $ca['agregado'];
+                // Campanha avaliada pedido a pedido: o resumo mostra o maior % / faixa atingidos.
+                if ($ca['percentual_esperado'] > $resumoCampanhas[$cid]['percentual']) $resumoCampanhas[$cid]['percentual'] = $ca['percentual_esperado'];
+                if ($ca['faixa'] !== null && $ca['faixa'] > (int)$resumoCampanhas[$cid]['faixa']) $resumoCampanhas[$cid]['faixa'] = $ca['faixa'];
             }
 
             $stEsperado = ($uf && isset($stTab[$uf])) ? $stTab[$uf][$stCol] : null;
@@ -2049,17 +2287,6 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         // ST no nível do Codigo: ok se todos os pedidos avaliáveis passaram.
         $checkStCodigo  = ($qtdStAval === 0) ? true : ($qtdStOk === $qtdStAval);
         $aprovadoCodigo = ($checkSemAtraso && $checkDentroLimite && $checkStCodigo && !$temItemForaCampanha);
-
-        // Faixa/benefício de cada campanha no resumo, recalculada sobre o total somado entre os
-        // pedidos do código (não a de um pedido isolado — a soma pode cruzar pra uma faixa maior).
-        foreach ($resumoCampanhas as $cid => &$rc) {
-            $faixas = $campanhasAmPorId[$cid]['faixas'] ?? [];
-            $faixa = campanhasAmFaixaPara($faixas, $rc['agregado']);
-            $rc['percentual']  = $faixa ? (float)$faixa['percentual'] : 0.0;
-            $rc['faixa_min']   = $faixa['minimo'] ?? null;
-            $rc['faixa_max']   = $faixa['maximo'] ?? null;
-        }
-        unset($rc);
 
         // Codigos completos (6 dígitos = CNPJs/filiais) e nomes que caíram neste cliente.
         $codigosFiliais = array_values(array_unique(array_column($rows, 'codigo')));

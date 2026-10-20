@@ -138,6 +138,40 @@ if (isset($_GET['ajax_aem_preview'])) {
         $resp['temForaCampanha'] = $av ? $av['tem_item_fora_campanha'] : false;
     }
 
+    // "Importa Pedido" (&camp=comercial): mesmo fluxo do BF, mas sem conferir o Obs e com as
+    // campanhas do módulo Comercial > Campanhas (campanhasComercialAvaliarPedido) — traz, por
+    // item, o %Diretoria esperado pela campanha acionada que cobre o produto.
+    if (($_GET['camp'] ?? '') === 'comercial') {
+        $campItens = [];
+        foreach ($r['itens'] as $it) {
+            $campItens[] = [
+                'codigo' => $it['codigoAEM'], 'nome' => $it['nomeProduto'], 'qtd' => $it['qtd'],
+                'pct_diretoria' => $it['descDiretoria'] ?? 0, 'valor_total' => $it['valorTotal'] ?? 0,
+            ];
+        }
+        $canalFallback = 0;
+        if ($cliente) {
+            $cc = db()->prepare('SELECT canal_venda_id FROM clientes WHERE id = ?');
+            $cc->execute([$cliente['id']]);
+            $canalFallback = (int)$cc->fetchColumn();
+        }
+        $av = campanhasComercialAvaliarPedido($campItens, canalVendaIdAEM($r['pedidoAccademia'] ?? null, $canalFallback));
+        foreach ($resp['itens'] as &$ri) {
+            $esp = $av['esperado_por_codigo'][$ri['codigoAEM']] ?? null;
+            $ri['pctDiretoriaCampanha'] = (float)($esp['pct'] ?? 0);
+            $ri['campanhaNome'] = $esp['campanha'] ?? (!empty($esp['brinde']) ? 'Brinde de campanha' : null);
+        }
+        unset($ri);
+        $resp['campanhasAtingidas'] = array_map(fn($ca) => [
+            'nome' => $ca['nome'], 'criterio' => $ca['criterio'], 'unidade' => $ca['unidade'],
+            'agregado' => $ca['agregado'], 'percentualEsperado' => $ca['percentual_esperado'],
+            'faixa' => $ca['faixa'],
+        ], $av['campanhas_atingidas']);
+        $resp['bonificacoes'] = $av['bonificacoes'];
+        $resp['obsAM'] = campanhasComercialTextoObsAM($av['campanhas_atingidas']);
+        $resp['temForaCampanha'] = $av['tem_item_fora_campanha'];
+    }
+
     echo json_encode($resp);
     exit;
 }
@@ -213,6 +247,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             // Obs do pedido no A&M: "BF" + as campanhas que renderam desconto.
             $bfObsAM = campanhasAmTextoObs($av['campanhas_atingidas']);
         }
+        // "Importa Pedido" com "Aplicar": mesma substituição, mas pelas campanhas do módulo
+        // Comercial > Campanhas, sem depender do Obs.
+        if (($_POST['modo_campanha'] ?? '') === 'comercial' && ($_POST['aplicar_campanha'] ?? '') === '1') {
+            $campItens = [];
+            foreach ($r['itens'] as $it) {
+                $campItens[] = [
+                    'codigo' => $it['codigoAEM'], 'nome' => $it['nomeProduto'], 'qtd' => $it['qtd'],
+                    'pct_diretoria' => $it['descDiretoria'] ?? 0, 'valor_total' => $it['valorTotal'] ?? 0,
+                ];
+            }
+            $cc = db()->prepare('SELECT canal_venda_id FROM clientes WHERE id = ?');
+            $cc->execute([$clienteId]);
+            $av = campanhasComercialAvaliarPedido($campItens, canalVendaIdAEM($r['pedidoAccademia'] ?? null, (int)$cc->fetchColumn()));
+            $bfOverrides = [];
+            foreach ($av['esperado_por_codigo'] as $cod => $esp) $bfOverrides[$cod] = (float)$esp['pct'];
+            // Obs do pedido no A&M: "Observação para o A&M" das campanhas atingidas (null = não mexe).
+            $bfObsAM = campanhasComercialTextoObsAM($av['campanhas_atingidas']);
+        }
 
         $itens = [];
         $naoMapeados = [];
@@ -279,7 +331,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             $creditoMsg = ' Crédito de ' . number_format($r['creditoUtilizadoAEM'], 2, ',', '.') . ' importado do A&M e registrado em Concessão de Créditos.';
         }
 
-        $bfMsg = $bfOverrides !== null ? ' Descontos de campanha (BF) aplicados no % Diretoria dos itens.' : '';
+        $bfMsg = $bfOverrides === null ? ''
+            : (($_POST['modo_campanha'] ?? '') === 'comercial'
+                ? ' Descontos de campanha (Comercial > Campanhas) aplicados no % Diretoria dos itens.'
+                : ' Descontos de campanha (BF) aplicados no % Diretoria dos itens.');
 
         // "Importa Pedido BF" com "Gravar no A&M": aplica o % Diretoria da campanha nos itens
         // do próprio pedido no A&M (Consulta/Reimprime > Altera > aba Itens > Validar > Conclui).
@@ -858,105 +913,77 @@ $cardDefs = [
     </div>
 </div>
 
-<!-- Modal: Importa Pedido (busca no sistema A&M / Itallian) -->
-<div class="modal fade" id="modalImportaAEM" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title fw-bold"><i class="bi bi-cloud-download me-2 text-primary"></i>Importa Pedido</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="row g-2 align-items-end mb-3">
-                    <div class="col">
-                        <label class="form-label fw-semibold">Número do Pedido</label>
-                        <input type="text" id="aemNumero" class="form-control" maxlength="6"
-                               placeholder="Número do pedido lançado no sistema A&amp;M" inputmode="numeric">
-                    </div>
-                    <div class="col-auto">
-                        <button type="button" class="btn btn-primary" id="aemBuscarBtn">
-                            <i class="bi bi-search me-1"></i>Buscar
-                        </button>
-                    </div>
-                </div>
-                <div id="aemResultado"></div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
-                <button type="button" class="btn btn-success" id="aemConfirmarBtn" disabled>
-                    <i class="bi bi-check2-circle me-1"></i>Confirmar Importação
-                </button>
-            </div>
-        </div>
-    </div>
-    <form method="POST" action="<?= BASE_URL ?>/admin/pedidos.php" id="aemForm" style="display:none">
-        <input type="hidden" name="action" value="importar_aem">
-        <input type="hidden" name="numero" id="aemFormNumero">
-        <input type="hidden" name="cliente_id" id="aemFormClienteId">
-    </form>
-</div>
-
 <!-- Modal: Importa Pedido BF (mesma importação do A&M + descontos de campanha "BF") -->
 <style>
 /* Tabela de itens do "Importa Pedido BF": mais densa, sem quebras feias de número/cabeçalho. */
-#aembfResultado .tbl-bf { font-size: .8rem; }
-#aembfResultado .tbl-bf th,
-#aembfResultado .tbl-bf td.num { white-space: nowrap; }
-#aembfResultado .tbl-bf th     { vertical-align: bottom; }
-#aembfResultado .tbl-bf td.num { text-align: right; font-variant-numeric: tabular-nums; }
-#aembfResultado .tbl-bf th.num { text-align: right; }
+.tbl-bf { font-size: .8rem; }
+.tbl-bf th,
+.tbl-bf td.num { white-space: nowrap; }
+.tbl-bf th     { vertical-align: bottom; }
+.tbl-bf td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tbl-bf th.num { text-align: right; }
 /* Nomes longos ficam em uma linha só, com "..." — o texto completo vai no title. */
-#aembfResultado .tbl-bf .prod {
+.tbl-bf .prod {
     max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-#aembfResultado .tbl-bf .camp { white-space: nowrap; }
-#aembfResultado .tbl-bf > :not(caption) > * > * { padding: .35rem .5rem; }
-@media (max-width: 991.98px) { #aembfResultado .tbl-bf .prod { max-width: 150px; } }
+.tbl-bf .camp { white-space: nowrap; }
+.tbl-bf > :not(caption) > * > * { padding: .35rem .5rem; }
+@media (max-width: 991.98px) { .tbl-bf .prod { max-width: 150px; } }
 </style>
-<div class="modal fade" id="modalImportaAEMBF" tabindex="-1">
+<?php
+// Os dois botões usam o mesmo modal/fluxo; muda só de onde vêm as campanhas:
+//  - "Importa Pedido": campanhas do módulo Comercial > Campanhas, para todo pedido;
+//  - "Importa Pedido BF": campanhas antigas (campanhas_am), só quando o Obs começa com "BF".
+$modaisImporta = [
+    ['modal' => 'modalImportaAEM', 'p' => 'aem', 'modo' => 'comercial', 'titulo' => 'Importa Pedido', 'icone' => 'bi-cloud-download',
+     'modoCampo' => 'modo_campanha', 'modoValor' => 'comercial',
+     'ajuda' => 'Verifica quais campanhas do módulo <strong>Comercial &gt; Campanhas</strong> o pedido atinge e permite gravar o <strong>% Diretoria</strong> de cada item pelo percentual da campanha.'],
+    ['modal' => 'modalImportaAEMBF', 'p' => 'aembf', 'modo' => 'bf', 'titulo' => 'Importa Pedido BF', 'icone' => 'bi-tags',
+     'modoCampo' => 'modo_bf', 'modoValor' => '1',
+     'ajuda' => 'Confere o campo <strong>Obs</strong> do pedido no A&amp;M — se começar com <strong>“BF”</strong>, verifica quais campanhas se aplicam e permite gravar o <strong>% Diretoria</strong> de cada item pela faixa de campanha atingida.'],
+];
+foreach ($modaisImporta as $mi): ?>
+<div class="modal fade" id="<?= $mi['modal'] ?>" tabindex="-1">
     <div class="modal-dialog modal-fullscreen-xl-down modal-xl modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title fw-bold"><i class="bi bi-tags me-2 text-primary"></i>Importa Pedido BF</h5>
+                <h5 class="modal-title fw-bold"><i class="bi <?= $mi['icone'] ?> me-2 text-primary"></i><?= $mi['titulo'] ?></h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <div class="row g-2 align-items-end mb-3">
                     <div class="col">
                         <label class="form-label fw-semibold">Número do Pedido</label>
-                        <input type="text" id="aembfNumero" class="form-control" maxlength="6"
+                        <input type="text" id="<?= $mi['p'] ?>Numero" class="form-control" maxlength="6"
                                placeholder="Número do pedido lançado no sistema A&amp;M" inputmode="numeric">
                     </div>
                     <div class="col-auto">
-                        <button type="button" class="btn btn-primary" id="aembfBuscarBtn">
+                        <button type="button" class="btn btn-primary" id="<?= $mi['p'] ?>BuscarBtn">
                             <i class="bi bi-search me-1"></i>Buscar
                         </button>
                     </div>
                 </div>
-                <p class="text-muted small mb-2">
-                    Confere o campo <strong>Obs</strong> do pedido no A&amp;M — se começar com <strong>“BF”</strong>,
-                    verifica quais campanhas se aplicam e permite gravar o <strong>% Diretoria</strong> de cada item
-                    pela faixa de campanha atingida.
-                </p>
-                <div id="aembfResultado"></div>
+                <p class="text-muted small mb-2"><?= $mi['ajuda'] ?></p>
+                <div id="<?= $mi['p'] ?>Resultado"></div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
-                <button type="button" class="btn btn-success" id="aembfConfirmarBtn" disabled>
+                <button type="button" class="btn btn-success" id="<?= $mi['p'] ?>ConfirmarBtn" disabled>
                     <i class="bi bi-check2-circle me-1"></i>Confirmar Importação
                 </button>
             </div>
         </div>
     </div>
-    <form method="POST" action="<?= BASE_URL ?>/admin/pedidos.php" id="aembfForm" style="display:none">
+    <form method="POST" action="<?= BASE_URL ?>/admin/pedidos.php" id="<?= $mi['p'] ?>Form" style="display:none">
         <input type="hidden" name="action" value="importar_aem">
-        <input type="hidden" name="modo_bf" value="1">
-        <input type="hidden" name="aplicar_campanha" id="aembfFormAplicar" value="0">
-        <input type="hidden" name="gravar_am" id="aembfFormGravarAm" value="0">
-        <input type="hidden" name="numero" id="aembfFormNumero">
-        <input type="hidden" name="cliente_id" id="aembfFormClienteId">
+        <input type="hidden" name="<?= $mi['modoCampo'] ?>" value="<?= $mi['modoValor'] ?>">
+        <input type="hidden" name="aplicar_campanha" id="<?= $mi['p'] ?>FormAplicar" value="0">
+        <input type="hidden" name="gravar_am" id="<?= $mi['p'] ?>FormGravarAm" value="0">
+        <input type="hidden" name="numero" id="<?= $mi['p'] ?>FormNumero">
+        <input type="hidden" name="cliente_id" id="<?= $mi['p'] ?>FormClienteId">
     </form>
 </div>
+<?php endforeach; ?>
 
 <script>
 (function() {
@@ -1029,155 +1056,12 @@ $cardDefs = [
 
 <?php if ($isComercial): ?>
 <script>
-(function() {
-    var CLIENTES_IMPORT = <?= json_encode(array_map(function ($c) {
-        return ['id' => (int)$c['id'], 'label' => '[' . $c['codigo_cliente'] . '] ' . $c['razao_social']];
-    }, $clientesParaImport)) ?>;
-    var itensAtual = [];
-    var clienteIdAtual = null;
-
-    // Desconto do Cliente/Canal vem sempre do próprio pedido no A&M (%Descto ST / %Descto)
-    // — apenas informativo aqui, não é mais editável.
-    function atualizarCaixaDesconto(descCliente, descCanal) {
-        var box = document.getElementById('aemDescontoBox');
-        if (!box) return;
-        box.innerHTML = '<div class="row g-2 mt-1">'
-            + '<div class="col-6"><label class="form-label small mb-0">Desconto do Canal %</label>'
-            + '<input type="text" class="form-control form-control-sm" value="' + (parseFloat(descCanal) || 0) + '" readonly disabled></div>'
-            + '<div class="col-6"><label class="form-label small mb-0">Desconto do Cliente %</label>'
-            + '<input type="text" class="form-control form-control-sm" value="' + (parseFloat(descCliente) || 0) + '" readonly disabled></div>'
-            + '</div>';
-    }
-
-    function escapeHtml(s) {
-        return (s === null || s === undefined ? '' : String(s)).replace(/[&<>"']/g, function(c) {
-            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
-        });
-    }
-
-    function atualizarConfirmar() {
-        var algumProblema = itensAtual.some(function(it) {
-            return !it.produtoId || it.temValor === false || it.temCusto === false;
-        });
-        document.getElementById('aemConfirmarBtn').disabled = !clienteIdAtual || algumProblema || itensAtual.length === 0;
-    }
-
-    function renderResultado(d) {
-        var el = document.getElementById('aemResultado');
-        if (!d.ok) {
-            el.innerHTML = '<div class="alert alert-danger">' + escapeHtml(d.erro || 'Erro ao buscar pedido.') + '</div>';
-            itensAtual = []; clienteIdAtual = null;
-            document.getElementById('aemConfirmarBtn').disabled = true;
-            return;
-        }
-        itensAtual = d.itens;
-        clienteIdAtual = d.clienteId;
-
-        var canalAEM = d.pedidoAccademia === 'SIM' ? 'Distribuidor' : (d.pedidoAccademia === 'NAO' ? 'Varejo' : '—');
-        var html = '<div class="mb-3">';
-        html += '<div class="small text-muted">Pedido Interno A&amp;M: <strong>' + escapeHtml(d.pedidoInterno || '—')
-              + '</strong> &middot; Tipo: <strong>' + (d.tipoVenda === 'bonificacao' ? 'Bonificação' : 'Venda')
-              + '</strong> &middot; Forma Pagto: <strong>' + escapeHtml(d.formaPagto || '—')
-              + '</strong> &middot; Canal (A&amp;M): <strong>' + canalAEM + '</strong></div>';
-        if (d.isAVista) {
-            html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-percent me-1"></i>'
-                  + 'Pagamento à vista — será aplicado desconto de 5% sobre o total do pedido.</div>';
-        }
-        if (d.creditoUtilizado > 0.001) {
-            html += '<div class="alert alert-info py-2 mb-0 mt-2"><i class="bi bi-coin me-1"></i>'
-                  + 'Crédito Utilizado no A&amp;M: <strong>' + d.creditoUtilizado.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
-                  + '</strong> — será lançado como concessão de crédito do cliente ao confirmar.</div>';
-        }
-        if (d.clienteId) {
-            html += '<div class="alert alert-success py-2 mb-0 mt-2"><i class="bi bi-check-circle me-1"></i>Cliente identificado: '
-                  + escapeHtml(d.clienteLabel) + '</div>';
-        } else {
-            html += '<div class="alert alert-warning py-2 mb-2 mt-2"><i class="bi bi-exclamation-triangle me-1"></i>'
-                  + 'Cliente do A&amp;M (' + escapeHtml(d.clienteNomeAEM) + ' &mdash; CNPJ ' + escapeHtml(d.clienteCnpjAEM)
-                  + ') não encontrado no SisPed. Selecione manualmente:</div>';
-            html += '<select class="form-select" id="aemClienteSelect"><option value="">Selecione o cliente...</option>';
-            CLIENTES_IMPORT.forEach(function(c) {
-                html += '<option value="' + c.id + '">' + escapeHtml(c.label) + '</option>';
-            });
-            html += '</select>';
-        }
-        html += '<div id="aemDescontoBox" class="mt-2"></div>';
-        html += '</div>';
-
-        html += '<div class="table-responsive"><table class="table table-sm align-middle">'
-              + '<thead><tr><th>Código A&amp;M</th><th>Produto (A&amp;M)</th><th class="text-end">Qtd</th>'
-              + '<th class="text-end">Desc.Com%</th><th class="text-end">Desc.Dir%</th><th>Produto no SisPed</th></tr></thead><tbody>';
-        itensAtual.forEach(function(it) {
-            var temProblema = !it.produtoId || it.temValor === false || it.temCusto === false;
-            var statusCol;
-            if (!it.produtoId) {
-                statusCol = '<span class="text-danger fw-semibold">Não mapeado</span>';
-            } else {
-                statusCol = escapeHtml(it.produtoDesc);
-                var avisos = [];
-                if (it.temValor === false) avisos.push('sem Valor');
-                if (it.temCusto === false) avisos.push('sem Custo');
-                if (avisos.length) {
-                    statusCol += ' <span class="text-danger fw-semibold">(' + avisos.join(', ') + ')</span>';
-                }
-            }
-            html += '<tr' + (temProblema ? ' class="table-danger"' : '') + '>'
-                + '<td>' + escapeHtml(it.codigoAEM) + '</td>'
-                + '<td>' + escapeHtml(it.nomeProduto) + '</td>'
-                + '<td class="text-end">' + it.qtd + '</td>'
-                + '<td class="text-end">' + (it.descComercial || 0) + '</td>'
-                + '<td class="text-end">' + (it.descDiretoria || 0) + '</td>'
-                + '<td>' + statusCol + '</td>'
-                + '</tr>';
-        });
-        html += '</tbody></table></div>';
-        el.innerHTML = html;
-
-        atualizarCaixaDesconto(d.descontoCliente, d.descontoCanal);
-
-        var sel = document.getElementById('aemClienteSelect');
-        if (sel) {
-            sel.addEventListener('change', function() {
-                clienteIdAtual = sel.value ? parseInt(sel.value, 10) : null;
-                atualizarConfirmar();
-            });
-        }
-        atualizarConfirmar();
-    }
-
-    document.getElementById('aemBuscarBtn').addEventListener('click', function() {
-        var numero = document.getElementById('aemNumero').value.trim();
-        if (!numero) return;
-        document.getElementById('aemResultado').innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></div>';
-        document.getElementById('aemConfirmarBtn').disabled = true;
-        fetch('<?= BASE_URL ?>/admin/pedidos.php?ajax_aem_preview=1&numero=' + encodeURIComponent(numero))
-            .then(function(r) { return r.json(); })
-            .then(renderResultado)
-            .catch(function() {
-                document.getElementById('aemResultado').innerHTML = '<div class="alert alert-danger">Erro ao buscar pedido.</div>';
-            });
-    });
-
-    document.getElementById('aemConfirmarBtn').addEventListener('click', function() {
-        if (this.disabled) return;
-        document.getElementById('aemFormNumero').value = document.getElementById('aemNumero').value.trim();
-        document.getElementById('aemFormClienteId').value = clienteIdAtual || '';
-        document.getElementById('aemForm').submit();
-    });
-
-    document.getElementById('modalImportaAEM').addEventListener('hidden.bs.modal', function() {
-        document.getElementById('aemNumero').value = '';
-        document.getElementById('aemResultado').innerHTML = '';
-        document.getElementById('aemConfirmarBtn').disabled = true;
-        itensAtual = []; clienteIdAtual = null;
-    });
-})();
-</script>
-
-<script>
-// "Importa Pedido BF": mesma importação do A&M, mas confere o Obs do pedido ("BF") e
-// permite gravar o % Diretoria de cada item pela faixa de campanha atingida.
-(function() {
+// "Importa Pedido" / "Importa Pedido BF": mesma importação do A&M + análise de campanha que
+// permite gravar o % Diretoria de cada item pelo % da campanha. cfg.modo = 'comercial'
+// (campanhas do módulo Comercial, todo pedido) ou 'bf' (campanhas antigas, só Obs "BF").
+function initImportaAEM(cfg) {
+    var P = cfg.p;
+    var COMERCIAL = cfg.modo === 'comercial';
     var CLIENTES_IMPORT = <?= json_encode(array_map(function ($c) {
         return ['id' => (int)$c['id'], 'label' => '[' . $c['codigo_cliente'] . '] ' . $c['razao_social']];
     }, $clientesParaImport)) ?>;
@@ -1240,15 +1124,15 @@ $cardDefs = [
     }
     function atualizarConfirmar() {
         var algum = bfItens.some(temProblema);
-        document.getElementById('aembfConfirmarBtn').disabled = !bfClienteId || algum || bfItens.length === 0;
+        document.getElementById(P + 'ConfirmarBtn').disabled = !bfClienteId || algum || bfItens.length === 0;
     }
 
     function render(d) {
-        var el = document.getElementById('aembfResultado');
+        var el = document.getElementById(P + 'Resultado');
         if (!d.ok) {
             el.innerHTML = '<div class="alert alert-danger">' + escapeHtml(d.erro || 'Erro ao buscar pedido.') + '</div>';
             bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false;
-            document.getElementById('aembfConfirmarBtn').disabled = true;
+            document.getElementById(P + 'ConfirmarBtn').disabled = true;
             return;
         }
         bfData = d;
@@ -1282,7 +1166,7 @@ $cardDefs = [
             html += '<div class="alert alert-warning py-2 mb-2 mt-2"><i class="bi bi-exclamation-triangle me-1"></i>'
                   + 'Cliente do A&amp;M (' + escapeHtml(d.clienteNomeAEM) + ' &mdash; CNPJ ' + escapeHtml(d.clienteCnpjAEM)
                   + ') não encontrado no SisPed. Selecione manualmente:</div>';
-            html += '<select class="form-select" id="aembfClienteSelect"><option value="">Selecione o cliente...</option>';
+            html += '<select class="form-select" id="' + P + 'ClienteSelect"><option value="">Selecione o cliente...</option>';
             CLIENTES_IMPORT.forEach(function(c) {
                 html += '<option value="' + c.id + '">' + escapeHtml(c.label) + '</option>';
             });
@@ -1291,7 +1175,7 @@ $cardDefs = [
         html += '</div>';
 
         // Painel BF / campanhas
-        if (d.ehBf === false) {
+        if (!COMERCIAL && d.ehBf === false) {
             html += '<div class="alert alert-warning py-2"><i class="bi bi-info-circle me-1"></i>'
                   + 'Obs do pedido' + (d.obs ? ': “' + escapeHtml(d.obs) + '”' : ' vazio') + ' — não começa com “BF”. '
                   + 'Será importado <strong>sem</strong> desconto de campanha.</div>';
@@ -1320,7 +1204,8 @@ $cardDefs = [
                               + 'Quantidades diferentes entre os produtos (desconto aplicado assim mesmo): '
                               + escapeHtml(qs.join(', ')) + '</div>';
                     }
-                    html += '<tr' + (aviso ? ' class="table-danger"' : '') + '><td>' + escapeHtml(c.nome) + aviso + '</td>'
+                    var faixa = c.faixa ? ' <span class="text-muted small">(faixa ' + c.faixa + ')</span>' : '';
+                    html += '<tr' + (aviso ? ' class="table-danger"' : '') + '><td>' + escapeHtml(c.nome) + faixa + aviso + '</td>'
                           + '<td>' + (c.criterio === 'valor' ? 'Valor' : 'Quantidade') + '</td>'
                           + '<td class="num">' + atg + '</td>'
                           + '<td class="num fw-semibold ' + (parseFloat(c.percentualEsperado) > 0 ? 'text-success' : 'text-muted') + '">'
@@ -1328,21 +1213,30 @@ $cardDefs = [
                 });
                 html += '</tbody></table></div>';
             } else {
-                html += '<div class="small text-muted mb-2">Nenhuma faixa de campanha atingida pelos itens deste pedido — '
+                html += '<div class="small text-muted mb-2">Nenhuma ' + (COMERCIAL ? 'campanha atingida' : 'faixa de campanha atingida') + ' pelos itens deste pedido — '
                       + 'aplicar zera o % Diretoria de todos os itens.</div>';
             }
-            html += '<button type="button" class="btn btn-sm ' + (bfAplicar ? 'btn-success' : 'btn-outline-primary') + '" id="aembfAplicarBtn"'
+            (d.bonificacoes || []).forEach(function (b) {
+                html += '<div class="small mb-2 ' + (b.ok ? 'text-success' : 'text-danger') + '"><i class="bi bi-gift me-1"></i>'
+                      + escapeHtml(b.nome) + ': brinde ' + escapeHtml(b.produto_bonus_codigo) + ' — ' + escapeHtml(b.produto_bonus_nome)
+                      + ' esperado ' + b.qtd_bonus_esperada + ', no pedido ' + b.qtd_bonus_encontrada + '</div>';
+            });
+            html += '<button type="button" class="btn btn-sm ' + (bfAplicar ? 'btn-success' : 'btn-outline-primary') + '" id="' + P + 'AplicarBtn"'
                   + (bfAplicar ? ' disabled' : '') + '>'
                   + (bfAplicar ? '<i class="bi bi-check2 me-1"></i>Descontos de campanha aplicados' : '<i class="bi bi-percent me-1"></i>Aplicar descontos de campanha no % Diretoria')
                   + '</button>';
             html += '<div class="form-text mb-2">Substitui o % Diretoria de cada item pelo percentual da faixa de campanha atingida (itens fora de campanha ficam com 0). O valor é recalculado no servidor ao confirmar.</div>';
             if (bfAplicar) {
                 html += '<div class="form-check mb-2">'
-                      + '<input class="form-check-input" type="checkbox" id="aembfGravarAm" checked>'
-                      + '<label class="form-check-label small" for="aembfGravarAm">'
+                      + '<input class="form-check-input" type="checkbox" id="' + P + 'GravarAm" checked>'
+                      + '<label class="form-check-label small" for="' + P + 'GravarAm">'
                       + 'Gravar o % Diretoria também no pedido do A&amp;M (Consulta/Reimprime → Altera → Itens → Validar → <strong>Conclui Pedido</strong>).'
                       + '</label>'
-                      + '<div class="form-text text-danger">Grava de verdade no A&amp;M e conclui o pedido. Também <strong>substitui o campo Obs</strong> por "BF-" + as campanhas atingidas (ex.: <code>BF-Desc 13% color, Desc 10% Desco</code>). Registrado no log de descontos.</div>'
+                      + '<div class="form-text text-danger">Grava de verdade no A&amp;M e conclui o pedido. '
+                      + (COMERCIAL ? (d.obsAM ? 'Também <strong>substitui o campo Obs</strong> do A&amp;M por <code>' + escapeHtml(d.obsAM) + '</code> (Observação para o A&amp;M das campanhas atingidas).'
+                                              : 'O campo Obs do A&amp;M <strong>não</strong> é alterado (nenhuma campanha atingida tem "Observação para o A&amp;M").')
+                                   : 'Também <strong>substitui o campo Obs</strong> por "BF-" + as campanhas atingidas (ex.: <code>BF-Desc 13% color, Desc 10% Desco</code>).')
+                      + ' Registrado no log de descontos.</div>'
                       + '</div>';
             }
             html += '</div>';
@@ -1401,14 +1295,14 @@ $cardDefs = [
               + '</tr></tfoot></table></div>';
         el.innerHTML = html;
 
-        var sel = document.getElementById('aembfClienteSelect');
+        var sel = document.getElementById(P + 'ClienteSelect');
         if (sel) {
             sel.addEventListener('change', function() {
                 bfClienteId = sel.value ? parseInt(sel.value, 10) : null;
                 atualizarConfirmar();
             });
         }
-        var apl = document.getElementById('aembfAplicarBtn');
+        var apl = document.getElementById(P + 'AplicarBtn');
         if (apl) {
             apl.addEventListener('click', function() {
                 bfAplicar = true;
@@ -1419,47 +1313,50 @@ $cardDefs = [
     }
 
     // Clique no cabeçalho da tabela de itens = reordena (o conteúdo é redesenhado a cada render).
-    document.getElementById('aembfResultado').addEventListener('click', function (e) {
+    document.getElementById(P + 'Resultado').addEventListener('click', function (e) {
         var th = e.target.closest('.bf-th-sort');
         if (th) bfOrdenar(th.dataset.campo);
     });
 
-    document.getElementById('aembfBuscarBtn').addEventListener('click', function() {
-        var numero = document.getElementById('aembfNumero').value.trim();
+    document.getElementById(P + 'BuscarBtn').addEventListener('click', function() {
+        var numero = document.getElementById(P + 'Numero').value.trim();
         if (!numero) return;
         bfAplicar = false;
         bfSortCol = null; bfSortDir = 1;   // nova busca volta à ordem original do A&M
-        document.getElementById('aembfResultado').innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></div>';
-        document.getElementById('aembfConfirmarBtn').disabled = true;
-        fetch('<?= BASE_URL ?>/admin/pedidos.php?ajax_aem_preview=1&bf=1&numero=' + encodeURIComponent(numero))
+        document.getElementById(P + 'Resultado').innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></div>';
+        document.getElementById(P + 'ConfirmarBtn').disabled = true;
+        fetch('<?= BASE_URL ?>/admin/pedidos.php?ajax_aem_preview=1&' + (COMERCIAL ? 'camp=comercial' : 'bf=1') + '&numero=' + encodeURIComponent(numero))
             .then(function(r) { return r.json(); })
             .then(render)
             .catch(function() {
-                document.getElementById('aembfResultado').innerHTML = '<div class="alert alert-danger">Erro ao buscar pedido.</div>';
+                document.getElementById(P + 'Resultado').innerHTML = '<div class="alert alert-danger">Erro ao buscar pedido.</div>';
             });
     });
 
-    document.getElementById('aembfConfirmarBtn').addEventListener('click', function() {
+    document.getElementById(P + 'ConfirmarBtn').addEventListener('click', function() {
         if (this.disabled) return;
-        document.getElementById('aembfFormNumero').value = document.getElementById('aembfNumero').value.trim();
-        document.getElementById('aembfFormClienteId').value = bfClienteId || '';
-        var aplicar = (bfAplicar && bfData && bfData.ehBf);
-        document.getElementById('aembfFormAplicar').value = aplicar ? '1' : '0';
-        var gAm = document.getElementById('aembfGravarAm');
-        document.getElementById('aembfFormGravarAm').value = (aplicar && gAm && gAm.checked) ? '1' : '0';
+        document.getElementById(P + 'FormNumero').value = document.getElementById(P + 'Numero').value.trim();
+        document.getElementById(P + 'FormClienteId').value = bfClienteId || '';
+        var aplicar = (bfAplicar && bfData && (COMERCIAL || bfData.ehBf));
+        document.getElementById(P + 'FormAplicar').value = aplicar ? '1' : '0';
+        var gAm = document.getElementById(P + 'GravarAm');
+        document.getElementById(P + 'FormGravarAm').value = (aplicar && gAm && gAm.checked) ? '1' : '0';
         if (aplicar && gAm && gAm.checked &&
             !confirm('Isto vai gravar o % Diretoria nos itens do pedido no sistema A&M e concluir o pedido. Confirmar?')) return;
-        document.getElementById('aembfForm').submit();
+        document.getElementById(P + 'Form').submit();
     });
 
-    document.getElementById('modalImportaAEMBF').addEventListener('hidden.bs.modal', function() {
-        document.getElementById('aembfNumero').value = '';
-        document.getElementById('aembfResultado').innerHTML = '';
-        document.getElementById('aembfConfirmarBtn').disabled = true;
+    document.getElementById(cfg.modal).addEventListener('hidden.bs.modal', function() {
+        document.getElementById(P + 'Numero').value = '';
+        document.getElementById(P + 'Resultado').innerHTML = '';
+        document.getElementById(P + 'ConfirmarBtn').disabled = true;
         bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false;
         bfSortCol = null; bfSortDir = 1;
     });
-})();
+}
+<?php foreach ($modaisImporta as $mi): ?>
+initImportaAEM(<?= json_encode(['p' => $mi['p'], 'modo' => $mi['modo'], 'modal' => $mi['modal']]) ?>);
+<?php endforeach; ?>
 </script>
 <?php endif; ?>
 

@@ -21,6 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // composto (linha E grupo E subgrupo E produto) + mínimo por quantidade OU valor.
             $condOp = ($_POST['cond_operador'] ?? 'E') === 'OU' ? 'OU' : 'E';
             $obsCamp = trim($_POST['observacao'] ?? '');
+            $obsAm   = mb_substr(trim($_POST['obs_am'] ?? ''), 0, 255);
             $condClean = [];
             foreach (($_POST['cond'] ?? []) as $c) {
                 $fl = trim($c['linha']    ?? '');
@@ -151,9 +152,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // Linha cabeçalho — parâmetros da campanha (gatilho fica nas condições)
             db()->prepare('INSERT INTO campanhas
-                (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo,cond_operador,observacao,cond_total_modo,cond_total_min,desconto_modo)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo, $condOp, $obsCamp !== '' ? $obsCamp : null, $totModo, $totMin, $descModo]);
+                (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo,cond_operador,observacao,cond_total_modo,cond_total_min,desconto_modo,obs_am)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo, $condOp, $obsCamp !== '' ? $obsCamp : null, $totModo, $totMin, $descModo, $obsAm !== '' ? $obsAm : null]);
 
             // Condições (E/OU) — filtro composto por condição
             $insC = db()->prepare('INSERT INTO campanha_condicoes
@@ -226,6 +227,7 @@ foreach ($rows as $r) {
             'bonif_limite_valor' => $r['bonif_limite_valor'] ?? null,
             'cond_operador'      => ($r['cond_operador'] ?? 'E') === 'OU' ? 'OU' : 'E',
             'observacao'         => (string)($r['observacao'] ?? ''),
+            'obs_am'             => (string)($r['obs_am'] ?? ''),
             'cond_total_modo'    => $r['cond_total_modo'] ?? null,
             'cond_total_min'     => isset($r['cond_total_min']) ? (float)$r['cond_total_min'] : null,
             'desconto_modo'      => ($r['desconto_modo'] ?? 'fixo') === 'faixas' ? 'faixas' : 'fixo',
@@ -769,6 +771,9 @@ require_once LAYOUT_PATH . '/header.php';
                             <label class="form-label fw-semibold mb-1">Observação <span class="text-muted small">(opcional)</span></label>
                             <textarea name="observacao" id="f_obs" class="form-control form-control-sm" rows="2" maxlength="1000" placeholder="Ex.: Na compra de 504 un. de Coloração e 42 un. de Oxidação"></textarea>
                             <div class="form-text">Se preenchida, aparece no pedido (área do cliente e admin) no lugar do texto da condição.</div>
+                            <label class="form-label fw-semibold mb-1 mt-2">Observação para o A&amp;M <span class="text-muted small">(opcional)</span></label>
+                            <input type="text" name="obs_am" id="f_obs_am" class="form-control form-control-sm" maxlength="255" placeholder="Ex.: Desc {pct} color">
+                            <div class="form-text">Levada ao campo <strong>Obs</strong> do pedido no A&amp;M pelo <strong>Importa Pedido</strong> (com "Gravar também no A&amp;M") quando a campanha é atingida. <code>{pct}</code> vira o % atingido. Várias campanhas são separadas por vírgula.</div>
                         </div>
                     </div>
                 </div>
@@ -1145,6 +1150,7 @@ function campValidar() {
 // ---- Reset / abrir modal ----
 function campLimpar() {
     document.getElementById('f_obs').value = '';
+    document.getElementById('f_obs_am').value = '';
     document.getElementById('f_tot_modo').value = '';
     condTotalAtualizar();
     document.getElementById('f_dm_fixo').checked = true;
@@ -1199,6 +1205,7 @@ function editarReg(d) {
     document.getElementById('f_cond_op').value = d.cond_operador === 'OU' ? 'OU' : 'E';
     condOpAtualizar();
     document.getElementById('f_obs').value = d.observacao || '';
+    document.getElementById('f_obs_am').value = d.obs_am || '';
     document.getElementById('f_tot_modo').value = d.cond_total_modo || '';
     condTotalAtualizar();
     if (d.cond_total_modo) document.getElementById('f_tot_min').value = parseFloat(d.cond_total_min || 0) || '';

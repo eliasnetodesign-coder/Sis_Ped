@@ -113,6 +113,21 @@ $okIcon = function ($ok) {
               : '<i class="bi bi-x-circle-fill text-danger"></i>';
 };
 $pct = function ($v) { return $v === null ? '—' : rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%'; };
+// Condições de uma campanha (modal de campanhas): comprado no pedido x mínimo exigido + itens de cada condição.
+$condTabela = function (array $conds, string $operador) use ($okIcon) {
+    $fmt = fn($c, $v) => $c['criterio'] === 'valor' ? moedaBR((float)$v) : number_format((float)$v, 0, ',', '.') . ' un.';
+    $h = '<div class="small text-muted mb-1">Condições (' . ($operador === 'OU' ? 'basta uma' : 'todas obrigatórias') . '):</div>'
+       . '<table class="table table-sm mb-0 small"><thead><tr><th>Condição</th><th class="text-end">Comprado</th><th class="text-end">Mínimo</th><th class="text-center">OK</th><th>Itens do pedido</th></tr></thead><tbody>';
+    foreach ($conds as $c) {
+        $its = array_map(fn($i) => e($i['codigo'] . ' ' . $i['nome']) . ' <b>(' . (int)$i['qtd'] . ')</b>', $c['itens']);
+        $h .= '<tr class="' . ($c['ok'] ? '' : 'table-danger') . '"><td>' . e($c['rotulo']) . '</td>'
+            . '<td class="text-end fw-semibold">' . $fmt($c, $c['atingido']) . '</td>'
+            . '<td class="text-end">' . ($c['minimo'] > 0 ? $fmt($c, $c['minimo']) : '—') . '</td>'
+            . '<td class="text-center">' . $okIcon($c['ok']) . '</td>'
+            . '<td>' . ($its ? implode('<br>', $its) : '<span class="text-muted">nenhum</span>') . '</td></tr>';
+    }
+    return $h . '</tbody></table>';
+};
 
 $pageTitle = 'Análise Financeira';
 require_once LAYOUT_PATH . '/header.php';
@@ -144,7 +159,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#mdlST">
                     <i class="bi bi-table me-1"></i>Tabela de ST por estado
                 </button>
-                <a href="<?= BASE_URL ?>/admin/financeiro/campanhas-am.php" class="btn btn-outline-secondary">
+                <a href="<?= BASE_URL ?>/admin/cadastros/campanhas.php" class="btn btn-outline-secondary" title="Comercial > Campanhas">
                     <i class="bi bi-megaphone me-1"></i>Campanhas
                 </a>
                 <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#mdlLogLiberacoes">
@@ -379,14 +394,7 @@ require_once LAYOUT_PATH . '/header.php';
                                 4) Campanhas
                             </div>
                             <?php if (!empty($a['campanhas_resumo'])):
-                                $numFmt = function ($v) { return rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ','); };
-                                $faixaLabel = function ($cr) use ($numFmt) {
-                                    if ($cr['faixa_min'] === null) return '—';
-                                    $fmt1 = $cr['criterio'] === 'valor' ? moedaBR($cr['faixa_min']) : $numFmt($cr['faixa_min']) . ' ' . $cr['unidade'];
-                                    if ($cr['faixa_max'] === null) return 'Acima de ' . $fmt1;
-                                    $fmt2 = $cr['criterio'] === 'valor' ? moedaBR($cr['faixa_max']) : $numFmt($cr['faixa_max']) . ' ' . $cr['unidade'];
-                                    return $fmt1 . ' a ' . $fmt2;
-                                };
+                                $faixaLabel = fn($cr) => $cr['faixa'] === null ? '—' : 'Faixa ' . (int)$cr['faixa'];
                             ?>
                                 <div class="small text-muted mb-1">Campanhas atingidas:</div>
                                 <div class="table-responsive">
@@ -416,6 +424,19 @@ require_once LAYOUT_PATH . '/header.php';
                                 <?php foreach ($a['linhas'] as $l): $nid = e($a['codigo'] . '-' . $l['numero']); if (!empty($l['check_campanha'])) continue; ?>
                                     <button type="button" class="btn btn-sm btn-outline-danger py-0 me-1 mb-1" data-bs-toggle="modal" data-bs-target="#mdlCamp-<?= $nid ?>">
                                         <i class="bi bi-eye"></i> Pedido <?= e($l['numero']) ?><?php if (!empty($l['itens_fora_campanha'])): ?> (<?= count($l['itens_fora_campanha']) ?> produto/s)<?php endif; ?>
+                                    </button>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                            <?php
+                            // Pedidos que passaram no check de campanhas, mas têm campanha (atingida ou não)
+                            // ou bonificação para mostrar — mesmo modal dos que deram erro.
+                            $okCamp = array_filter($a['linhas'], fn($l) => !empty($l['check_campanha'])
+                                && (!empty($l['campanhas_atingidas']) || !empty($l['bonificacoes_campanha']) || !empty($l['campanhas_nao_atingidas'])));
+                            if ($okCamp): ?>
+                                <div class="small text-success mt-2 mb-1">Pedidos com campanha correta — clique para ver os itens:</div>
+                                <?php foreach ($okCamp as $l): $nid = e($a['codigo'] . '-' . $l['numero']); ?>
+                                    <button type="button" class="btn btn-sm btn-outline-success py-0 me-1 mb-1" data-bs-toggle="modal" data-bs-target="#mdlCamp-<?= $nid ?>">
+                                        <i class="bi bi-eye"></i> Pedido <?= e($l['numero']) ?><?php if (!empty($l['campanhas_atingidas'])): ?> (<?= count($l['campanhas_atingidas']) ?> campanha/s)<?php endif; ?>
                                     </button>
                                 <?php endforeach; ?>
                             <?php endif; ?>
@@ -488,18 +509,13 @@ require_once LAYOUT_PATH . '/header.php';
                 </div></div>
             </div></div></div>
             <?php endif; ?>
-            <?php if (!empty($l['tem_item_fora_campanha']) || !empty($l['campanhas_atingidas']) || !empty($l['bonificacoes_campanha'])): ?>
+            <?php if (!empty($l['tem_item_fora_campanha']) || !empty($l['campanhas_atingidas']) || !empty($l['bonificacoes_campanha']) || !empty($l['campanhas_nao_atingidas'])): ?>
             <div class="modal fade" id="mdlCamp-<?= $nid ?>" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold">Pedido <?= e($l['numero']) ?> — Campanhas</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <?php if (empty($l['eh_bf'])): ?>
-                        <div class="small text-muted mb-2">
-                            <i class="bi bi-info-circle me-1"></i>Obs deste pedido (Consulta/Reimprime) <?= $l['obs'] ? ('é "' . e($l['obs']) . '"') : 'está vazio' ?> — não começa com "BF", então nenhuma campanha se aplica.
-                        </div>
-                    <?php endif; ?>
                     <?php if (!empty($l['itens_fora_campanha'])): ?>
                         <div class="fw-semibold text-danger mb-2"><i class="bi bi-exclamation-triangle-fill me-1"></i>Desconto fora de campanha</div>
                         <div class="table-responsive mb-3">
@@ -513,8 +529,9 @@ require_once LAYOUT_PATH . '/header.php';
                                         <td class="text-end fw-semibold text-danger"><?= $pct($it['pct_diretoria']) ?></td>
                                         <td class="text-end"><?= $pct($it['percentual_esperado']) ?></td>
                                         <td class="small"><?php
-                                            if ($it['motivo'] === 'sem_bf') echo 'Pedido sem "BF" no Obs — nenhuma campanha se aplica';
-                                            elseif ($it['motivo'] === 'sem_campanha') echo 'Produto não pertence a nenhuma campanha';
+                                            if ($it['motivo'] === 'nao_cadastrado') echo 'Produto não cadastrado no SisPed';
+                                            elseif ($it['motivo'] === 'campanha_nao_atingida') echo 'Campanha ' . e($it['campanha_nao_atingida']) . ' não atingida (ver abaixo)';
+                                            elseif ($it['motivo'] === 'sem_campanha') echo 'Nenhuma campanha atingida cobre este produto';
                                             else echo 'Acima da faixa de ' . e($it['campanha_nome']);
                                         ?></td>
                                     </tr>
@@ -530,10 +547,11 @@ require_once LAYOUT_PATH . '/header.php';
                             <table class="table table-sm mb-0">
                                 <thead class="table-light"><tr><th>Campanha</th><th>Critério</th><th class="text-end">Atingido</th><th class="text-end">% Diretoria esperado</th><th class="text-end">Itens</th></tr></thead>
                                 <tbody>
-                                <?php foreach ($l['campanhas_atingidas'] as $ca): ?>
-                                    <tr>
+                                <?php foreach ($l['campanhas_atingidas'] as $ix => $ca): $cid = 'cd-' . $nid . '-' . $ix; ?>
+                                    <tr<?php if (!empty($ca['condicoes'])): ?> role="button" data-bs-toggle="collapse" data-bs-target="#<?= $cid ?>" title="Clique para ver as condições"<?php endif; ?>>
                                         <td>
-                                            <?= e($ca['nome']) ?>
+                                            <?php if (!empty($ca['condicoes'])): ?><i class="bi bi-chevron-down small text-muted me-1"></i><?php endif; ?>
+                                            <?= e($ca['nome']) ?><?php if (!empty($ca['faixa'])): ?> <span class="text-muted small">(faixa <?= (int)$ca['faixa'] ?>)</span><?php endif; ?>
                                             <?php if (!empty($ca['produtos_faltantes'])): ?>
                                                 <div class="small text-danger">
                                                     <i class="bi bi-exclamation-triangle me-1"></i>Exige todos os produtos da campanha — falta(m) no pedido:
@@ -552,9 +570,27 @@ require_once LAYOUT_PATH . '/header.php';
                                         <td class="text-end fw-semibold <?= $ca['percentual_esperado'] > 0 ? 'text-success' : 'text-muted' ?>"><?= $pct($ca['percentual_esperado']) ?></td>
                                         <td class="text-end"><?= count($ca['itens']) ?></td>
                                     </tr>
+                                    <?php if (!empty($ca['condicoes'])): ?>
+                                    <tr class="collapse" id="<?= $cid ?>"><td colspan="5" class="bg-body-tertiary"><?= $condTabela($ca['condicoes'], $ca['operador'] ?? 'E') ?></td></tr>
+                                    <?php endif; ?>
                                 <?php endforeach; ?>
                                 </tbody>
                             </table>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($l['campanhas_nao_atingidas'])): ?>
+                        <div class="fw-semibold mb-2"><i class="bi bi-x-circle text-secondary me-1"></i>Campanhas não atingidas (o pedido tem produtos delas)</div>
+                        <div class="mb-3">
+                        <?php foreach ($l['campanhas_nao_atingidas'] as $ix => $cn): $cid = 'cn-' . $nid . '-' . $ix; ?>
+                            <div class="border rounded mb-2">
+                                <div class="d-flex justify-content-between align-items-center px-2 py-1" role="button" data-bs-toggle="collapse" data-bs-target="#<?= $cid ?>" title="Clique para ver as condições">
+                                    <span><i class="bi bi-chevron-down small text-muted me-1"></i><?= e($cn['nome']) ?></span>
+                                    <span class="small text-muted"><?= $pct($cn['percentual']) ?> se atingida</span>
+                                </div>
+                                <div class="collapse show px-2 pb-2" id="<?= $cid ?>"><?= $condTabela($cn['condicoes'], $cn['operador']) ?></div>
+                            </div>
+                        <?php endforeach; ?>
                         </div>
                     <?php endif; ?>
 
