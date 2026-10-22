@@ -386,6 +386,11 @@ body > .sidebar-flyout-menu {
     }
 }
 
+/* Página que abre com o menu da esquerda oculto ($sidebarOculta = true antes do header) */
+@media (min-width: 768px) {
+    html.sidebar-oculta #sidebarMenu { display: none !important; }
+}
+
 /* Página sem scroll horizontal (clip não cria contêiner de rolagem → não quebra position:sticky) */
 body { overflow-x: clip; }
 

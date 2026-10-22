@@ -12,7 +12,7 @@ $_inFinanceiro  = strpos($_self, '/financeiro/')  !== false;
 $_sectionActive = isset($activeSection) ? $activeSection : '';
 ?>
 <!DOCTYPE html>
-<html lang="<?= htmlLang() ?>">
+<html lang="<?= htmlLang() ?>"<?= !empty($sidebarOculta) ? ' class="sidebar-oculta"' : '' ?>>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -611,6 +611,12 @@ $_sectionActive = isset($activeSection) ? $activeSection : '';
 
     btn.addEventListener('click', function (e) {
         e.stopPropagation();
+        // Página que abre com o menu oculto ($sidebarOculta): o botão só mostra/oculta, sem gravar a preferência
+        if (root.dataset.sidebarOculta || root.classList.contains('sidebar-oculta')) {
+            root.dataset.sidebarOculta = '1';
+            root.classList.toggle('sidebar-oculta');
+            return;
+        }
         setCollapsed(!isCollapsed());
     });
 
