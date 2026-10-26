@@ -125,6 +125,8 @@ if (isset($_GET['ajax_aem_preview'])) {
         unset($ri);
         $resp['campanhasAtingidas'] = $av ? array_map(function ($ca) {
             return [
+                'id'                => (string)$ca['campanha_id'],
+                'pctPorCodigo'      => (object)($ca['pct_por_codigo'] ?? []),
                 'nome'              => $ca['nome'],
                 'criterio'          => $ca['criterio'],
                 'unidade'           => $ca['unidade'],
@@ -160,9 +162,13 @@ if (isset($_GET['ajax_aem_preview'])) {
             $esp = $av['esperado_por_codigo'][$ri['codigoAEM']] ?? null;
             $ri['pctDiretoriaCampanha'] = (float)($esp['pct'] ?? 0);
             $ri['campanhaNome'] = $esp['campanha'] ?? (!empty($esp['brinde']) ? 'Brinde de campanha' : null);
+            $ri['brinde'] = !empty($esp['brinde']);
         }
         unset($ri);
         $resp['campanhasAtingidas'] = array_map(fn($ca) => [
+            'id' => (string)$ca['campanha_id'], 'pctPorCodigo' => (object)($ca['pct_por_codigo'] ?? []),
+            // trecho desta campanha no Obs do A&M (o modal junta os das campanhas marcadas)
+            'obsAM' => campanhasComercialTextoObsAM([$ca]),
             'nome' => $ca['nome'], 'criterio' => $ca['criterio'], 'unidade' => $ca['unidade'],
             'agregado' => $ca['agregado'], 'percentualEsperado' => $ca['percentual_esperado'],
             'faixa' => $ca['faixa'],
@@ -227,6 +233,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         // Item que não pertence a nenhuma campanha atingida fica com 0.
         $bfOverrides = null;
         $bfObsAM     = null;   // texto do campo "Obs" a gravar no A&M (ex.: "BF-Desc 13% color, Desc 10% Desco")
+        // Campanhas marcadas no modal (JSON com os campanha_id); ausente = todas as atingidas.
+        $campSel = isset($_POST['campanhas_sel']) ? json_decode((string)$_POST['campanhas_sel'], true) : null;
+        if (!is_array($campSel)) $campSel = null;
+        $campAplicadas = [];
         if (($_POST['modo_bf'] ?? '') === '1' && ($_POST['aplicar_campanha'] ?? '') === '1' && !empty($r['ehBf'])) {
             $campItens = [];
             foreach ($r['itens'] as $it) {
@@ -240,12 +250,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             }
             // Canal do cliente no A&M: "Pedido Accademia = SIM" é Distribuidor; NAO/não localizado é Varejo.
             $av = campanhasAmAvaliarPedido($campItens, (($r['pedidoAccademia'] ?? '') === 'SIM') ? 'distribuidor' : 'varejo');
-            $bfOverrides = [];
-            foreach ($av['campanhas_atingidas'] as $ca) {
-                foreach ($ca['itens'] as $ci) $bfOverrides[$ci['codigo']] = (float)$ca['percentual_esperado'];
-            }
+            $campAplicadas = campanhasFiltrarSelecionadas($av['campanhas_atingidas'], $campSel);
+            $bfOverrides = campanhasPctPorCodigo($campAplicadas);
             // Obs do pedido no A&M: "BF" + as campanhas que renderam desconto.
-            $bfObsAM = campanhasAmTextoObs($av['campanhas_atingidas']);
+            $bfObsAM = campanhasAmTextoObs($campAplicadas);
         }
         // "Importa Pedido" com "Aplicar": mesma substituição, mas pelas campanhas do módulo
         // Comercial > Campanhas, sem depender do Obs.
@@ -260,10 +268,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             $cc = db()->prepare('SELECT canal_venda_id FROM clientes WHERE id = ?');
             $cc->execute([$clienteId]);
             $av = campanhasComercialAvaliarPedido($campItens, canalVendaIdAEM($r['pedidoAccademia'] ?? null, (int)$cc->fetchColumn()));
-            $bfOverrides = [];
-            foreach ($av['esperado_por_codigo'] as $cod => $esp) $bfOverrides[$cod] = (float)$esp['pct'];
-            // Obs do pedido no A&M: "Observação para o A&M" das campanhas atingidas (null = não mexe).
-            $bfObsAM = campanhasComercialTextoObsAM($av['campanhas_atingidas']);
+            // Só as campanhas marcadas no modal; item fora delas fica com 0.
+            $campAplicadas = campanhasFiltrarSelecionadas($av['campanhas_atingidas'], $campSel);
+            $bfOverrides = campanhasPctPorCodigo($campAplicadas);
+            // Obs do pedido no A&M: "Observação para o A&M" das campanhas marcadas (null = não mexe).
+            $bfObsAM = campanhasComercialTextoObsAM($campAplicadas);
         }
 
         $itens = [];
@@ -334,7 +343,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         $bfMsg = $bfOverrides === null ? ''
             : (($_POST['modo_campanha'] ?? '') === 'comercial'
                 ? ' Descontos de campanha (Comercial > Campanhas) aplicados no % Diretoria dos itens.'
-                : ' Descontos de campanha (BF) aplicados no % Diretoria dos itens.');
+                : ' Descontos de campanha (BF) aplicados no % Diretoria dos itens.')
+            . ($campAplicadas ? ' Campanhas: ' . implode(', ', array_column($campAplicadas, 'nome')) . '.' : ' Nenhuma campanha selecionada (% Diretoria zerado).');
 
         // "Importa Pedido BF" com "Gravar no A&M": aplica o % Diretoria da campanha nos itens
         // do próprio pedido no A&M (Consulta/Reimprime > Altera > aba Itens > Validar > Conclui).
@@ -979,6 +989,7 @@ foreach ($modaisImporta as $mi): ?>
         <input type="hidden" name="<?= $mi['modoCampo'] ?>" value="<?= $mi['modoValor'] ?>">
         <input type="hidden" name="aplicar_campanha" id="<?= $mi['p'] ?>FormAplicar" value="0">
         <input type="hidden" name="gravar_am" id="<?= $mi['p'] ?>FormGravarAm" value="0">
+        <input type="hidden" name="campanhas_sel" id="<?= $mi['p'] ?>FormCampSel" disabled>
         <input type="hidden" name="numero" id="<?= $mi['p'] ?>FormNumero">
         <input type="hidden" name="cliente_id" id="<?= $mi['p'] ?>FormClienteId">
     </form>
@@ -1069,6 +1080,36 @@ function initImportaAEM(cfg) {
     var bfClienteId = null;
     var bfData = null;
     var bfAplicar = false;
+    var campSel = {};       // campanha id => marcada para aplicar (SisPed e A&M)
+
+    // Na busca, marca todas as campanhas que renderam desconto (comportamento anterior).
+    function iniciarSelecao(d) {
+        campSel = {};
+        ((d && d.campanhasAtingidas) || []).forEach(function (c) {
+            campSel[c.id] = parseFloat(c.percentualEsperado) > 0;
+        });
+    }
+    function campanhasMarcadas() {
+        return ((bfData && bfData.campanhasAtingidas) || []).filter(function (c) { return campSel[c.id]; });
+    }
+    // Campanha (entre as marcadas) que dá o maior % ao item; null = nenhuma marcada cobre o item.
+    function campanhaDoItem(it, soMarcadas) {
+        var best = null;
+        ((bfData && bfData.campanhasAtingidas) || []).forEach(function (c) {
+            if (soMarcadas && !campSel[c.id]) return;
+            var p = (c.pctPorCodigo || {})[it.codigoAEM];
+            if (p === undefined) return;
+            p = parseFloat(p) || 0;
+            if (best === null || p > best.pct) best = {pct: p, nome: c.nome};
+        });
+        return best;
+    }
+    // Obs do A&M (import comum) = "Observação para o A&M" das campanhas marcadas.
+    function obsAMSelecionado() {
+        var partes = [];
+        campanhasMarcadas().forEach(function (c) { if (c.obsAM && partes.indexOf(c.obsAM) < 0) partes.push(c.obsAM); });
+        return partes.join(', ');
+    }
 
     // Colunas da tabela de itens; o cabeçalho é clicável para reordenar a visualização.
     var bfCols = [
@@ -1131,7 +1172,7 @@ function initImportaAEM(cfg) {
         var el = document.getElementById(P + 'Resultado');
         if (!d.ok) {
             el.innerHTML = '<div class="alert alert-danger">' + escapeHtml(d.erro || 'Erro ao buscar pedido.') + '</div>';
-            bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false;
+            bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false; campSel = {};
             document.getElementById(P + 'ConfirmarBtn').disabled = true;
             return;
         }
@@ -1183,10 +1224,12 @@ function initImportaAEM(cfg) {
             var camps = d.campanhasAtingidas || [];
             html += '<div class="border rounded p-2 mb-3 bg-body-tertiary">'
                   + '<div class="fw-semibold small text-uppercase text-muted mb-2">'
-                  + '<i class="bi bi-tags me-1"></i>Campanhas atingidas</div>';
+                  + '<i class="bi bi-tags me-1"></i>Campanhas atingidas'
+                  + (camps.length ? ' <span class="text-body-secondary text-lowercase fw-normal">— marque as que serão aplicadas no SisPed e no A&amp;M</span>' : '')
+                  + '</div>';
             if (camps.length) {
                 html += '<div class="table-responsive mb-2"><table class="table table-sm tbl-bf mb-1">'
-                      + '<thead class="table-light"><tr><th>Campanha</th><th>Critério</th><th class="num">Atingido</th>'
+                      + '<thead class="table-light"><tr><th style="width:1%"></th><th>Campanha</th><th>Critério</th><th class="num">Atingido</th>'
                       + '<th class="num">% Dir. esperado</th></tr></thead><tbody>';
                 camps.forEach(function(c) {
                     var atg = c.criterio === 'valor'
@@ -1205,7 +1248,12 @@ function initImportaAEM(cfg) {
                               + escapeHtml(qs.join(', ')) + '</div>';
                     }
                     var faixa = c.faixa ? ' <span class="text-muted small">(faixa ' + c.faixa + ')</span>' : '';
-                    html += '<tr' + (aviso ? ' class="table-danger"' : '') + '><td>' + escapeHtml(c.nome) + faixa + aviso + '</td>'
+                    var semPct = !(parseFloat(c.percentualEsperado) > 0);
+                    var marcada = !!campSel[c.id];
+                    html += '<tr class="' + (aviso ? 'table-danger' : '') + (marcada ? '' : ' opacity-50') + '">'
+                          + '<td><input type="checkbox" class="form-check-input ' + P + '-camp-sel" data-id="' + escapeHtml(c.id) + '"'
+                          + (marcada ? ' checked' : '') + (semPct ? ' disabled title="Sem faixa atingida (0%)"' : '') + '></td>'
+                          + '<td>' + escapeHtml(c.nome) + faixa + aviso + '</td>'
                           + '<td>' + (c.criterio === 'valor' ? 'Valor' : 'Quantidade') + '</td>'
                           + '<td class="num">' + atg + '</td>'
                           + '<td class="num fw-semibold ' + (parseFloat(c.percentualEsperado) > 0 ? 'text-success' : 'text-muted') + '">'
@@ -1225,7 +1273,10 @@ function initImportaAEM(cfg) {
                   + (bfAplicar ? ' disabled' : '') + '>'
                   + (bfAplicar ? '<i class="bi bi-check2 me-1"></i>Descontos de campanha aplicados' : '<i class="bi bi-percent me-1"></i>Aplicar descontos de campanha no % Diretoria')
                   + '</button>';
-            html += '<div class="form-text mb-2">Substitui o % Diretoria de cada item pelo percentual da faixa de campanha atingida (itens fora de campanha ficam com 0). O valor é recalculado no servidor ao confirmar.</div>';
+            html += '<div class="form-text mb-2">Substitui o % Diretoria de cada item pelo percentual das campanhas <strong>marcadas</strong> (itens fora delas ficam com 0). O valor é recalculado no servidor ao confirmar.</div>';
+            if (camps.length && !campanhasMarcadas().length) {
+                html += '<div class="small text-warning-emphasis mb-2"><i class="bi bi-exclamation-triangle me-1"></i>Nenhuma campanha marcada — aplicar zera o % Diretoria de todos os itens.</div>';
+            }
             if (bfAplicar) {
                 html += '<div class="form-check mb-2">'
                       + '<input class="form-check-input" type="checkbox" id="' + P + 'GravarAm" checked>'
@@ -1233,9 +1284,9 @@ function initImportaAEM(cfg) {
                       + 'Gravar o % Diretoria também no pedido do A&amp;M (Consulta/Reimprime → Altera → Itens → Validar → <strong>Conclui Pedido</strong>).'
                       + '</label>'
                       + '<div class="form-text text-danger">Grava de verdade no A&amp;M e conclui o pedido. '
-                      + (COMERCIAL ? (d.obsAM ? 'Também <strong>substitui o campo Obs</strong> do A&amp;M por <code>' + escapeHtml(d.obsAM) + '</code> (Observação para o A&amp;M das campanhas atingidas).'
-                                              : 'O campo Obs do A&amp;M <strong>não</strong> é alterado (nenhuma campanha atingida tem "Observação para o A&amp;M").')
-                                   : 'Também <strong>substitui o campo Obs</strong> por "BF-" + as campanhas atingidas (ex.: <code>BF-Desc 13% color, Desc 10% Desco</code>).')
+                      + (COMERCIAL ? (obsAMSelecionado() ? 'Também <strong>substitui o campo Obs</strong> do A&amp;M por <code>' + escapeHtml(obsAMSelecionado()) + '</code> (Observação para o A&amp;M das campanhas marcadas).'
+                                              : 'O campo Obs do A&amp;M <strong>não</strong> é alterado (nenhuma campanha marcada tem "Observação para o A&amp;M").')
+                                   : 'Também <strong>substitui o campo Obs</strong> por "BF-" + as campanhas marcadas (ex.: <code>BF-Desc 13% color, Desc 10% Desco</code>).')
                       + ' Registrado no log de descontos.</div>'
                       + '</div>';
             }
@@ -1269,12 +1320,21 @@ function initImportaAEM(cfg) {
                 if (it.temCusto === false) avisos.push('sem Custo');
                 if (avisos.length) statusCol += ' <span class="text-danger fw-semibold">(' + avisos.join(', ') + ')</span>';
             }
-            var campCell = (it.pctDiretoriaCampanha === null || it.pctDiretoriaCampanha === undefined)
-                ? '<span class="text-muted">—</span>'
-                : pctBR(it.pctDiretoriaCampanha);
-            var campNomeCell = it.campanhaNome
-                ? '<span class="badge bg-primary-subtle text-primary-emphasis border border-primary-subtle text-truncate mw-100">' + escapeHtml(it.campanhaNome) + '</span>'
-                : '<span class="text-muted">Fora de campanha</span>';
+            // % e campanha do item conforme as campanhas marcadas no painel acima.
+            var semAnalise = (it.pctDiretoriaCampanha === null || it.pctDiretoriaCampanha === undefined);
+            var campIt = semAnalise ? null : campanhaDoItem(it, true);
+            var campDesm = (semAnalise || campIt) ? null : campanhaDoItem(it, false);
+            var campCell = semAnalise ? '<span class="text-muted">—</span>' : pctBR(campIt ? campIt.pct : 0);
+            var campNomeCell;
+            if (campIt) {
+                campNomeCell = '<span class="badge bg-primary-subtle text-primary-emphasis border border-primary-subtle text-truncate mw-100">' + escapeHtml(campIt.nome) + '</span>';
+            } else if (campDesm) {
+                campNomeCell = '<span class="text-muted text-decoration-line-through" title="Campanha desmarcada">' + escapeHtml(campDesm.nome) + '</span>';
+            } else if (it.brinde) {
+                campNomeCell = '<span class="badge bg-primary-subtle text-primary-emphasis border border-primary-subtle text-truncate mw-100">Brinde de campanha</span>';
+            } else {
+                campNomeCell = '<span class="text-muted">Fora de campanha</span>';
+            }
             html += '<tr' + (temProblema(it) ? ' class="table-danger"' : (bfAplicar ? ' class="table-warning"' : '')) + '>'
                 + '<td class="num">' + escapeHtml(it.codigoAEM) + '</td>'
                 + '<td class="prod" title="' + escapeHtml(it.nomeProduto) + '">' + escapeHtml(it.nomeProduto) + '</td>'
@@ -1302,6 +1362,12 @@ function initImportaAEM(cfg) {
                 atualizarConfirmar();
             });
         }
+        el.querySelectorAll('.' + P + '-camp-sel').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+                campSel[cb.dataset.id] = cb.checked;
+                render(bfData);
+            });
+        });
         var apl = document.getElementById(P + 'AplicarBtn');
         if (apl) {
             apl.addEventListener('click', function() {
@@ -1327,7 +1393,7 @@ function initImportaAEM(cfg) {
         document.getElementById(P + 'ConfirmarBtn').disabled = true;
         fetch('<?= BASE_URL ?>/admin/pedidos.php?ajax_aem_preview=1&' + (COMERCIAL ? 'camp=comercial' : 'bf=1') + '&numero=' + encodeURIComponent(numero))
             .then(function(r) { return r.json(); })
-            .then(render)
+            .then(function(d) { iniciarSelecao(d); render(d); })
             .catch(function() {
                 document.getElementById(P + 'Resultado').innerHTML = '<div class="alert alert-danger">Erro ao buscar pedido.</div>';
             });
@@ -1339,6 +1405,9 @@ function initImportaAEM(cfg) {
         document.getElementById(P + 'FormClienteId').value = bfClienteId || '';
         var aplicar = (bfAplicar && bfData && (COMERCIAL || bfData.ehBf));
         document.getElementById(P + 'FormAplicar').value = aplicar ? '1' : '0';
+        var fSel = document.getElementById(P + 'FormCampSel');
+        fSel.value = JSON.stringify(campanhasMarcadas().map(function (c) { return c.id; }));
+        fSel.disabled = !aplicar;
         var gAm = document.getElementById(P + 'GravarAm');
         document.getElementById(P + 'FormGravarAm').value = (aplicar && gAm && gAm.checked) ? '1' : '0';
         if (aplicar && gAm && gAm.checked &&
@@ -1350,7 +1419,7 @@ function initImportaAEM(cfg) {
         document.getElementById(P + 'Numero').value = '';
         document.getElementById(P + 'Resultado').innerHTML = '';
         document.getElementById(P + 'ConfirmarBtn').disabled = true;
-        bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false;
+        bfItens = []; bfClienteId = null; bfData = null; bfAplicar = false; campSel = {};
         bfSortCol = null; bfSortDir = 1;
     });
 }

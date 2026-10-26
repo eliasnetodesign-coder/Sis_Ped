@@ -1408,6 +1408,7 @@ function campanhasAmAvaliarPedido(array $itens, string $canal = 'todos'): array 
         $campanhasAtingidas[] = [
             'campanha_id' => $campId, 'nome' => $c['nome'], 'unidade' => $c['unidade'], 'criterio' => $c['criterio'],
             'agregado' => $agregado, 'percentual_esperado' => $percEsperado[$campId], 'faixa' => $faixa, 'itens' => $itensC,
+            'pct_por_codigo' => array_fill_keys(array_map(fn($ic) => (string)$ic['codigo'], $itensC), $percEsperado[$campId]),
             'exige_todos_produtos'  => !empty($c['exige_todos_produtos']),
             'produtos_faltantes'    => $faltantes,
             'qtd_por_produto'       => $qtdPorProduto,
@@ -1576,13 +1577,16 @@ function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array
         }
         $descontos[$code] = $porAlvo;
 
-        $itensC = []; $agQ = 0; $agV = 0.0;
+        $itensC = []; $pctCod = []; $agQ = 0; $agV = 0.0;
         foreach ($itensMap as $k => $iv) {
+            $pIt = null;   // maior % entre os alvos desta campanha que cobrem o item
             foreach ($porAlvo as $pa) {
-                if (itemBateGruposAlvo(['id' => $iv['produto_id']] + $iv, [$pa['alvo']])) {
-                    $itensC[] = $itens[$k]; $agQ += $iv['qtd']; $agV += $iv['qtd'] * $iv['preco']; break;
-                }
+                if (itemBateGruposAlvo(['id' => $iv['produto_id']] + $iv, [$pa['alvo']])) $pIt = max($pIt ?? 0.0, $pa['pct']);
             }
+            if ($pIt === null) continue;
+            $itensC[] = $itens[$k]; $agQ += $iv['qtd']; $agV += $iv['qtd'] * $iv['preco'];
+            $cod = trim((string)($itens[$k]['codigo'] ?? ''));
+            $pctCod[$cod] = max($pctCod[$cod] ?? 0.0, $pIt);
         }
         $total = campanhaTotalCond($nivel['rows']);
         $criterio = $total['modo'] ?? (($g['conds'][0]['criterio_modo'] ?? 'quantidade') === 'valor' ? 'valor' : 'quantidade');
@@ -1592,7 +1596,7 @@ function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array
             'unidade' => $criterio === 'valor' ? '' : 'un.', 'criterio' => $criterio,
             'agregado' => $criterio === 'valor' ? $agV : $agQ,
             'percentual_esperado' => $pcts ? max($pcts) : (float)$nivel['pct'],
-            'faixa' => $ehFaixas ? (int)$nivel['faixa'] : null, 'itens' => $itensC,
+            'faixa' => $ehFaixas ? (int)$nivel['faixa'] : null, 'itens' => $itensC, 'pct_por_codigo' => $pctCod,
             'operador' => campanhaOperador($rows), 'condicoes' => $detalharCondicoes($nivel['rows'], $nivel['conds']),
             'obs_am' => trim((string)($rows[0]['obs_am'] ?? '')),
         ];
@@ -1699,6 +1703,26 @@ function campanhasComercialTextoObsAM(array $campanhasAtingidas): ?string {
         $partes[] = str_replace('{pct}', rtrim(rtrim(number_format($pct, 2, ',', ''), '0'), ',') . '%', $obs);
     }
     return $partes ? implode(', ', array_unique($partes)) : null;
+}
+
+/**
+ * Importa Pedido: mantém só as campanhas atingidas que o usuário marcou no modal.
+ * @param array      $campanhasAtingidas saída de campanhas(Am|Comercial)AvaliarPedido()['campanhas_atingidas']
+ * @param array|null $ids                campanha_id marcados (null = todas)
+ */
+function campanhasFiltrarSelecionadas(array $campanhasAtingidas, ?array $ids): array {
+    if ($ids === null) return $campanhasAtingidas;
+    $ids = array_map('strval', $ids);
+    return array_values(array_filter($campanhasAtingidas, fn($ca) => in_array((string)$ca['campanha_id'], $ids, true)));
+}
+
+/** % Diretoria por código A&M = maior % entre as campanhas atingidas que cobrem o item (item fora delas não aparece). */
+function campanhasPctPorCodigo(array $campanhasAtingidas): array {
+    $out = [];
+    foreach ($campanhasAtingidas as $ca) {
+        foreach ($ca['pct_por_codigo'] ?? [] as $cod => $pct) $out[$cod] = max($out[$cod] ?? 0.0, (float)$pct);
+    }
+    return $out;
 }
 
 /** Canal de venda (canal_venda.id) de um pedido do A&M: "Pedido Accademia" SIM = Distribuidor, NAO = Varejo; sem o dado, $fallback. */
