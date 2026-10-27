@@ -251,6 +251,20 @@ function db() {
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN cond_total_min DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             // Forma do desconto: 'fixo' (% padrão / % por alvo) ou 'faixas' (faixas escalonadas das condições).
             try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN desconto_modo VARCHAR(10) NOT NULL DEFAULT 'fixo'"); } catch (PDOException $e) {}
+            // Período de vigência da campanha (NULL = sem limite naquele lado).
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN data_inicio DATE NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN data_fim DATE NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            // Mesmas quantidades: no pedido final todas as condições precisam somar a mesma quantidade.
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN cond_mesma_qtd TINYINT NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
+            // Aplicação da campanha: 'canal' (canal de venda / todos) ou 'clientes' (só os clientes listados).
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN aplicacao VARCHAR(10) NOT NULL DEFAULT 'canal'"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_clientes (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_campanha VARCHAR(50) NOT NULL,
+                cliente_id      INT NOT NULL,
+                KEY idx_camp_cli (codigo_campanha),
+                KEY idx_camp_cli_cliente (cliente_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN criterio_modo VARCHAR(20) NOT NULL DEFAULT 'quantidade'"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN valor_min DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             // Condição = filtro composto (linha E grupo E subgrupo E produto). Ex.: "linha X do grupo Y".
@@ -1486,7 +1500,7 @@ function campanhasAmAvaliarPedido(array $itens, string $canal = 'todos'): array 
  * @param array $itens itens do PD0303: ['codigo','nome','pct_diretoria','qtd',...]
  * @return array mesmo formato de campanhasAmAvaliarPedido()
  */
-function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array {
+function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId, int $clienteId = 0): array {
     static $prodPorCodigo = null;
     if ($prodPorCodigo === null) {
         $prodPorCodigo = [];
@@ -1516,7 +1530,7 @@ function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array
         ];
         $itensVenda[] = $itensMap[$k];
     }
-    $ctx = ctxCampanha($itensVenda, $canalVendaId);
+    $ctx = ctxCampanha($itensVenda, $canalVendaId, $clienteId);
 
     $agrupadas = campanhasAgrupadas();
     $prodNome = [];
@@ -1525,7 +1539,7 @@ function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array
     // Detalhe por condição de uma campanha (num nível/faixa): o que o pedido comprou x o mínimo
     // exigido, e quais itens do pedido entram em cada condição. Para exibir na tela.
     $detalharCondicoes = function (array $rowsNv, array $condsNv) use ($ctx, $itens, $itensMap, $prodNome): array {
-        $out = []; $filtros = [];
+        $out = []; $filtros = []; $qtds = [];
         foreach ($condsNv as $c) {
             $f = condFiltro($c);
             if (!filtroValido($f)) continue;
@@ -1539,6 +1553,7 @@ function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array
                 $its[] = ['codigo' => $itens[$k]['codigo'] ?? '', 'nome' => $itens[$k]['nome'] ?? '', 'qtd' => $iv['qtd']];
             }
             $atingido = $ehValor ? $totV : $totQ;
+            $qtds[] = $totQ;
             $out[] = ['rotulo' => rotuloFiltro($f, $prodNome), 'criterio' => $ehValor ? 'valor' : 'quantidade',
                       'atingido' => $atingido, 'minimo' => $min, 'ok' => $min <= 0 || $atingido + 0.0001 >= $min, 'itens' => $its];
         }
@@ -1546,6 +1561,11 @@ function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array
             $sm = campanhaSomaFiltros($ctx['itens'], $filtros, $tot['modo']);
             $out[] = ['rotulo' => 'Total da campanha', 'criterio' => $tot['modo'], 'atingido' => $sm, 'minimo' => $tot['min'],
                       'ok' => $sm + 0.0001 >= $tot['min'], 'itens' => []];
+        }
+        if ((int)($rowsNv[0]['cond_mesma_qtd'] ?? 0) && count($qtds) >= 2) {
+            $out[] = ['rotulo' => 'Quantidades iguais entre as condições', 'criterio' => 'quantidade',
+                      'atingido' => 0, 'atingido_txt' => implode(' · ', $qtds) . ' un.', 'minimo' => 0,
+                      'ok' => campanhaQtdsIguais($rowsNv, $qtds), 'itens' => []];
         }
         return $out;
     };
@@ -1558,8 +1578,7 @@ function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId): array
         if (($rows[0]['tipo'] ?? 'desconto') !== 'desconto') continue;
         $nivel = campanhaFaixaAtingida((string)$code, $rows, $g['conds'], $ctx);
         if (!$nivel) {
-            $canalCamp = (int)($rows[0]['canal_venda_id'] ?? 0);
-            if (!$g['conds'] || ($canalCamp && $canalCamp !== $canalVendaId)) continue;
+            if (!$g['conds'] || !campanhaValeParaCliente($rows[0], $canalVendaId, $clienteId)) continue;
             $cond = $detalharCondicoes($rows, $g['conds']);
             if (!array_filter($cond, fn($c) => $c['itens'])) continue;    // pedido sem nenhum produto da campanha
             $campanhasNaoAtingidas[] = [
@@ -2175,11 +2194,12 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
         // Canal de venda p/ as campanhas do Comercial: "Pedido Accademia" SIM = Distribuidor,
         // NAO = Varejo (mesma leitura do ST); sem o dado, o canal do cliente local pelo código.
         $canalVendaId = $accademiaFlag === null ? 0 : (int)($canaisPorNome[$comAcademia ? 'distribuidor' : 'varejo'] ?? 0);
-        if (!$canalVendaId) {
-            $cq = db()->prepare('SELECT canal_venda_id FROM clientes WHERE codigo_cliente = ? LIMIT 1');
-            $cq->execute([preg_replace('/\D/', '', (string)($rows[0]['codigo'] ?? ''))]);
-            $canalVendaId = (int)$cq->fetchColumn();
-        }
+        // Cliente local pelo código (campanhas para clientes específicos e fallback do canal)
+        $cq = db()->prepare('SELECT id, canal_venda_id FROM clientes WHERE codigo_cliente = ? LIMIT 1');
+        $cq->execute([preg_replace('/\D/', '', (string)($rows[0]['codigo'] ?? ''))]);
+        $cliLocal = $cq->fetch() ?: [];
+        $clienteIdLocal = (int)($cliLocal['id'] ?? 0);
+        if (!$canalVendaId) $canalVendaId = (int)($cliLocal['canal_venda_id'] ?? 0);
 
         // 3) ST por Estado e 4) Campanhas — detalhe de cada pedido (PD0303).
         $qtdAVista = 0; $qtdStOk = 0; $qtdStAval = 0;
@@ -2268,7 +2288,7 @@ function analiseFinanceiraAEM(?string $dataInicio = null, ?string $dataFim = nul
 
             // Check 4: itens do pedido x campanhas ativas do Comercial > Campanhas — todos os
             // pedidos são avaliados (sem filtro "BF").
-            $avCampanha = campanhasComercialAvaliarPedido($itensTodos, $canalVendaId);
+            $avCampanha = campanhasComercialAvaliarPedido($itensTodos, $canalVendaId, $clienteIdLocal);
             $rows[$i]['campanhas_atingidas']    = $avCampanha['campanhas_atingidas'];
             $rows[$i]['itens_fora_campanha']    = $avCampanha['itens_fora_campanha'];
             $rows[$i]['tem_item_fora_campanha'] = $avCampanha['tem_item_fora_campanha'];
@@ -3039,9 +3059,19 @@ function statusBadge($s) {
  * Carrega todas as campanhas agrupadas por código, já com suas condições (E).
  * @return array  codigo => ['rows'=>[...campanhas], 'conds'=>[...campanha_condicoes]]
  */
+/**
+ * Filtro SQL das campanhas que participam da avaliação: ativas e dentro do período
+ * de vigência (data_inicio/data_fim NULL = sem limite). $alias = alias da tabela campanhas.
+ */
+function campanhaVigenteSql(string $alias = ''): string {
+    $p = $alias !== '' ? $alias . '.' : '';
+    $hoje = date('Y-m-d');
+    return "COALESCE({$p}ativo,1) = 1 AND ({$p}data_inicio IS NULL OR {$p}data_inicio <= '$hoje') AND ({$p}data_fim IS NULL OR {$p}data_fim >= '$hoje')";
+}
+
 function campanhasAgrupadas(): array {
-    // Só campanhas ativas participam da avaliação (ativo ausente = legado = ativo).
-    try { $rows = db()->query("SELECT * FROM campanhas WHERE COALESCE(ativo,1) = 1")->fetchAll(); }
+    // Só campanhas ativas e vigentes participam da avaliação (ativo ausente = legado = ativo).
+    try { $rows = db()->query('SELECT * FROM campanhas WHERE ' . campanhaVigenteSql())->fetchAll(); }
     catch (PDOException $e) { $rows = db()->query("SELECT * FROM campanhas")->fetchAll(); }
     $conds = [];
     try {
@@ -3094,7 +3124,7 @@ function alvosDescontoCampanha(string $codigo, array $gruposAlvo): array {
  * Constrói o contexto de avaliação de campanhas a partir dos itens de uma venda.
  * Cada item: ['produto_id','qtd','linha','grupo','subgrupo','preco'(unit, opcional)].
  */
-function ctxCampanha(array $itensVenda, int $canalVendaId): array {
+function ctxCampanha(array $itensVenda, int $canalVendaId, int $clienteId = 0): array {
     $totL = $totG = $totS = $totProd = []; $valorTotal = 0.0;
     $valL = $valG = $valS = $valProd = [];
     $itens = [];
@@ -3124,7 +3154,36 @@ function ctxCampanha(array $itensVenda, int $canalVendaId): array {
         'valorTotal'     => $valorTotal,
         'itens'          => $itens,
         'canalVendaId'   => $canalVendaId,
+        'clienteId'      => $clienteId,
     ];
+}
+
+/**
+ * Clientes específicos das campanhas com aplicação "clientes" (cache por requisição).
+ * @return array codigo_campanha => [cliente_id => true]
+ */
+function campanhasClientes(): array {
+    static $cache = null;
+    if ($cache !== null) return $cache;
+    $cache = [];
+    try {
+        foreach (db()->query('SELECT codigo_campanha, cliente_id FROM campanha_clientes')->fetchAll() as $r) {
+            $cache[$r['codigo_campanha']][(int)$r['cliente_id']] = true;
+        }
+    } catch (PDOException $e) { /* tabela ainda não existe */ }
+    return $cache;
+}
+
+/**
+ * A campanha vale para este pedido? Aplicação "clientes": só os clientes listados (o canal
+ * não importa); aplicação "canal": sem canal = todos, com canal = só clientes desse canal.
+ */
+function campanhaValeParaCliente(array $row, int $canalVendaId, int $clienteId): bool {
+    if (($row['aplicacao'] ?? 'canal') === 'clientes') {
+        return $clienteId > 0 && isset(campanhasClientes()[$row['codigo_campanha'] ?? ''][$clienteId]);
+    }
+    $canal = (int)($row['canal_venda_id'] ?? 0);
+    return !$canal || $canal === $canalVendaId;
 }
 
 /**
@@ -3232,6 +3291,15 @@ function campanhaSomaFiltros(array $itens, array $filtros, string $criterio): fl
 }
 
 /**
+ * Regra "mesmas quantidades" da campanha: true se a campanha não a usa ou se todas as
+ * quantidades somadas por condição ($qtds) são iguais.
+ */
+function campanhaQtdsIguais(array $rows, array $qtds): bool {
+    if (!(int)($rows[0]['cond_mesma_qtd'] ?? 0) || count($qtds) < 2) return true;
+    return count(array_unique($qtds)) === 1;
+}
+
+/**
  * Operador entre as condições da campanha: 'E' (todas) ou 'OU' (qualquer uma).
  */
 function campanhaOperador(array $rows): string {
@@ -3245,6 +3313,8 @@ function campanhaOperador(array $rows): string {
  * é o maior entre as condições atingidas e só elas viram grupos-alvo.
  * Condição com mínimo 0 é só filtro (conta para o mínimo total, sem exigência própria).
  * Mínimo TOTAL (opcional): soma dos itens de todas as condições; é exigido além do E/OU.
+ * Mesmas quantidades (cond_mesma_qtd, só no E): além dos mínimos, todas as condições
+ * precisam somar exatamente a mesma quantidade no pedido.
  * Cada condição pode exigir uma quantidade mínima OU um valor mínimo (somado
  * dentro da própria categoria/produto da condição). Modelo legado (sem
  * condições): produtos somados / categoria, como historicamente.
@@ -3254,8 +3324,7 @@ function campanhaOperador(array $rows): string {
 function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
     $vazio = ['acionada' => false, 'mult' => 0, 'gruposAlvo' => []];
     if (!$rows) return $vazio;
-    $canal = (int)($rows[0]['canal_venda_id'] ?? 0);
-    if ($canal && $canal !== (int)($ctx['canalVendaId'] ?? 0)) return $vazio;
+    if (!campanhaValeParaCliente($rows[0], (int)($ctx['canalVendaId'] ?? 0), (int)($ctx['clienteId'] ?? 0))) return $vazio;
 
     // ---- Novo modelo: condições combinadas (E); cada condição é um filtro
     //      composto (linha E grupo E subgrupo E produto) com mínimo por qtd OU valor ----
@@ -3268,6 +3337,7 @@ function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
         $allMet = true;
         $minMult = PHP_INT_MAX;
         $maxMult = 0;
+        $qtdsCond = [];
         foreach ($conds as $c) {
             $f = condFiltro($c);
             if (!filtroValido($f)) { $allMet = false; continue; }
@@ -3278,6 +3348,7 @@ function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
                 if (!itemMatchFiltro($it, $f)) continue;
                 $totQ += (int)$it['qtd']; $totV += (float)$it['valor'];
             }
+            $qtdsCond[] = $totQ;
             $m = 0;
             $ehValor = ($c['criterio_modo'] ?? 'quantidade') === 'valor';
             $minCond = $ehValor ? (float)($c['valor_min'] ?? 0) : (int)$c['quantidade'];
@@ -3312,6 +3383,7 @@ function avaliarCampanhaTrigger(array $rows, array $conds, array $ctx): array {
             $mult = min($temMinimo ? $maxMult : PHP_INT_MAX, $multTotal);
             return ['acionada' => true, 'mult' => $mult, 'gruposAlvo' => $gruposAtingidos];
         }
+        if ($allMet && !campanhaQtdsIguais($rows, $qtdsCond)) $allMet = false;
         if ($allMet) {
             $mult = min($minMult, $multTotal);
             if ($mult >= 1) return ['acionada' => true, 'mult' => $mult, 'gruposAlvo' => $gruposAlvo];
@@ -3851,7 +3923,7 @@ function calcularMargemItens(array $pedido, array $itensPedido, float $creditoUs
     $pedidoCanalId = (int)($pedido['cliente_canal_id'] ?? 0);
     $ehBonifPedido = ($pedido['tipo_venda'] ?? 'venda') === 'bonificacao';
 
-    $ctxCamp = ctxCampanha($itensCamp, $pedidoCanalId);
+    $ctxCamp = ctxCampanha($itensCamp, $pedidoCanalId, (int)($pedido['cliente_id'] ?? 0));
     $campanhasAtingidas = campanhasAtingidasResumo($ctxCamp);
 
     $totalAPagarAdmin = max(0, $valorTotalGeral - $descontoPixAdmin - $creditoUsadoAdmin);
@@ -4114,6 +4186,7 @@ function calcularMargemPedidoAEM(array $p): array {
         'cliente_uf'        => ($p['uf'] ?? '') ?: ($cli['estado'] ?? ''),
         'cliente_regime'    => $cli['regime_tributario'] ?? '',
         'cliente_canal_id'  => $canal['id'] ?? 0,
+        'cliente_id'        => (int)($cli['id'] ?? 0),
         'margem_negociacao' => $canal['margem_negociacao'] ?? 0,
         'network_tipo'      => $canal['network_tipo'] ?? null,
     ];
@@ -4170,7 +4243,7 @@ function calcularMargemPedidoAEM(array $p): array {
  * @return array  itens bonificados criados
  */
 function gerarBonificacaoCampanha(int $clienteId, int $canalVendaId, string $supervisor, string $dataPedido, array $itensVenda, ?string $refNumero = null): array {
-    $ctx = ctxCampanha($itensVenda, $canalVendaId);
+    $ctx = ctxCampanha($itensVenda, $canalVendaId, $clienteId);
     $bonusAcc = [];
     $codigosAcionados = [];
     foreach (campanhasAgrupadas() as $code => $g) {
@@ -4257,8 +4330,8 @@ function poolProdutosBonifCategoria(string $codigo): array {
  * @return array  [['codigo'=>, 'mult'=>, 'limite_tipo'=>'quantidade'|'valor',
  *                  'limite'=>float, 'produtos'=>[['id','codigo','descricao','preco']...]], ...]
  */
-function detectarBonificacaoSelecionavel(array $itensVenda, int $canalVendaId): array {
-    $ctx = ctxCampanha($itensVenda, $canalVendaId);
+function detectarBonificacaoSelecionavel(array $itensVenda, int $canalVendaId, int $clienteId = 0): array {
+    $ctx = ctxCampanha($itensVenda, $canalVendaId, $clienteId);
     $out = [];
     foreach (campanhasAgrupadas() as $code => $g) {
         if (($g['rows'][0]['tipo'] ?? 'desconto') !== 'bonificacao') continue;

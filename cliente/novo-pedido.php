@@ -40,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Bonificação usa preço network (BRL); não converte. Demais usam a cotação do dia.
     $cotacaoPedido = ($tipoVenda === 'bonificacao') ? null : cotacaoDia($cli['moeda'] ?? 'BRL');
     $data          = date('Y-m-d');
-    $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas WHERE COALESCE(ativo,1) = 1')->fetchAll();
+    $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas WHERE ' . campanhaVigenteSql())->fetchAll();
     $canalVendaId  = (int)($cli['canal_venda_id'] ?? 0);
     $criados         = 0;
     $ids_criados     = [];
@@ -109,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'produto_id' => $it['produto_id'], 'qtd' => $it['qtd'],
             'linha' => $it['prod']['linha'] ?? '', 'grupo' => $it['prod']['grupo'] ?? '', 'subgrupo' => $it['prod']['subgrupo'] ?? '',
             'preco' => (float)$it['prod']['preco'],
-        ], $items_data), $canalVendaId);
+        ], $items_data), $canalVendaId, (int)$u['id']);
         $descAvancados = avaliarCampanhasDescontoAvancadas($ctxCamp);
 
         // Passagem 2: gravar cada item aplicando desconto de campanha com base nos totais
@@ -313,7 +313,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_SESSION['bonus_aviso'] = array_map(fn($b) => $b['quantidade'] . 'x ' . $b['descricao'], $bonus);
                     }
                     // Bonificação selecionável: cliente escolhe os bônus antes do PDF
-                    $selec = detectarBonificacaoSelecionavel($itensVenda, $canalVendaId);
+                    $selec = detectarBonificacaoSelecionavel($itensVenda, $canalVendaId, (int)$u['id']);
                     // Canal de Exportação: 5% do valor da venda para o cliente escolher
                     // entre todos os produtos ativos (bônus selecionável por valor, em BRL)
                     if (canalEhExportacao($canalVendaId)) {
@@ -401,11 +401,12 @@ $produtos = db()->query("SELECT p.id, p.codigo_produto, p.codigo_barra, p.descri
     WHERE p.status = \"ativo\" ORDER BY p.linha, p.descricao_pt")->fetchAll();
 $idiomaCliente = $cli_data['idioma'] ?? 'pt';
 
-$campanhas = db()->query('SELECT c.*, p.descricao_pt FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id WHERE COALESCE(c.ativo,1) = 1 ORDER BY c.codigo_campanha')
+$campanhas = db()->query('SELECT c.*, p.descricao_pt FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id WHERE ' . campanhaVigenteSql('c') . ' ORDER BY c.codigo_campanha')
     ->fetchAll();
-// Filtra campanhas para mostrar apenas as do canal do cliente (ou sem canal)
+// Filtra campanhas para mostrar apenas as do canal do cliente (ou sem canal) — ou, nas
+// campanhas para clientes específicos, só se este cliente estiver na lista
 $cliCanalId = (int)($cli_data['canal_venda_id'] ?? 0);
-$campanhas  = array_filter($campanhas, fn($c) => !$c['canal_venda_id'] || (int)$c['canal_venda_id'] === $cliCanalId);
+$campanhas  = array_filter($campanhas, fn($c) => campanhaValeParaCliente($c, $cliCanalId, (int)$u['id']));
 
 // Produtos bonificados por campanha (para exibir nos chips de campanhas de bonificação)
 $bonifByCode = [];     // com "Nx" (modo fixo)
@@ -758,6 +759,10 @@ require_once LAYOUT_PATH . '/header.php';
                     . '<div class="progress" style="height:5px"><div class="progress-bar ' . ($ehVal ? 'bg-info' : 'bg-warning') . '" style="width:0%"></div></div>'
                     . ($c['niveis'] ? '<div class="fx-marcas"></div>' : '')
                     . '</div>';
+            }
+            // Mesmas quantidades: aviso quando as condições somam quantidades diferentes
+            if ((int)($c['row']['cond_mesma_qtd'] ?? 0) === 1) {
+                $h .= '<div class="camp-mesma-aviso text-danger fw-semibold d-none" style="font-size:.68rem"><i class="bi bi-exclamation-triangle me-1"></i>' . et('As quantidades das condições precisam ser iguais') . '</div>';
             }
             // Faixas: o que falta para a próxima (as marcas das faixas ficam em cada barra acima)
             if ($c['niveis']) $h .= '<div class="camp-regua"><div class="rg-msg"></div></div>';
@@ -1179,7 +1184,8 @@ var T = {
     rgFaltam:        <?= json_encode(t('Faltam %1 para liberar %2% OFF')) ?>,
     rgJaTem:         <?= json_encode(t('Você já tem %1% OFF')) ?>,
     rgMais:          <?= json_encode(t('mais %1 e sobe para %2% OFF')) ?>,
-    rgMaximo:        <?= json_encode(t('Desconto máximo atingido: %1% OFF')) ?>
+    rgMaximo:        <?= json_encode(t('Desconto máximo atingido: %1% OFF')) ?>,
+    qtdsIguais:      <?= json_encode(t('As quantidades das condições precisam ser iguais')) ?>
 };
 function campEscHtml(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 function _tfmt(str, map) {
@@ -1251,6 +1257,7 @@ var _campCondicoes = <?= json_encode(array_values(array_filter(array_map(functio
         'total'    => $g['total'],
         'niveis'   => $g['niveis'],
         'ou'       => ($g['cond_operador'] ?? 'E') === 'OU',
+        'mesma'    => (int)($g['row']['cond_mesma_qtd'] ?? 0) === 1,
         'conds'    => $g['condsJs'],
         'alvos'    => array_map(fn($a) => [
             'linha' => $a['linha'], 'grupo' => $a['grupo'], 'subgrupo' => $a['subgrupo'], 'produto' => (int)($a['produto'] ?: 0),
@@ -1263,6 +1270,7 @@ var _campCondicoes = <?= json_encode(array_values(array_filter(array_map(functio
 // faixas e valor-alvo legado — usado nas barras/réguas e na detecção de campanha atingida.
 var _campTriggers = <?= json_encode((object)array_map(fn($g) => [
     'ou'        => ($g['cond_operador'] ?? 'E') === 'OU',
+    'mesma'     => (int)($g['row']['cond_mesma_qtd'] ?? 0) === 1,
     'total'     => $g['total'],
     'valorAlvo' => (float)($g['valor_alvo'] ?? 0),
     'niveis'    => $g['niveis'],
@@ -1313,6 +1321,12 @@ function _campSomaFiltros(itens, filtros, criterio) {
 }
 // Gatilho de uma campanha do novo modelo — espelha avaliarCampanhaTrigger (PHP).
 // Condição com mínimo 0 é só filtro; o mínimo total (se houver) é exigido além do E/OU.
+// "Mesmas quantidades" (c.mesma, só no E): todas as condições precisam somar a mesma quantidade.
+function _campQtdsIguais(c, itens) {
+    if (!c.mesma || !c.conds || c.conds.length < 2) return true;
+    var qs = c.conds.map(function(cd) { return _campSomaFiltros(itens, [cd], 'quantidade'); });
+    return qs.every(function(q) { return q === qs[0]; });
+}
 function _campAvaliar(c, itens) {
     var nao = { acionada: false, mult: 0, atingidas: [] };
     if (!c.conds || !c.conds.length) return nao;
@@ -1338,7 +1352,7 @@ function _campAvaliar(c, itens) {
         if (temMin && maxMult < 1) return nao;
         return { acionada: true, mult: Math.min(temMin ? maxMult : Infinity, multTotal), atingidas: atingidas };
     }
-    if (!allMet) return nao;
+    if (!allMet || !_campQtdsIguais(c, itens)) return nao;
     var mult = Math.min(minMult, multTotal);
     return mult >= 1 ? { acionada: true, mult: mult, atingidas: c.conds } : nao;
 }
@@ -1347,7 +1361,7 @@ function _campNivel(c, itens) {
     var niveis = c.niveis || [{ faixa: 1, pct: c.desconto, total: c.total, conds: c.conds }];
     for (var i = niveis.length - 1; i >= 0; i--) {
         var nv = niveis[i];
-        var av = _campAvaliar({ ou: c.ou, total: nv.total, conds: nv.conds }, itens);
+        var av = _campAvaliar({ ou: c.ou, mesma: c.mesma, total: nv.total, conds: nv.conds }, itens);
         if (av.acionada) return { faixa: nv.faixa, pct: nv.pct, av: av, conds: nv.conds, idx: i };
     }
     return null;
@@ -1569,6 +1583,8 @@ function atualizarBarrasCampanha(itens, valorTotal) {
         });
 
         var mult = _campMult(code, itens, valorTotal);
+        var avisoMq = box.querySelector('.camp-mesma-aviso');
+        if (avisoMq) avisoMq.classList.toggle('d-none', !trg || _campQtdsIguais(trg, itens) || !_campSomaFiltros(itens, trg.conds, 'quantidade'));
 
         // Régua das faixas: passos atingidos + o que falta para a próxima
         var rg = box.querySelector('.camp-regua');
@@ -1592,7 +1608,11 @@ function atualizarBarrasCampanha(itens, valorTotal) {
                     if (atT + 0.0001 < alvoNv.total.min) faltas.push(_campFmtMeta(alvoNv.total.min - atT, porVT) + ' ' + T.noTotal);
                 }
                 var faltaTxt = faltas.join(trg.ou ? ' ' + T.ou + ' ' : ' ' + T.e + ' ');
-                if (idxAt < 0) msg = '<i class="bi bi-arrow-up-circle-fill me-1"></i><strong>' + _tfmt(T.rgFaltam, { '%1': faltaTxt, '%2': _campFmtPct(alvoNv.pct) }) + '</strong>';
+                if (!faltas.length) {
+                    // mínimos da próxima faixa atingidos, mas as quantidades das condições diferem
+                    msg = (idxAt >= 0 ? '<i class="bi bi-check-circle-fill me-1"></i>' + _tfmt(T.rgJaTem, { '%1': _campFmtPct(nv.pct) }) + ' · ' : '')
+                        + '<i class="bi bi-exclamation-triangle-fill me-1"></i><strong>' + T.qtdsIguais + '</strong>';
+                } else if (idxAt < 0) msg = '<i class="bi bi-arrow-up-circle-fill me-1"></i><strong>' + _tfmt(T.rgFaltam, { '%1': faltaTxt, '%2': _campFmtPct(alvoNv.pct) }) + '</strong>';
                 else msg = '<i class="bi bi-check-circle-fill me-1"></i>' + _tfmt(T.rgJaTem, { '%1': _campFmtPct(nv.pct) })
                          + ' · <strong>' + _tfmt(T.rgMais, { '%1': faltaTxt, '%2': _campFmtPct(alvoNv.pct) }) + '</strong>';
             }

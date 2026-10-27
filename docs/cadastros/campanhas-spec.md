@@ -35,14 +35,19 @@
 | Campo | Regra |
 |-------|-------|
 | **Código da Campanha*** | Obrigatório (`"Informe o código da campanha."`); agrupa todas as linhas da campanha (`codigo_campanha`) e é também o **nome** exibido nas telas. |
-| **Canal de Venda** | Opcional — vazio = todos os canais; preenchido = só clientes desse canal (`canal_venda_id`). |
+| **Aplicar a campanha** | `campanhas.aplicacao`: **No canal de venda** (`canal`, padrão) ou **Para clientes específicos** (`clientes`). |
+| **Canal de Venda** | Só na aplicação "No canal de venda" — vazio = todos os canais; preenchido = só clientes desse canal (`canal_venda_id`). |
+| **Clientes da campanha** | Só na aplicação "Para clientes específicos" — clientes adicionados **um a um** por busca (nome, código ou CNPJ/CPF), gravados em `campanha_clientes` (`codigo_campanha`, `cliente_id`). Obrigatório ao menos um (`"Adicione ao menos um cliente à campanha..."`). A campanha vale **só** para esses clientes; o canal é ignorado (gravado `NULL`). |
 | **Ativa/Inativa** | `campanhas.ativo`; campanha inativa é ignorada em **toda** avaliação (pedidos, Análise Financeira, Importa Pedido). |
 | **Tipo** | **Desconto** ou **Bonificação**. |
+| **Período (Início / Fim)** | Opcionais (`campanhas.data_inicio` / `data_fim`, ao lado do Tipo); fim ≥ início. Fora do período a campanha é ignorada como se estivesse inativa (`campanhaVigenteSql()`, data de hoje) e a listagem mostra **Agendada** / **Encerrada**. Vazio = sem limite naquele lado. |
 | **Observação** | Opcional, até 1000 caracteres — texto **para o cliente**: aparece nas telas de pedido (cliente e admin) no lugar do texto da condição. |
 | **Observação para o A&M** | Opcional, até **255** caracteres (`campanhas.obs_am`) — texto levado ao campo **Obs** do pedido no A&M (ver [Observação no A&M](#obs-am)). |
 
 - **Dois campos de observação separados** — o texto comercial para o cliente ("Obtenha de 5% até 12%…") não serve como anotação curta no A&M ("Desc 12% color"); misturar os dois obrigaria a escolher um público.
-- **Impacto em Legados:** `obs_am` nasce `NULL` em todas as campanhas; enquanto vazio, nada é gravado no Obs do A&M.
+- **Impacto em Legados:** `obs_am` nasce `NULL` em todas as campanhas; enquanto vazio, nada é gravado no Obs do A&M. `data_inicio`/`data_fim` nascem `NULL` — as campanhas existentes continuam valendo sem limite de período. `aplicacao` nasce `canal` — as campanhas existentes mantêm a regra por canal.
+- **Clientes específicos só no modelo novo:** a regra é conferida no gatilho das condições (`avaliarCampanhaTrigger()`); os loops do modelo legado continuam só por canal — toda campanha salva pelo formulário atual já é do modelo novo.
+- **Período × data do pedido:** a vigência é conferida pela **data de hoje** (momento da avaliação), não pela data do pedido — um pedido do A&M analisado depois do fim da campanha não recebe mais a campanha.
 
 ---
 
@@ -77,8 +82,9 @@
   - Todo % de faixa é obrigatório e **maior que o da faixa anterior**; toda faixa informa o mínimo de todas as condições (e o total, se usado).
   - Nas faixas, o % por alvo é ignorado — o % vem da faixa.
   - Vale a **maior faixa atingida**.
+- **Mesmas quantidades em todas as condições** (`campanhas.cond_mesma_qtd`, opção na barra "Forma do desconto", vale para fixo e faixas): além dos mínimos de cada condição (e de cada faixa), o **pedido final** precisa somar a **mesma quantidade** em todas as condições — ex.: mínimo 10 + 10; 30 × 30 aciona, 30 × 24 não. Exige operador **E**, ao menos 2 condições e todas por Quantidade (recusado ao salvar). Servidor: `avaliarCampanhaTrigger()` / `campanhaQtdsIguais()`; JS: `_campQtdsIguais()` nos novos pedidos (portal mostra "As quantidades das condições precisam ser iguais"); Análise Financeira: linha "Quantidades iguais entre as condições" no detalhe.
 - **Aplicação no pedido do SisPed:** multiplicativa, sobre o preço já líquido dos demais descontos; por item vale o **maior** desconto elegível (ver [Regras de Negócio](../10-regras-de-negocio.md#descontos-no-pedido)).
-- **Impacto em Legados:** campanhas sem `desconto_modo` são tratadas como `fixo`.
+- **Impacto em Legados:** campanhas sem `desconto_modo` são tratadas como `fixo`; `cond_mesma_qtd` nasce `0` (desligado) em todas as campanhas existentes.
 
 ---
 
@@ -101,12 +107,13 @@
 ### Regra definida
 > Modal com exibição progressiva; **salvar substitui** todas as linhas do código; **excluir** passa a ser **inativar**.
 
-- **Exibição progressiva** (`campStep()`): só o Código aparece de início; preenchido, abrem Canal, Ativa/Inativa, Tipo, Condições e Observações. Desconto e "onde incide" só para tipo **Desconto**; Bonificação só para tipo **Bonificação**.
-- **Salvar:** em transação, apaga e regrava cabeçalho, condições, alvos, pool, bonificação e faixas do código original e do novo (renomear o código não deixa sobra) — evita linhas órfãs de versões anteriores.
+- **Exibição progressiva** (`campStep()`): só o Código aparece de início; preenchido, abrem **Aplicar a campanha**, Canal (ou, em "Para clientes específicos", o bloco **Clientes da campanha** com busca e lista), Ativa/Inativa, Tipo, **Início / Fim** (na mesma linha do Tipo), Condições e Observações. Desconto e "onde incide" só para tipo **Desconto**; Bonificação só para tipo **Bonificação**.
+- **Busca de clientes:** AJAX no próprio cadastro (`?buscar_cliente=`, mínimo 2 caracteres, até 20 resultados, ativos primeiro); cliente já adicionado aparece como "adicionado" e não se repete — a base tem milhares de clientes, por isso não é carregada inteira na página.
+- **Salvar:** em transação, apaga e regrava cabeçalho, condições, alvos, pool, bonificação, faixas e clientes do código original e do novo (renomear o código não deixa sobra) — evita linhas órfãs de versões anteriores.
 - **Excluir = Inativar** *(decidido em 2026-10-20)*: a ação marca `ativo = 0` em vez de apagar — a campanha some de toda avaliação, mas o histórico (condições, faixas, brindes) é preservado e ela pode ser reativada pelo campo Ativa/Inativa. Evita perder a regra que explicou descontos de pedidos já feitos.
 - **Estado atual (a mudar):** hoje o botão apaga só as linhas de `campanhas` (hard delete); condições, alvos, faixas e bonificação ficam órfãs no banco.
-- **Listagem:** agrupada por código (condições com o operador, canal, tipo, desconto/bonificação, onde incide, status, observação). Listas longas mostram 3 itens e "+N mais"; quando os alvos são iguais às condições, mostra "Aplica nos mesmos produtos das condições".
-- **Erros de validação:** exibidos como mensagem (flash) no topo da tela; nada é gravado parcialmente (rollback).
+- **Listagem:** agrupada por código (condições com o operador, canal — ou, em clientes específicos, "N cliente(s)" com os nomes —, tipo, desconto/bonificação, onde incide, status, observação). Status: **Ativa**, **Inativa**, **Agendada** (antes do início) ou **Encerrada** (após o fim), com o período abaixo (`dd/mm/aaaa a dd/mm/aaaa`, `…` no lado vazio); inativas e fora do período ficam esmaecidas. Campanhas com "Mesmas quantidades" mostram "Quantidades iguais entre as condições". Listas longas mostram 3 itens e "+N mais"; quando os alvos são iguais às condições, mostra "Aplica nos mesmos produtos das condições".
+- **Erros de validação:** exibidos como mensagem (flash) no topo da tela; nada é gravado parcialmente (rollback). Período e "Mesmas quantidades" são conferidos também no navegador (`campValidar()`), sem perder o que foi digitado.
 - **Impacto em Legados:** ao **editar** uma campanha legada, o formulário monta as condições a partir de produtos/categoria + quantidade antigos; ao salvar, ela passa a ser do modelo novo. Campanhas já apagadas antes da mudança não são recuperadas; as linhas órfãs delas podem ser removidas numa limpeza única.
 
 ---
@@ -121,6 +128,9 @@
 - **Barras de progresso:** uma por condição (comprado × mínimo) e uma para o mínimo total, se houver; até **3** condições visíveis e as demais em "ver mais".
 - **Faixas:** cada barra mostra as marcas das faixas (atingidas em verde, próxima em destaque) e a frase do que falta para a próxima: *"Faltam X para liberar Y% OFF"*.
 - **Observação da campanha:** quando preenchida, aparece no lugar do texto da condição.
+- **Mesmas quantidades:** quando as condições somam quantidades diferentes, o cartão mostra *"As quantidades das condições precisam ser iguais"*; nas faixas, se os mínimos da próxima faixa já foram atingidos, a régua mostra esse aviso em vez de "Faltam X".
+- **Período:** campanha fora do período não aparece no quadro (mesmo filtro da avaliação).
+- **Clientes específicos:** a campanha só aparece no portal para os clientes da lista (`campanhaValeParaCliente()`). No novo pedido do **admin**, o chip indica "Só para clientes específicos" e a prévia em JS só aplica o desconto quando o cliente selecionado está na lista (`_campValeCliente()`).
 - **Idiomas:** textos do quadro traduzidos via `lang.php` (pt/en/es).
 - **Admin** *(decidido em 2026-10-20)*: o novo pedido do admin (`admin/novo-pedido.php`) passa a ter **o mesmo quadro**, com o mesmo comportamento — quem lança o pedido pelo cliente vê o que falta para cada campanha. **Estado atual (a mudar):** o admin aplica as campanhas, mas ainda não tem o quadro.
 - **Impacto em Legados:** nenhum — apenas exibição.
@@ -178,6 +188,8 @@
 - **Bonificação selecionável** *(decidido em 2026-10-20)*: passa a ser **conferida pelo limite** — reprova se os brindes da campanha encontrados (produtos da lista/pool) passarem do limite (quantidade ou valor) × multiplicador; escolher **menos** que o limite não reprova. **Estado atual (a mudar):** não é conferida.
 - [ ] Limite por **valor** na bonificação selecionável: qual preço usar para valorizar os brindes encontrados no A&M (preço Network do SisPed, como na tela de escolha, ou o valor do item no A&M)?
 - **Sem filtro "BF":** todo pedido é avaliado; o Obs do pedido no A&M não interfere.
+- **Período:** só entram campanhas vigentes **na data da análise** (ver [Cabeçalho](#cabecalho)).
+- **Clientes específicos:** o cliente do pedido do A&M é localizado no SisPed — na Análise Financeira pelo **código do cliente** (`clientes.codigo_cliente`), no Importa Pedido pelo cliente identificado/selecionado na importação. Cliente não localizado não recebe campanhas de clientes específicos.
 - **Impacto em Legados:** substitui, na Análise Financeira e no "Importa Pedido", o uso de `campanhas_am`. Resultados de buscas da Análise Financeira feitas antes da mudança (arquivos de job) não têm o detalhe novo — basta buscar de novo.
 
 ---
@@ -192,7 +204,7 @@
 - **Peso na liberação:** o check 4 entra no "conforme" do pedido (checkbox pré-marcado) e no "aprovado" do cliente, junto com atrasos, limite de crédito e ST.
 - **Tela — card "4) Campanhas":** botões **vermelhos** para pedidos reprovados e **verdes** para pedidos aprovados com campanha a mostrar; ambos abrem o mesmo modal.
 - **Tela — modal do pedido:** itens fora de campanha; campanhas atingidas (linha **clicável** abre as condições); campanhas **não atingidas** em que o pedido tem produtos; bonificações.
-- **Condições no modal:** para cada condição, comprado × mínimo da faixa atingida (ou da Faixa 1, se não atingida), ✓/✗ e os itens do pedido que entraram — explica por que a campanha foi ou não atingida sem abrir o cadastro.
+- **Condições no modal:** para cada condição, comprado × mínimo da faixa atingida (ou da Faixa 1, se não atingida), ✓/✗ e os itens do pedido que entraram — explica por que a campanha foi ou não atingida sem abrir o cadastro. Com "Mesmas quantidades", aparece a linha extra **"Quantidades iguais entre as condições"** com as quantidades de cada condição (ex.: `30 · 24 un.`) e ✓/✗.
 - **Resumo do cliente:** por campanha, a soma atingida entre os pedidos e o **maior %/faixa** atingidos — cada pedido é avaliado isoladamente (a faixa não é recalculada sobre a soma).
 - **Impacto em Legados:** ver [Avaliação sobre pedidos do A&M](#avaliacao-am).
 
@@ -237,13 +249,17 @@
 
 | Função | Papel |
 |--------|-------|
-| `campanhasAgrupadas()` | Campanhas ativas agrupadas por código, com condições |
-| `ctxCampanha($itens, $canal)` | Contexto do pedido (qtd/valor por categoria + itens normalizados) |
-| `avaliarCampanhaTrigger($rows, $conds, $ctx)` | Gatilho (E/OU, mínimo total, multiplicador) |
+| `campanhasAgrupadas()` | Campanhas ativas **e vigentes** agrupadas por código, com condições |
+| `campanhaVigenteSql($alias)` | Filtro SQL: ativa e dentro do período (`data_inicio`/`data_fim`, data de hoje) — usado também nas consultas de campanhas de `admin/pedido.php`, `admin/novo-pedido.php` e `cliente/novo-pedido.php` |
+| `ctxCampanha($itens, $canal, $clienteId)` | Contexto do pedido (qtd/valor por categoria + itens normalizados + canal e cliente) — todos os chamadores passam o cliente do pedido |
+| `campanhaValeParaCliente($row, $canal, $clienteId)` | Aplicação da campanha: clientes específicos (lista `campanha_clientes`) ou canal (vazio = todos) — usado no gatilho, nas campanhas não atingidas do A&M e no filtro do portal |
+| `campanhasClientes()` | Clientes específicos por campanha (`codigo => [cliente_id => true]`, cache por requisição) |
+| `avaliarCampanhaTrigger($rows, $conds, $ctx)` | Gatilho (E/OU, mínimo total, mesmas quantidades, multiplicador) — espelhado em JS por `_campAvaliar()` / `_campQtdsIguais()` nos novos pedidos |
+| `campanhaQtdsIguais($rows, $qtds)` | Regra "Mesmas quantidades": true se desligada ou se todas as condições somam a mesma quantidade |
 | `campanhaFaixaAtingida($code, $rows, $conds, $ctx)` | Maior faixa atingida (sem faixas = a própria campanha) |
 | `avaliarCampanhasDescontoAvancadas($ctx)` | % e alvos das campanhas de desconto acionadas (pedidos do SisPed) |
-| `detectarBonificacaoSelecionavel($itens, $canal)` | Pool da bonificação selecionável |
-| `campanhasComercialAvaliarPedido($itens, $canal)` | Avaliação de um pedido do A&M (check 4 e Importa Pedido) |
+| `detectarBonificacaoSelecionavel($itens, $canal, $clienteId)` | Pool da bonificação selecionável |
+| `campanhasComercialAvaliarPedido($itens, $canal, $clienteId)` | Avaliação de um pedido do A&M (check 4 e Importa Pedido) |
 | `campanhasComercialTextoObsAM($atingidas)` | Monta o Obs do A&M a partir de `obs_am` |
 | `canalVendaIdAEM($pedidoAccademia, $fallback)` | Canal do pedido do A&M (Distribuidor/Varejo) |
 
@@ -280,12 +296,20 @@
 - [ ] Dado o novo pedido do admin, quando o usuário adiciona itens de uma campanha por faixas, então vê o mesmo quadro de progresso do portal, com "Faltam X para liberar Y% OFF".
 - [ ] Dado uma campanha selecionável com limite de 12 un. atingida 1 vez, quando o pedido de venda e os pedidos Tipo B do cliente somam 18 un. dos brindes elegíveis, então o check 4 reprova o pedido; com 12 un. ou menos, passa.
 - [ ] Dado uma bonificação fixa cujo brinde está num pedido Tipo B do mesmo cliente no período, quando a Análise Financeira roda, então o brinde é encontrado e o check passa.
+- [ ] Dado uma campanha ativa com período 01/11/2026 a 30/11/2026, quando um pedido é avaliado em 27/10/2026 ou em 01/12/2026, então ela é ignorada e a listagem mostra "Agendada" / "Encerrada"; em 15/11/2026 ela vale.
+- [ ] Dado uma campanha com Fim anterior ao Início, quando o usuário salva, então o sistema recusa com "A data final do período deve ser igual ou posterior à data inicial."
+- [ ] Dado uma campanha E com Coloração ≥ 10 un. e Oxidante ≥ 10 un. e "Mesmas quantidades" ligado, quando o pedido tem 30 × 30, então é atingida; com 30 × 24 ou 5 × 5, não.
+- [ ] Dado "Mesmas quantidades" ligado com operador OU, uma única condição ou uma condição por valor, quando o usuário salva, então o sistema recusa a campanha.
+- [ ] Dado uma campanha "Para clientes específicos" com o cliente A na lista, quando o cliente A faz um pedido que atinge as condições, então recebe a campanha; quando o cliente B (mesmo canal) faz o mesmo pedido, então não recebe e não vê a campanha no portal.
+- [ ] Dado "Para clientes específicos" sem nenhum cliente adicionado, quando o usuário salva, então o sistema recusa com "Adicione ao menos um cliente à campanha (ou aplique no canal de venda)."
+- [ ] Dado um pedido do A&M de um cliente da lista (pelo código do cliente), quando a Análise Financeira roda, então a campanha de clientes específicos é avaliada para ele; para outros clientes, não.
 - [ ] Dado campanhas atingidas cujo Obs montado tem 62 caracteres, quando o usuário vai gravar no A&M, então a tela avisa e mostra o texto cortado em 50, e é esse texto que é gravado.
 
 ---
 
 ## Dependências e Impactos Cruzados
 
+- **Cadastro de Clientes** (`clientes-spec.md`): campanhas de clientes específicos referenciam `clientes.id`; na avaliação do A&M o cliente é achado pelo `codigo_cliente` — alterar o código desfaz o vínculo com os pedidos do A&M.
 - **Cadastro de Produtos** (`produtos-spec.md`): renomear linha/grupo/subgrupo ou trocar `codigo_produto` muda quais itens (do SisPed e do A&M) entram nas condições e alvos.
 - **Canal de Venda** (`canal-venda-spec.md`): a avaliação do A&M procura os canais pelos nomes exatos **"Distribuidor"** e **"Varejo"** — renomeá-los faz campanhas restritas a canal deixarem de valer para pedidos do A&M.
 - **Pedidos** (`../06-pedidos.md`, `../10-regras-de-negocio.md`): a nova regra de edição (preservar o % dos itens sem mudança de qtd; não aplicar campanha em pedido importado do A&M) muda `recalcularDescontosCampanha()`, `recalcularValorItem()` / `melhorCampanhaItem()` (`admin/pedido.php`) e a edição em `cliente/novo-pedido.php` — esses documentos precisam refletir a regra.
@@ -318,6 +342,9 @@
 - **Quadro de progresso no admin:** igual ao do portal — *Usuário, 2026-10-20* → [Ir para Regra](#exibicao-cliente)
 - **Bonificação selecionável na Análise Financeira:** conferida pelo limite × multiplicador; menos que o limite não reprova — *Usuário, 2026-10-20* → [Ir para Regra](#avaliacao-am)
 - **Brinde na Análise Financeira:** procurado no próprio pedido e nos pedidos Tipo B do cliente no período — *Usuário, 2026-10-20* → [Ir para Regra](#avaliacao-am)
+- **Período de vigência:** Início/Fim opcionais ao lado do Tipo; fora do período = ignorada (data de hoje); listagem Agendada/Encerrada — *Usuário, 2026-10-27* → [Ir para Regra](#cabecalho)
+- **Mesmas quantidades:** opção na Forma do desconto; o pedido final precisa ter a mesma quantidade em todas as condições, além dos mínimos; só com E e condições por quantidade — *Usuário, 2026-10-27* → [Ir para Regra](#desconto)
+- **Aplicação por clientes específicos:** ao criar, escolher "No canal de venda" ou "Para clientes específicos" (adicionados um a um); na segunda, só os clientes listados recebem a campanha e o canal é ignorado — *Usuário, 2026-10-27* → [Ir para Regra](#cabecalho)
 - **Obs no A&M — limite:** 50 caracteres; texto maior é cortado em 50 com aviso antes de gravar — *Usuário, 2026-10-20* → [Ir para Regra](#obs-am)
 
 ---
@@ -336,3 +363,5 @@
 | 1 | 2026-10-20 | Criação inicial — spec das Campanhas do Comercial, derivado do código atual (`admin/cadastros/campanhas.php`, `config.php`, `admin/pedidos.php`, `admin/financeiro/analise-financeira.php`) e do resumo `../05-campanhas.md`. Inclui as decisões de 2026-10-20: avaliação de pedidos do A&M pelas campanhas do Comercial (Análise Financeira — check 4 — e "Importa Pedido"), critério por valor = Valor Total do A&M, detalhe de condições clicável, campanhas não atingidas e o campo "Observação para o A&M" (`obs_am`, `{pct}`). |
 | 2 | 2026-10-20 | Complemento após revisão contra o código: acesso ao cadastro, "onde o desconto incide", pool por critério único, exclusão (só o cabeçalho), conversão de legadas, exibição ao cliente no portal, desconto de campanha no pedido do SisPed (gravação, edição, exibição em pedido e PDF) e bonificação no fechamento (fixa, tela de escolha selecionável, exportação). Novas pendências: recálculo na edição pelo admin e quadro de progresso no admin. |
 | 3 | 2026-10-20 | Pendências resolvidas com o usuário (Modo Interativo): edição de pedido importado do A&M sem campanha; edição preserva o % dos itens sem mudança de qtd (portal e admin); % do navegador ignorado; excluir vira inativar; quadro de progresso no admin; bonificação selecionável conferida pelo limite; brinde procurado também em pedidos Tipo B; Obs do A&M limitado a 50 caracteres (descoberto nos dados do A&M) com corte e aviso. Ficam pendentes: destino do cadastro antigo/BF e o preço do limite por valor da bonificação selecionável. As decisões novas ainda **não estão implementadas** (marcadas como "Estado atual (a mudar)"). |
+| 4 | 2026-10-27 | **Período de vigência** (`data_inicio`/`data_fim`, ao lado do Tipo; `campanhaVigenteSql()` em toda avaliação; status Agendada/Encerrada na listagem) e **Mesmas quantidades em todas as condições** (`cond_mesma_qtd`, na Forma do desconto: o pedido final precisa ter a mesma quantidade em cada condição, além dos mínimos; servidor, JS dos novos pedidos, aviso no portal e linha extra na Análise Financeira). Implementados. |
+| 5 | 2026-10-27 | **Aplicar a campanha:** "No canal de venda" ou "Para clientes específicos" (`campanhas.aplicacao` + tabela `campanha_clientes`, clientes adicionados um a um por busca AJAX). Avaliação via `campanhaValeParaCliente()`; `ctxCampanha()`, `detectarBonificacaoSelecionavel()` e `campanhasComercialAvaliarPedido()` passam a receber o cliente; A&M localiza o cliente pelo código. Implementado. |

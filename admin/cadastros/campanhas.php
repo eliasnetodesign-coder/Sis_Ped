@@ -2,6 +2,25 @@
 require_once __DIR__ . '/../../config.php';
 requireComercial();
 
+// Busca de clientes (AJAX) para campanhas com aplicação "Clientes específicos"
+if (isset($_GET['buscar_cliente'])) {
+    $q = trim((string)$_GET['buscar_cliente']);
+    $out = [];
+    if (mb_strlen($q) >= 2) {
+        $like = '%' . $q . '%';
+        $st = db()->prepare('SELECT id, codigo_cliente, razao_social, cidade, estado FROM clientes
+            WHERE razao_social LIKE ? OR codigo_cliente LIKE ? OR cnpj LIKE ? OR cpf LIKE ?
+            ORDER BY (status = "ativo") DESC, razao_social LIMIT 20');
+        $st->execute([$like, $like, $like, $like]);
+        foreach ($st->fetchAll() as $r) {
+            $out[] = ['id' => (int)$r['id'], 'codigo' => (string)$r['codigo_cliente'], 'nome' => (string)$r['razao_social'],
+                      'local' => trim(($r['cidade'] ?? '') . (($r['estado'] ?? '') !== '' ? '/' . $r['estado'] : ''))];
+        }
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($out, JSON_UNESCAPED_UNICODE); exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $a = $_POST['action'] ?? '';
     try {
@@ -14,8 +33,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($cod === '') throw new Exception('Informe o código da campanha.');
             $tipo  = ($_POST['tipo'] ?? 'desconto') === 'bonificacao' ? 'bonificacao' : 'desconto';
             $canal = $_POST['canal_venda_id'] ?: null;
+            // Aplicação: no canal de venda (ou todos) ou só para clientes específicos
+            $aplicacao = ($_POST['aplicacao'] ?? 'canal') === 'clientes' ? 'clientes' : 'canal';
+            $cliClean  = [];
+            if ($aplicacao === 'clientes') {
+                $canal = null;   // o canal não se aplica: valem só os clientes listados
+                foreach (($_POST['clientes'] ?? []) as $cid) if ((int)$cid > 0) $cliClean[(int)$cid] = true;
+                $cliClean = array_keys($cliClean);
+                if (!$cliClean) throw new Exception('Adicione ao menos um cliente à campanha (ou aplique no canal de venda).');
+            }
             $ativo = ($_POST['ativo'] ?? '1') === '0' ? 0 : 1;
             $desc  = $tipo === 'bonificacao' ? 0.0 : (float)str_replace(',', '.', $_POST['desconto'] ?? '0');
+            // Período de vigência (opcional em cada lado)
+            $dtIni = trim($_POST['data_inicio'] ?? '');
+            $dtFim = trim($_POST['data_fim'] ?? '');
+            foreach ([&$dtIni, &$dtFim] as &$dt) {
+                if ($dt !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dt)) throw new Exception('Data do período inválida.');
+                if ($dt === '') $dt = null;
+            }
+            unset($dt);
+            if ($dtIni && $dtFim && $dtFim < $dtIni) throw new Exception('A data final do período deve ser igual ou posterior à data inicial.');
 
             // Condições combinadas (E ou OU, conforme o operador): cada condição é um filtro
             // composto (linha E grupo E subgrupo E produto) + mínimo por quantidade OU valor.
@@ -37,6 +74,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 else                   $condClean[] = ['quantidade', (int)$min, null, $fl, $fg, $fs, $fp, $fxMin];
             }
             if (!$condClean) throw new Exception('Adicione ao menos uma condição (com categoria/produto).');
+
+            // Mesmas quantidades: no pedido final, todas as condições precisam somar a MESMA quantidade
+            // (os mínimos continuam valendo). Só faz sentido com E e condições por quantidade.
+            $mesmaQtd = $tipo === 'desconto' && ($_POST['cond_mesma_qtd'] ?? '0') === '1' ? 1 : 0;
+            if ($mesmaQtd) {
+                if (count($condClean) < 2) throw new Exception('"Mesmas quantidades" exige ao menos duas condições.');
+                if ($condOp !== 'E') throw new Exception('"Mesmas quantidades" só vale com "Todas precisam ser atendidas (E)".');
+                if (array_filter($condClean, fn($c) => $c[0] !== 'quantidade')) throw new Exception('"Mesmas quantidades" exige todas as condições com mínimo por Quantidade.');
+            }
 
             // Mínimo TOTAL das condições (opcional): soma dos itens de todas as condições
             $totModo = ($_POST['cond_total_modo'] ?? '') === 'valor' ? 'valor' : (($_POST['cond_total_modo'] ?? '') === 'quantidade' ? 'quantidade' : null);
@@ -148,13 +194,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 try { db()->prepare('DELETE FROM campanha_bonif_pool WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
                 try { db()->prepare('DELETE FROM campanha_faixas WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
                 try { db()->prepare('DELETE FROM campanha_faixa_minimos WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
+                try { db()->prepare('DELETE FROM campanha_clientes WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
             }
 
             // Linha cabeçalho — parâmetros da campanha (gatilho fica nas condições)
             db()->prepare('INSERT INTO campanhas
-                (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo,cond_operador,observacao,cond_total_modo,cond_total_min,desconto_modo,obs_am)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo, $condOp, $obsCamp !== '' ? $obsCamp : null, $totModo, $totMin, $descModo, $obsAm !== '' ? $obsAm : null]);
+                (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo,cond_operador,observacao,cond_total_modo,cond_total_min,desconto_modo,obs_am,data_inicio,data_fim,cond_mesma_qtd,aplicacao)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo, $condOp, $obsCamp !== '' ? $obsCamp : null, $totModo, $totMin, $descModo, $obsAm !== '' ? $obsAm : null, $dtIni, $dtFim, $mesmaQtd, $aplicacao]);
+
+            // Clientes específicos
+            if ($cliClean) {
+                $insCli = db()->prepare('INSERT INTO campanha_clientes (codigo_campanha, cliente_id) VALUES (?,?)');
+                foreach ($cliClean as $cid) $insCli->execute([$cod, $cid]);
+            }
 
             // Condições (E/OU) — filtro composto por condição
             $insC = db()->prepare('INSERT INTO campanha_condicoes
@@ -231,6 +284,11 @@ foreach ($rows as $r) {
             'cond_total_modo'    => $r['cond_total_modo'] ?? null,
             'cond_total_min'     => isset($r['cond_total_min']) ? (float)$r['cond_total_min'] : null,
             'desconto_modo'      => ($r['desconto_modo'] ?? 'fixo') === 'faixas' ? 'faixas' : 'fixo',
+            'data_inicio'        => $r['data_inicio'] ?? null,
+            'data_fim'           => $r['data_fim'] ?? null,
+            'cond_mesma_qtd'     => (int)($r['cond_mesma_qtd'] ?? 0),
+            'aplicacao'          => ($r['aplicacao'] ?? 'canal') === 'clientes' ? 'clientes' : 'canal',
+            'clientes'           => [],
             'faixas'             => [],
             'produtos'           => [],   // legado (gatilho por produto)
             'bonificados'        => [],
@@ -247,6 +305,16 @@ foreach ($rows as $r) {
     if ($r['grupo']    !== null && $r['grupo']    !== '') $campanhas[$k]['grupo']    = $r['grupo'];
     if ($r['subgrupo'] !== null && $r['subgrupo'] !== '') $campanhas[$k]['subgrupo'] = $r['subgrupo'];
 }
+
+// Clientes específicos por campanha (aplicação "clientes")
+try {
+    foreach (db()->query('SELECT cc.codigo_campanha, cl.id, cl.codigo_cliente, cl.razao_social
+        FROM campanha_clientes cc JOIN clientes cl ON cl.id = cc.cliente_id ORDER BY cc.id')->fetchAll() as $cl) {
+        if (isset($campanhas[$cl['codigo_campanha']])) {
+            $campanhas[$cl['codigo_campanha']]['clientes'][] = ['id' => (int)$cl['id'], 'codigo' => (string)$cl['codigo_cliente'], 'nome' => (string)$cl['razao_social']];
+        }
+    }
+} catch (PDOException $e) { /* tabela ainda não existe */ }
 
 // Mapa de produtos para descrição legível em condições/alvos/pool
 $prodById = [];
@@ -370,6 +438,12 @@ function critLabel(array $cd, array $prodById): string {
     return $out;
 }
 
+// Campanha fora do período de vigência (ainda não começou ou já terminou)
+function campanhaForaPeriodo(array $c): bool {
+    $hoje = date('Y-m-d');
+    return ($c['data_inicio'] && $c['data_inicio'] > $hoje) || ($c['data_fim'] && $c['data_fim'] < $hoje);
+}
+
 $pageTitle = 'Cadastro de Campanhas';
 require_once LAYOUT_PATH . '/header.php';
 ?>
@@ -384,7 +458,7 @@ require_once LAYOUT_PATH . '/header.php';
         <div class="table-responsive">
         <table class="table table-hover mb-0 align-middle">
             <thead class="table-light">
-                <tr><th>Código</th><th>Status</th><th>Condições</th><th>Canal</th><th>Tipo / Recompensa</th><th>Ações</th></tr>
+                <tr><th>Código</th><th>Status</th><th>Condições</th><th>Canal / Clientes</th><th>Tipo / Recompensa</th><th>Ações</th></tr>
             </thead>
             <tbody>
             <?php if ($campanhas): foreach ($campanhas as $c):
@@ -418,13 +492,24 @@ require_once LAYOUT_PATH . '/header.php';
                 $fConds = array_map($chaveF, $c['condicoes']);      sort($fConds);
                 $alvosIguaisCond = $alvos && !$alvoTemPctProprio && $fAlvos === array_values(array_unique($fConds));
             ?>
-                <tr class="<?= $c['ativo'] ? '' : 'opacity-50' ?>">
+                <tr class="<?= $c['ativo'] && !campanhaForaPeriodo($c) ? '' : 'opacity-50' ?>">
                     <td><strong><?= e($c['codigo_campanha']) ?></strong></td>
                     <td>
-                        <?php if ($c['ativo']): ?>
-                            <span class="badge bg-success">Ativa</span>
-                        <?php else: ?>
+                        <?php
+                        $hoje = date('Y-m-d');
+                        $foraPeriodo = ($c['data_inicio'] && $c['data_inicio'] > $hoje) ? 'Agendada' : (($c['data_fim'] && $c['data_fim'] < $hoje) ? 'Encerrada' : '');
+                        ?>
+                        <?php if (!$c['ativo']): ?>
                             <span class="badge bg-secondary">Inativa</span>
+                        <?php elseif ($foraPeriodo === 'Agendada'): ?>
+                            <span class="badge bg-info text-dark">Agendada</span>
+                        <?php elseif ($foraPeriodo === 'Encerrada'): ?>
+                            <span class="badge bg-secondary">Encerrada</span>
+                        <?php else: ?>
+                            <span class="badge bg-success">Ativa</span>
+                        <?php endif; ?>
+                        <?php if ($c['data_inicio'] || $c['data_fim']): ?>
+                            <div class="small text-muted text-nowrap mt-1"><i class="bi bi-calendar-range me-1"></i><?= $c['data_inicio'] ? date('d/m/Y', strtotime($c['data_inicio'])) : '…' ?> a <?= $c['data_fim'] ? date('d/m/Y', strtotime($c['data_fim'])) : '…' ?></div>
                         <?php endif; ?>
                     </td>
                     <td class="small">
@@ -433,6 +518,9 @@ require_once LAYOUT_PATH . '/header.php';
                             <?php foreach ($linhasFaixa as [$fxNome, $fxTxt, $fxPct]): ?>
                                 <div><strong><?= e($fxNome) ?>:</strong> <?= e($fxTxt) ?> <span class="badge bg-success"><?= e($fxPct) ?></span></div>
                             <?php endforeach; ?>
+                            <?php if ($c['cond_mesma_qtd']): ?>
+                                <div class="fw-semibold mt-1"><i class="bi bi-distribute-horizontal me-1"></i>Quantidades iguais entre as condições</div>
+                            <?php endif; ?>
                             <?php if ($c['observacao'] !== ''): ?>
                                 <div class="text-primary mt-1" title="Observação — exibida no pedido no lugar da condição"><i class="bi bi-chat-left-text me-1"></i><?= e($c['observacao']) ?></div>
                             <?php endif; ?>
@@ -442,6 +530,9 @@ require_once LAYOUT_PATH . '/header.php';
                             <?php endif; ?>
                             <?php if (count($criterios) > 3): ?><span class="text-muted">(<?= count($criterios) ?>)</span><?php endif; ?>
                             <?= listaCompacta($criterios, ' ' . $c['cond_operador'] . ' ') ?>
+                            <?php if ($c['cond_mesma_qtd']): ?>
+                                <div class="fw-semibold mt-1"><i class="bi bi-distribute-horizontal me-1"></i>Quantidades iguais entre as condições</div>
+                            <?php endif; ?>
                             <?php if ($c['cond_total_modo'] && $c['cond_total_min'] > 0): ?>
                                 <div class="fw-semibold mt-1"><i class="bi bi-sigma me-1"></i>Total das condições ≥ <?= $c['cond_total_modo'] === 'valor' ? e(moedaBR($c['cond_total_min'])) : (int)$c['cond_total_min'] . ' un.' ?></div>
                             <?php endif; ?>
@@ -452,7 +543,14 @@ require_once LAYOUT_PATH . '/header.php';
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td><?= $c['canal'] ? '<span class="badge bg-secondary">'.e($c['canal']).'</span>' : '<span class="text-muted small">Todos</span>' ?></td>
+                    <td>
+                        <?php if ($c['aplicacao'] === 'clientes'): ?>
+                            <span class="badge bg-primary"><i class="bi bi-person-check me-1"></i><?= count($c['clientes']) ?> cliente(s)</span>
+                            <div class="small text-muted" style="max-width:220px"><?= $c['clientes'] ? listaCompacta(array_map(fn($cl) => $cl['nome'] ?: $cl['codigo'], $c['clientes']), ', ', 2) : '<span class="text-danger">nenhum</span>' ?></div>
+                        <?php else: ?>
+                            <?= $c['canal'] ? '<span class="badge bg-secondary">'.e($c['canal']).'</span>' : '<span class="text-muted small">Todos</span>' ?>
+                        <?php endif; ?>
+                    </td>
                     <td>
                         <?php if ($c['tipo'] === 'bonificacao'): ?>
                             <?php if ($c['bonif_modo'] === 'selecionavel'): ?>
@@ -508,7 +606,7 @@ require_once LAYOUT_PATH . '/header.php';
 </div>
 
 <style>
-#bonifWrapTable, #condTableWrap, #alvoTableWrap, #poolTableWrap { max-height: 240px; overflow-y: auto; }
+#bonifWrapTable, #condTableWrap, #alvoTableWrap, #poolTableWrap, #cliTableWrap { max-height: 240px; overflow-y: auto; }
 #campAlvoWrap.sem-pct .alvo-pct-col { display: none; }
 /* modal-dialog-scrollable só rola se o .modal-body for filho direto do .modal-content;
    aqui há um <form> no meio — ele vira a coluna flexível para o corpo rolar (zoom alto/telas baixas). */
@@ -529,12 +627,20 @@ require_once LAYOUT_PATH . '/header.php';
                 <div class="modal-body">
                     <div class="row g-3">
                         <!-- 1. Código -->
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <label class="form-label fw-semibold">Código da Campanha <span class="text-danger">*</span></label>
                             <input type="text" name="codigo_campanha" id="f_cod" class="form-control" required oninput="campStep()">
                         </div>
-                        <!-- 2. Canal -->
-                        <div class="col-md-4 camp-step d-none" data-step="canal">
+                        <!-- 2. Aplicação: canal de venda ou clientes específicos -->
+                        <div class="col-md-3 camp-step d-none" data-step="aplicacao">
+                            <label class="form-label fw-semibold">Aplicar a campanha</label>
+                            <select name="aplicacao" id="f_aplicacao" class="form-select" onchange="campStep()">
+                                <option value="canal">No canal de venda</option>
+                                <option value="clientes">Para clientes específicos</option>
+                            </select>
+                        </div>
+                        <!-- 3. Canal -->
+                        <div class="col-md-3 camp-step d-none" data-step="canal">
                             <label class="form-label fw-semibold">Canal de Venda</label>
                             <select name="canal_venda_id" id="f_canal" class="form-select">
                                 <option value="">— Todos os canais —</option>
@@ -543,21 +649,45 @@ require_once LAYOUT_PATH . '/header.php';
                                 <?php endforeach; ?>
                             </select>
                         </div>
-                        <!-- 3. Status -->
-                        <div class="col-md-4 camp-step d-none" data-step="status">
+                        <!-- 4. Status -->
+                        <div class="col-md-3 camp-step d-none" data-step="status">
                             <label class="form-label fw-semibold">Campanha</label>
                             <select name="ativo" id="f_ativo" class="form-select">
                                 <option value="1">Ativa</option>
                                 <option value="0">Inativa</option>
                             </select>
                         </div>
-                        <!-- 4. Tipo -->
-                        <div class="col-md-6 camp-step d-none" data-step="tipo">
+                        <!-- Clientes específicos (adicionados um a um) -->
+                        <div class="col-12 camp-step d-none" data-step="clientes">
+                            <label class="form-label fw-semibold"><i class="bi bi-person-check me-1"></i>Clientes da campanha</label>
+                            <div class="position-relative" style="max-width:560px">
+                                <input type="text" id="cliSearch" class="form-control" placeholder="Buscar cliente por nome, código ou CNPJ/CPF..." autocomplete="off">
+                                <div id="cliDropdown" class="list-group position-absolute w-100 shadow-sm" style="display:none;z-index:1056;top:100%;left:0;max-height:260px;overflow-y:auto"></div>
+                            </div>
+                            <div class="form-text">A campanha vale <strong>só</strong> para os clientes da lista (o canal de venda não se aplica).</div>
+                            <div class="table-responsive mt-2 d-none" id="cliTableWrap">
+                                <table class="table table-sm table-bordered align-middle mb-0">
+                                    <thead class="table-light"><tr><th style="width:130px">Código</th><th>Cliente</th><th style="width:50px" class="text-center">—</th></tr></thead>
+                                    <tbody id="cliBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <!-- 5. Tipo -->
+                        <div class="col-md-4 camp-step d-none" data-step="tipo">
                             <label class="form-label fw-semibold">Tipo de Campanha <span class="text-danger">*</span></label>
                             <select name="tipo" id="f_tipo" class="form-select" onchange="campSetTipo(this.value)">
                                 <option value="desconto">Desconto (%)</option>
                                 <option value="bonificacao">Produtos Bonificados</option>
                             </select>
+                        </div>
+                        <!-- 6. Período de vigência -->
+                        <div class="col-md-4 camp-step d-none" data-step="periodo">
+                            <label class="form-label fw-semibold">Início</label>
+                            <input type="date" name="data_inicio" id="f_dt_ini" class="form-control">
+                        </div>
+                        <div class="col-md-4 camp-step d-none" data-step="periodo">
+                            <label class="form-label fw-semibold">Fim</label>
+                            <input type="date" name="data_fim" id="f_dt_fim" class="form-control">
                         </div>
 
                         <!-- Condições (E/OU) — ambos os tipos -->
@@ -584,6 +714,11 @@ require_once LAYOUT_PATH . '/header.php';
                                 <div class="form-check form-check-inline mb-0">
                                     <input class="form-check-input" type="radio" name="desconto_modo" id="f_dm_faixas" value="faixas" onchange="fxRender()">
                                     <label class="form-check-label" for="f_dm_faixas">Faixas escalonadas</label>
+                                </div>
+                                <div class="form-check form-switch mb-0" title="No pedido final, todas as condições precisam ter a mesma quantidade (além dos mínimos). Ex.: 30 un. de Coloração e 30 un. de Oxidante.">
+                                    <input type="hidden" name="cond_mesma_qtd" value="0">
+                                    <input class="form-check-input" type="checkbox" name="cond_mesma_qtd" id="f_mesma_qtd" value="1">
+                                    <label class="form-check-label" for="f_mesma_qtd">Mesmas quantidades em todas as condições</label>
                                 </div>
                                 <div id="fxToolbar" class="d-none ms-auto">
                                     <button type="button" class="btn btn-sm btn-outline-primary" onclick="fxAdd()"><i class="bi bi-plus-lg me-1"></i>Adicionar faixa</button>
@@ -808,6 +943,9 @@ function campStep() {
         var ehDesc = document.getElementById('f_tipo').value === 'desconto';
         if (step === 'desc' || step === 'alvo') show = temCod && ehDesc;
         if (step === 'bonif')                   show = temCod && document.getElementById('f_tipo').value === 'bonificacao';
+        var porClientes = document.getElementById('f_aplicacao').value === 'clientes';
+        if (step === 'canal')    show = temCod && !porClientes;
+        if (step === 'clientes') show = temCod && porClientes;
         el.classList.toggle('d-none', !show);
     });
     fxRender();
@@ -1104,11 +1242,94 @@ function bonifAdd() {
     inp.addEventListener('blur', function() { setTimeout(function() { dd.style.display = 'none'; }, 150); });
 })();
 
+// ==== Clientes específicos (busca AJAX, adicionados um a um) ====
+function cliIds() {
+    return Array.prototype.map.call(document.querySelectorAll('#cliBody input[name="clientes[]"]'), function(i) { return String(i.value); });
+}
+function cliAddRow(id, codigo, nome) {
+    if (cliIds().indexOf(String(id)) !== -1) return;
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td class="fw-semibold">' + campEsc(codigo) + '<input type="hidden" name="clientes[]" value="' + parseInt(id, 10) + '"></td>' +
+        '<td>' + campEsc(nome) + '</td>' +
+        '<td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger" onclick="cliRemove(this)"><i class="bi bi-x-lg"></i></button></td>';
+    document.getElementById('cliBody').appendChild(tr);
+    cliAtualizar();
+}
+function cliRemove(btn) { btn.closest('tr').remove(); cliAtualizar(); }
+function cliAtualizar() {
+    document.getElementById('cliTableWrap').classList.toggle('d-none', document.querySelectorAll('#cliBody tr').length === 0);
+}
+(function() {
+    var inp = document.getElementById('cliSearch');
+    var dd  = document.getElementById('cliDropdown');
+    var tmr = null, seq = 0;
+    inp.addEventListener('input', function() {
+        clearTimeout(tmr);
+        var q = inp.value.trim();
+        if (q.length < 2) { dd.style.display = 'none'; return; }
+        tmr = setTimeout(function() {
+            var my = ++seq;
+            fetch('?buscar_cliente=' + encodeURIComponent(q), { credentials: 'same-origin' })
+                .then(function(r) { return r.json(); })
+                .then(function(lista) {
+                    if (my !== seq) return;   // resposta de uma busca antiga
+                    var ja = cliIds();
+                    if (!lista.length) {
+                        dd.innerHTML = '<div class="list-group-item small text-muted py-2">Nenhum cliente encontrado</div>';
+                    } else {
+                        dd.innerHTML = lista.map(function(c) {
+                            var add = ja.indexOf(String(c.id)) !== -1;
+                            return '<button type="button" class="list-group-item list-group-item-action py-2 px-3 small' + (add ? ' disabled' : '') + '"' +
+                                ' data-id="' + c.id + '" data-codigo="' + campEscAttr(c.codigo) + '" data-nome="' + campEscAttr(c.nome) + '">' +
+                                '<span class="badge bg-secondary me-2">' + campEsc(c.codigo) + '</span>' + campEsc(c.nome) +
+                                (c.local ? ' <span class="text-muted">· ' + campEsc(c.local) + '</span>' : '') +
+                                (add ? ' <span class="badge bg-success ms-1">adicionado</span>' : '') + '</button>';
+                        }).join('');
+                        dd.querySelectorAll('button:not(.disabled)').forEach(function(b) {
+                            b.addEventListener('mousedown', function(ev) {
+                                ev.preventDefault();
+                                cliAddRow(b.dataset.id, b.dataset.codigo, b.dataset.nome);
+                                inp.value = '';
+                                dd.style.display = 'none';
+                                inp.focus({ preventScroll: true });
+                            });
+                        });
+                    }
+                    dd.style.display = '';
+                })
+                .catch(function() { dd.style.display = 'none'; });
+        }, 250);
+    });
+    inp.addEventListener('keydown', function(ev) { if (ev.key === 'Enter') ev.preventDefault(); });
+    inp.addEventListener('blur', function() { setTimeout(function() { dd.style.display = 'none'; }, 150); });
+})();
+
 // ---- Validação do submit ----
 function campValidar() {
+    if (document.getElementById('f_aplicacao').value === 'clientes' && !cliIds().length) {
+        alert('Adicione ao menos um cliente à campanha (ou aplique no canal de venda).');
+        document.getElementById('cliSearch').focus();
+        return false;
+    }
     if (document.querySelectorAll('#condBody tr').length === 0) {
         alert('Adicione ao menos uma condição.');
         return false;
+    }
+    var dtIni = document.getElementById('f_dt_ini').value, dtFim = document.getElementById('f_dt_fim').value;
+    if (dtIni && dtFim && dtFim < dtIni) {
+        alert('A data final do período deve ser igual ou posterior à data inicial.');
+        document.getElementById('f_dt_fim').focus();
+        return false;
+    }
+    // Mesmas quantidades: E entre as condições, todas por quantidade (as mesmas regras do servidor)
+    if (document.getElementById('f_tipo').value === 'desconto' && document.getElementById('f_mesma_qtd').checked) {
+        var condRows = document.querySelectorAll('#condBody tr');
+        if (condRows.length < 2) { alert('"Mesmas quantidades" exige ao menos duas condições.'); return false; }
+        if (document.getElementById('f_cond_op').value !== 'E') { alert('"Mesmas quantidades" só vale com "Todas precisam ser atendidas (E)".'); return false; }
+        if (Array.prototype.some.call(condRows, function(tr) { return tr.querySelector('[name$="[modo]"]').value !== 'quantidade'; })) {
+            alert('"Mesmas quantidades" exige todas as condições com mínimo por Quantidade.'); return false;
+        }
     }
     if (fxAtivo() && _fxN < 2) {
         alert('Adicione ao menos a Faixa 2 (ou use "Percentual fixo").');
@@ -1151,9 +1372,13 @@ function campValidar() {
 function campLimpar() {
     document.getElementById('f_obs').value = '';
     document.getElementById('f_obs_am').value = '';
+    document.getElementById('cliBody').innerHTML = '';
+    document.getElementById('cliSearch').value = '';
+    cliAtualizar();
     document.getElementById('f_tot_modo').value = '';
     condTotalAtualizar();
     document.getElementById('f_dm_fixo').checked = true;
+    document.getElementById('f_mesma_qtd').checked = false;
     _fxN = 1;
     fxRender();
     document.getElementById('f_cond_op').value = 'E';
@@ -1184,7 +1409,10 @@ function novoReg() {
     document.getElementById('f_cod_orig').value = '';
     document.getElementById('f_cod').value      = '';
     document.getElementById('f_canal').value    = '';
+    document.getElementById('f_aplicacao').value = 'canal';
     document.getElementById('f_ativo').value    = '1';
+    document.getElementById('f_dt_ini').value   = '';
+    document.getElementById('f_dt_fim').value   = '';
     document.getElementById('f_desc').value     = 0;
     document.getElementById('f_tipo').value     = 'desconto';
     campLimpar();
@@ -1198,7 +1426,10 @@ function editarReg(d) {
     document.getElementById('f_cod_orig').value = d.codigo_campanha || '';
     document.getElementById('f_cod').value      = d.codigo_campanha || '';
     document.getElementById('f_canal').value    = d.canal_venda_id  || '';
+    document.getElementById('f_aplicacao').value = d.aplicacao === 'clientes' ? 'clientes' : 'canal';
     document.getElementById('f_ativo').value    = String(d.ativo == null ? 1 : d.ativo);
+    document.getElementById('f_dt_ini').value   = d.data_inicio || '';
+    document.getElementById('f_dt_fim').value   = d.data_fim || '';
     document.getElementById('f_desc').value     = parseFloat(d.desconto) || 0;
     document.getElementById('f_tipo').value     = d.tipo || 'desconto';
     campLimpar();
@@ -1210,6 +1441,7 @@ function editarReg(d) {
     condTotalAtualizar();
     if (d.cond_total_modo) document.getElementById('f_tot_min').value = parseFloat(d.cond_total_min || 0) || '';
     document.getElementById(d.desconto_modo === 'faixas' ? 'f_dm_faixas' : 'f_dm_fixo').checked = true;
+    document.getElementById('f_mesma_qtd').checked = !!d.cond_mesma_qtd;
     _fxN = 1 + (d.faixas || []).length;
     fxRender();
     fxPreencher(d.faixas);
@@ -1227,6 +1459,7 @@ function editarReg(d) {
     document.getElementById('f_bonif_lim_tipo').value   = d.bonif_limite_tipo || 'quantidade';
     document.getElementById('f_bonif_lim_valor').value  = parseFloat(d.bonif_limite_valor || 0) || 0;
     (d.bonificados || []).forEach(function(b) { bonifAddRow(b.id, b.codigo_produto, b.descricao_pt, b.quantidade); });
+    (d.clientes || []).forEach(function(cl) { cliAddRow(cl.id, cl.codigo, cl.nome); });
     campSetBonifModo();
     campSetTipo(d.tipo || 'desconto');
     campStep();

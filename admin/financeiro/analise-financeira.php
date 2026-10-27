@@ -121,7 +121,7 @@ $condTabela = function (array $conds, string $operador) use ($okIcon) {
     foreach ($conds as $c) {
         $its = array_map(fn($i) => e($i['codigo'] . ' ' . $i['nome']) . ' <b>(' . (int)$i['qtd'] . ')</b>', $c['itens']);
         $h .= '<tr class="' . ($c['ok'] ? '' : 'table-danger') . '"><td>' . e($c['rotulo']) . '</td>'
-            . '<td class="text-end fw-semibold">' . $fmt($c, $c['atingido']) . '</td>'
+            . '<td class="text-end fw-semibold">' . (isset($c['atingido_txt']) ? e($c['atingido_txt']) : $fmt($c, $c['atingido'])) . '</td>'
             . '<td class="text-end">' . ($c['minimo'] > 0 ? $fmt($c, $c['minimo']) : '—') . '</td>'
             . '<td class="text-center">' . $okIcon($c['ok']) . '</td>'
             . '<td>' . ($its ? implode('<br>', $its) : '<span class="text-muted">nenhum</span>') . '</td></tr>';

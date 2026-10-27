@@ -144,7 +144,7 @@ Sistema web de gestão de pedidos B2B para indústria de cosméticos (Itallian H
 
 O módulo de campanhas foi **reestruturado** (jun/2026). Convivem dois modelos, decididos por: **se a campanha tem linhas em `campanha_condicoes` ⇒ modelo novo; senão ⇒ legado**. As migrações são apenas aditivas; **o PHP (`config.php`) é a fonte de verdade** da avaliação. A descrição abaixo é do **modelo novo**.
 
-**Cabeçalho da campanha:** Código da Campanha*, Canal de Venda (opcional — "Todos" ou canal específico), **Ativa/Inativa** (`campanhas.ativo`; campanhas inativas são ignoradas na avaliação), **Tipo de Campanha** (Desconto **ou** Bonificação). No modelo novo o cabeçalho grava produto/linha/grupo/subgrupo = NULL e `quantidade = 0` (o gatilho fica nas condições).
+**Cabeçalho da campanha:** Código da Campanha*, **Aplicar a campanha** (`campanhas.aplicacao`: *No canal de venda* ou *Para clientes específicos* — clientes adicionados um a um por busca, tabela `campanha_clientes`; só eles recebem a campanha e o canal é ignorado; avaliado por `campanhaValeParaCliente()`), Canal de Venda (opcional — "Todos" ou canal específico; só na aplicação por canal), **Ativa/Inativa** (`campanhas.ativo`; campanhas inativas são ignoradas na avaliação), **Tipo de Campanha** (Desconto **ou** Bonificação), **Período Início/Fim** (`campanhas.data_inicio`/`data_fim`, opcionais; fora do período a campanha é ignorada na avaliação — filtro `campanhaVigenteSql()` — e aparece na listagem como *Agendada* ou *Encerrada*). No modelo novo o cabeçalho grava produto/linha/grupo/subgrupo = NULL e `quantidade = 0` (o gatilho fica nas condições).
 
 **Condições (gatilho) — tabela `campanha_condicoes`:**
 - Cada condição é um **filtro composto**: **Linha + Grupo + Subgrupo + Produto** (cada um opcional, "— qualquer —"), combinados em **E** — ex.: "Linha Itallian Color · Grupo Coloração".
@@ -155,6 +155,7 @@ O módulo de campanhas foi **reestruturado** (jun/2026). Convivem dois modelos, 
 **Tipo Desconto:**
 - Campo **Desconto %** + **alvos opcionais** (tabela `campanha_desconto_alvo`) que definem **onde** o desconto incide (por linha/grupo/subgrupo/produto). Se nenhum alvo for definido, o desconto recai sobre os itens que satisfazem as condições.
 - Aplicado de forma **multiplicativa** sobre o preço já líquido dos demais descontos (ver §5.1).
+- **Mesmas quantidades em todas as condições** (`campanhas.cond_mesma_qtd`, na barra "Forma do desconto"): além dos mínimos, o **pedido final** precisa ter a **mesma quantidade** somada em cada condição (ex.: 30 un. de Coloração e 30 un. de Oxidante; 30 × 24 não aciona). Exige operador **E**, ao menos 2 condições e todas por Quantidade. Avaliado em `avaliarCampanhaTrigger()` (`campanhaQtdsIguais()`) e no JS dos novos pedidos; o portal mostra o aviso "As quantidades das condições precisam ser iguais" e a Análise Financeira lista a regra entre as condições.
 
 **Tipo Bonificação:**
 - **Multiplicador:** a quantidade bonificada multiplica conforme o total comprado — `mult = floor(qtd_alvo / mínimo)` (menor múltiplo entre as condições).
@@ -162,7 +163,7 @@ O módulo de campanhas foi **reestruturado** (jun/2026). Convivem dois modelos, 
 - **Modo selecionável:** o cliente escolhe o brinde até um **limite** (`bonif_limite_tipo`/`bonif_limite_valor`, por quantidade ou valor). A origem dos produtos é (`bonif_selec_modo`): **lista** de produtos (`campanha_bonificacao`) **ou** **pool por categoria** (`campanha_bonif_pool`, filtro por linha/grupo/subgrupo/produto).
 - Ao finalizar uma **venda nova** que aciona a campanha, o sistema cria um **pedido bonificado separado** (`tipo_venda=bonificacao`, lote próprio, status comercial, `cotacao=NULL`) com valor pelo preço **Network** (`criarPedidoBonificado`/`gerarBonificacaoCampanha`). Não ocorre em edição de pedido. Bonificação **selecionável** redireciona para `cliente/bonificacao-selecionavel.php` (usado por cliente **e** admin) antes de concluir.
 
-**Formulário (modal `modal-xl`, exibição progressiva):** Código → Canal → Ativa/Inativa → Tipo. As **condições** são uma tabela com selects de Linha/Grupo/Subgrupo/Produto + Modo + Mínimo (linhas adicionáveis). Desconto: percentual + alvos. Bonificação: fixo (lista) ou selecionável (lista/pool) + limite.
+**Formulário (modal `modal-xl`, exibição progressiva):** Código → Aplicar a campanha → Canal (ou Clientes da campanha) → Ativa/Inativa → Tipo → Início → Fim. As **condições** são uma tabela com selects de Linha/Grupo/Subgrupo/Produto + Modo + Mínimo (linhas adicionáveis). Desconto: percentual + alvos. Bonificação: fixo (lista) ou selecionável (lista/pool) + limite.
 
 **Modelo de dados:** uma campanha é um conjunto de linhas em `campanhas` (compartilham `codigo_campanha`) + condições em `campanha_condicoes` + alvos/pool. Salvar **substitui** todas as linhas do código; excluir remove todas elas.
 

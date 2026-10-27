@@ -94,7 +94,7 @@ foreach ($ciCamp->fetchAll() as $it) {
         'preco'      => (float)$it['preco_unit'],
     ];
 }
-$campanhasAtingidas = campanhasAtingidasResumo(ctxCampanha($itensCamp, $pedidoCanalId));
+$campanhasAtingidas = campanhasAtingidasResumo(ctxCampanha($itensCamp, $pedidoCanalId, (int)$u['id']));
 
 // Crédito utilizado no pedido
 $creditoUsado = 0.0;

@@ -30,7 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Bonificação usa preço network (BRL); não converte. Demais usam a cotação do dia.
     $cotacaoPedido = ($tipoVenda === 'bonificacao') ? null : cotacaoDia($cli['moeda'] ?? 'BRL');
     $data          = date('Y-m-d');
-    $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas WHERE COALESCE(ativo,1) = 1')->fetchAll();
+    $campanhas_all = db()->query('SELECT codigo_campanha, produto_id, linha, grupo, subgrupo, canal_venda_id, quantidade, desconto FROM campanhas WHERE ' . campanhaVigenteSql())->fetchAll();
     $canalVendaId  = (int)($cli['canal_venda_id'] ?? 0);
     $criados       = 0;
     $ids_criados   = [];
@@ -73,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'produto_id' => $it['produto_id'], 'qtd' => $it['qtd'],
             'linha' => $it['prod']['linha'] ?? '', 'grupo' => $it['prod']['grupo'] ?? '', 'subgrupo' => $it['prod']['subgrupo'] ?? '',
             'preco' => (float)$it['prod']['preco'],
-        ], $items_data), $canalVendaId);
+        ], $items_data), $canalVendaId, (int)$cliente_id);
         $descAvancados = ($tipoVenda !== 'bonificacao') ? avaliarCampanhasDescontoAvancadas($ctxCamp) : [];
 
         // Passagem 2: gravar cada item aplicando desconto de campanha com base nos totais
@@ -158,7 +158,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $msg .= ' Bonificação gerada: ' . implode(', ', array_map(fn($b) => $b['quantidade'] . 'x ' . $b['descricao'], $bonus)) . '.';
                     }
                     // Bonificação selecionável: redireciona para a tela de escolha dos bônus
-                    $selec = detectarBonificacaoSelecionavel($itensVenda, $canalVendaId);
+                    $selec = detectarBonificacaoSelecionavel($itensVenda, $canalVendaId, (int)$cliente_id);
                     if ($selec) {
                         $_SESSION['bonus_selecionavel'] = [
                             'campanhas'  => $selec,
@@ -185,7 +185,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $clientes  = db()->query('SELECT id, razao_social, codigo_cliente, desconto_cliente, desconto_canal, canal_venda_id, idioma, moeda FROM clientes WHERE status = "ativo" ORDER BY razao_social')->fetchAll();
-$campanhas = db()->query('SELECT c.*, p.descricao_pt, cv.canal FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id WHERE COALESCE(c.ativo,1) = 1 ORDER BY c.codigo_campanha')->fetchAll();
+$campanhas = db()->query('SELECT c.*, p.descricao_pt, cv.canal FROM campanhas c LEFT JOIN produtos p ON p.id = c.produto_id LEFT JOIN canal_venda cv ON cv.id = c.canal_venda_id WHERE ' . campanhaVigenteSql('c') . ' ORDER BY c.codigo_campanha')->fetchAll();
 
 // Produtos bonificados por campanha (chips de campanhas de bonificação)
 $bonifByCode = [];      // com "Nx" (modo fixo)
@@ -249,6 +249,7 @@ foreach ($campanhas as $c) {
             'bonif_limite_tipo'  => $c['bonif_limite_tipo'] ?? 'quantidade',
             'bonif_limite_valor' => $c['bonif_limite_valor'] ?? null,
             'cond_operador'      => campanhaOperador([$c]),
+            'aplicacao'          => $c['aplicacao'] ?? 'canal',
             'observacao'         => trim((string)($c['observacao'] ?? '')),
             'total'              => campanhaTotalCond([$c]),
             'faixas'             => (($c['tipo'] ?? 'desconto') === 'desconto' && ($c['desconto_modo'] ?? 'fixo') === 'faixas')
@@ -391,6 +392,9 @@ require_once LAYOUT_PATH . '/header.php';
             <div style="line-height:1.3">
                 <div class="fw-semibold" style="font-size:.82rem"><?= e($c['codigo_campanha']) ?></div>
                 <div style="font-size:.76rem;color:var(--brand-dark)"><?= e($c['gatilho']) ?></div>
+                <?php if (($c['aplicacao'] ?? 'canal') === 'clientes'): ?>
+                <div style="font-size:.72rem" class="text-muted"><i class="bi bi-person-check me-1"></i>Só para clientes específicos</div>
+                <?php endif; ?>
                 <?php if ($c['faixas'] !== null): ?>
                 <div style="font-size:.72rem" class="text-success"><strong>F1:</strong> <?= $fmtP($c['desconto']) ?>%
                     <?php foreach ($c['faixas_txt'] as [$fn, $ft, $fp]): ?>
@@ -667,6 +671,8 @@ var _campCondicoes = <?= json_encode((function () use ($campanhas, $condByCode, 
             'desconto'  => (float)$c['desconto'],
             'total'     => campanhaTotalCond([$c]),
             'ou'        => campanhaOperador([$c]) === 'OU',
+            'mesma'     => (int)($c['cond_mesma_qtd'] ?? 0) === 1,
+            'clientes'  => ($c['aplicacao'] ?? 'canal') === 'clientes' ? array_keys(campanhasClientes()[$code] ?? []) : null,
             'conds'     => $cj = array_values(array_map(fn($cd) => [
                 'linha'    => $cd['linha'], 'grupo' => $cd['grupo'], 'subgrupo' => $cd['subgrupo'], 'produto' => (int)($cd['produto'] ?: 0),
                 'modo'     => $cd['modo'] ?? 'quantidade',
@@ -784,6 +790,17 @@ function _campSomaFiltros(itens, filtros, criterio) {
 }
 // Gatilho de uma campanha do novo modelo — espelha avaliarCampanhaTrigger (PHP).
 // Condição com mínimo 0 é só filtro; o mínimo total (se houver) é exigido além do E/OU.
+// "Mesmas quantidades" (c.mesma, só no E): todas as condições precisam somar a mesma quantidade.
+function _campQtdsIguais(c, itens) {
+    if (!c.mesma || !c.conds || c.conds.length < 2) return true;
+    var qs = c.conds.map(function(cd) { return _campSomaFiltros(itens, [cd], 'quantidade'); });
+    return qs.every(function(q) { return q === qs[0]; });
+}
+// Campanha vale para o cliente selecionado? "Clientes específicos": só os listados; senão, pelo canal.
+function _campValeCliente(c) {
+    if (c.clientes) return c.clientes.indexOf(parseInt(document.getElementById('cli_id').value, 10) || 0) !== -1;
+    return !c.canal_id || c.canal_id === _canalId;
+}
 function _campAvaliar(c, itens) {
     var nao = { acionada: false, mult: 0, atingidas: [] };
     if (!c.conds || !c.conds.length) return nao;
@@ -809,7 +826,7 @@ function _campAvaliar(c, itens) {
         if (temMin && maxMult < 1) return nao;
         return { acionada: true, mult: Math.min(temMin ? maxMult : Infinity, multTotal), atingidas: atingidas };
     }
-    if (!allMet) return nao;
+    if (!allMet || !_campQtdsIguais(c, itens)) return nao;
     var mult = Math.min(minMult, multTotal);
     return mult >= 1 ? { acionada: true, mult: mult, atingidas: c.conds } : nao;
 }
@@ -819,7 +836,7 @@ function _campNivel(c, itens) {
     var niveis = c.niveis || [{ faixa: 1, pct: c.desconto, total: c.total, conds: c.conds }];
     for (var i = niveis.length - 1; i >= 0; i--) {
         var nv = niveis[i];
-        var av = _campAvaliar({ ou: c.ou, total: nv.total, conds: nv.conds }, itens);
+        var av = _campAvaliar({ ou: c.ou, mesma: c.mesma, total: nv.total, conds: nv.conds }, itens);
         if (av.acionada) return { faixa: nv.faixa, pct: nv.pct, av: av, conds: nv.conds, idx: i };
     }
     return null;
@@ -856,7 +873,7 @@ function recalcularTodas() {
     // atingida. No OU, sem alvo explícito, o desconto vai só nas condições atingidas. Espelha o PHP.
     var descAvancados = [];
     _campCondicoes.forEach(function(c) {
-        if (c.canal_id && c.canal_id !== _canalId) return; // filtra por canal do cliente
+        if (!_campValeCliente(c)) return; // filtra por canal (ou pelos clientes específicos)
         var nv = _campNivel(c, itens);
         if (!nv) return;
         var atingidas = nv.av.atingidas;

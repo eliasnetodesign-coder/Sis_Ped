@@ -157,7 +157,7 @@ if (isset($_GET['ajax_aem_preview'])) {
             $cc->execute([$cliente['id']]);
             $canalFallback = (int)$cc->fetchColumn();
         }
-        $av = campanhasComercialAvaliarPedido($campItens, canalVendaIdAEM($r['pedidoAccademia'] ?? null, $canalFallback));
+        $av = campanhasComercialAvaliarPedido($campItens, canalVendaIdAEM($r['pedidoAccademia'] ?? null, $canalFallback), (int)($cliente['id'] ?? 0));
         foreach ($resp['itens'] as &$ri) {
             $esp = $av['esperado_por_codigo'][$ri['codigoAEM']] ?? null;
             $ri['pctDiretoriaCampanha'] = (float)($esp['pct'] ?? 0);
@@ -267,7 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             }
             $cc = db()->prepare('SELECT canal_venda_id FROM clientes WHERE id = ?');
             $cc->execute([$clienteId]);
-            $av = campanhasComercialAvaliarPedido($campItens, canalVendaIdAEM($r['pedidoAccademia'] ?? null, (int)$cc->fetchColumn()));
+            $av = campanhasComercialAvaliarPedido($campItens, canalVendaIdAEM($r['pedidoAccademia'] ?? null, (int)$cc->fetchColumn()), (int)$clienteId);
             // Só as campanhas marcadas no modal; item fora delas fica com 0.
             $campAplicadas = campanhasFiltrarSelecionadas($av['campanhas_atingidas'], $campSel);
             $bfOverrides = campanhasPctPorCodigo($campAplicadas);
