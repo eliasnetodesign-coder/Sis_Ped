@@ -612,122 +612,195 @@ require_once LAYOUT_PATH . '/header.php';
    aqui há um <form> no meio — ele vira a coluna flexível para o corpo rolar (zoom alto/telas baixas). */
 #modal .modal-dialog-scrollable .modal-content > form { display: flex; flex-direction: column; min-height: 0; max-height: 100%; }
 #modal .modal-dialog-scrollable .modal-body { overflow-y: auto; min-height: 0; }
-#condTableWrap .fx-col { width: 110px; background: #f3fbf6; }
+#condTableWrap .fx-col { width: 110px; background: var(--bs-success-bg-subtle); }
+
+/* ---- Assistente (passo a passo) ---- */
+.wz-steps { display: flex; gap: .35rem; list-style: none; padding: 0; margin: 0; }
+.wz-steps li { flex: 1; min-width: 0; }
+.wz-steps button { width: 100%; border: 0; background: none; padding: .4rem .2rem; font-size: .8rem; color: var(--bs-secondary-color);
+                   border-bottom: 3px solid var(--bs-border-color); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wz-steps button:disabled { cursor: default; opacity: .7; }
+.wz-steps .wz-n { display: inline-flex; width: 1.45rem; height: 1.45rem; border-radius: 50%; align-items: center; justify-content: center;
+                  font-weight: 600; font-size: .75rem; margin-right: .3rem; background: var(--bs-secondary-bg); color: var(--bs-body-color); }
+.wz-steps li.feito button { color: var(--bs-success); border-color: var(--bs-success); }
+.wz-steps li.feito .wz-n { background: var(--bs-success); color: #fff; }
+.wz-steps li.atual button { color: var(--bs-primary); border-color: var(--bs-primary); font-weight: 600; }
+.wz-steps li.atual .wz-n { background: var(--bs-primary); color: #fff; }
+.wz-bloco { margin-bottom: 1.6rem; }
+.wz-q { font-weight: 600; font-size: 1.05rem; margin-bottom: .2rem; }
+.wz-ajuda { color: var(--bs-secondary-color); font-size: .85rem; margin-bottom: .65rem; }
+.wz-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: .75rem; max-width: 780px; }
+.wz-opt { display: flex; gap: .75rem; align-items: flex-start; text-align: left; width: 100%; margin: 0; cursor: pointer;
+          border: 2px solid var(--bs-border-color); border-radius: .75rem; background: var(--bs-body-bg); color: var(--bs-body-color); padding: .75rem 1rem; }
+.wz-opt:hover { border-color: var(--bs-primary-border-subtle); }
+.wz-opt.active, .wz-opt:has(input:checked) { border-color: var(--bs-primary); background: var(--bs-primary-bg-subtle); }
+.wz-opt > i { font-size: 1.5rem; color: var(--bs-primary); line-height: 1; }
+.wz-opt-tit { display: block; font-weight: 600; }
+.wz-opt-sub { display: block; font-size: .8rem; color: var(--bs-secondary-color); }
+.wz-mais > summary { cursor: pointer; color: var(--bs-primary); font-size: .9rem; }
+#wzResumo th { width: 180px; color: var(--bs-secondary-color); font-weight: 600; }
 </style>
 <div class="modal fade" id="modal" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
-            <form method="POST" onsubmit="return campValidar()">
+            <form method="POST" onsubmit="return campSubmit(event)">
                 <input type="hidden" name="action" id="fa" value="criar">
                 <input type="hidden" name="codigo_original" id="f_cod_orig">
-                <div class="modal-header">
+                <div class="modal-header flex-wrap">
                     <h5 class="modal-title fw-bold" id="mt">Nova Campanha</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <ol class="wz-steps w-100 mt-3" id="wzSteps">
+                        <li><button type="button" data-go="1"><span class="wz-n">1</span><span class="d-none d-md-inline">Identificação</span></button></li>
+                        <li><button type="button" data-go="2"><span class="wz-n">2</span><span class="d-none d-md-inline">Para quem</span></button></li>
+                        <li><button type="button" data-go="3"><span class="wz-n">3</span><span class="d-none d-md-inline">Benefício</span></button></li>
+                        <li><button type="button" data-go="4"><span class="wz-n">4</span><span class="d-none d-md-inline">O que comprar</span></button></li>
+                        <li><button type="button" data-go="5"><span class="wz-n">5</span><span class="d-none d-md-inline">Detalhes</span></button></li>
+                        <li><button type="button" data-go="6"><span class="wz-n">6</span><span class="d-none d-md-inline">Revisão</span></button></li>
+                    </ol>
                 </div>
                 <div class="modal-body">
-                    <div class="row g-3">
-                        <!-- 1. Código -->
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Código da Campanha <span class="text-danger">*</span></label>
-                            <input type="text" name="codigo_campanha" id="f_cod" class="form-control" required oninput="campStep()">
+
+                    <!-- ===== Passo 1 — Identificação ===== -->
+                    <div class="wz-page" data-page="1">
+                        <div class="wz-bloco">
+                            <div class="wz-q">Qual o código da campanha? <span class="text-danger">*</span></div>
+                            <div class="wz-ajuda">Um nome curto para identificar a campanha. Ex.: <em>COLOR-NOV</em></div>
+                            <input type="text" name="codigo_campanha" id="f_cod" class="form-control" style="max-width:360px" required>
                         </div>
-                        <!-- 2. Aplicação: canal de venda ou clientes específicos -->
-                        <div class="col-md-3 camp-step d-none" data-step="aplicacao">
-                            <label class="form-label fw-semibold">Aplicar a campanha</label>
-                            <select name="aplicacao" id="f_aplicacao" class="form-select" onchange="campStep()">
-                                <option value="canal">No canal de venda</option>
-                                <option value="clientes">Para clientes específicos</option>
+                        <div class="wz-bloco">
+                            <div class="wz-q">Em qual período ela vale?</div>
+                            <div class="wz-ajuda">Deixe em branco para não ter data de início ou de fim.</div>
+                            <div class="row g-2" style="max-width:480px">
+                                <div class="col-6">
+                                    <label class="form-label small mb-1" for="f_dt_ini">Início</label>
+                                    <input type="date" name="data_inicio" id="f_dt_ini" class="form-control">
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label small mb-1" for="f_dt_fim">Fim</label>
+                                    <input type="date" name="data_fim" id="f_dt_fim" class="form-control">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="wz-bloco">
+                            <div class="wz-q">A campanha já fica ativa?</div>
+                            <div class="wz-ajuda">Inativa = fica salva, mas não vale para nenhum pedido.</div>
+                            <select name="ativo" id="f_ativo" class="form-select" style="max-width:220px">
+                                <option value="1">Sim, ativa</option>
+                                <option value="0">Não, inativa</option>
                             </select>
                         </div>
-                        <!-- 3. Canal -->
-                        <div class="col-md-3 camp-step d-none" data-step="canal">
-                            <label class="form-label fw-semibold">Canal de Venda</label>
-                            <select name="canal_venda_id" id="f_canal" class="form-select">
+                    </div>
+
+                    <!-- ===== Passo 2 — Para quem ===== -->
+                    <div class="wz-page d-none" data-page="2">
+                        <div class="wz-bloco">
+                            <div class="wz-q">Para quem é a campanha?</div>
+                            <input type="hidden" name="aplicacao" id="f_aplicacao" value="canal" onchange="campStep()">
+                            <div class="wz-opts mt-2" data-for="f_aplicacao">
+                                <button type="button" class="wz-opt" data-value="canal">
+                                    <i class="bi bi-diagram-3"></i>
+                                    <span><span class="wz-opt-tit">Clientes de um canal de venda</span>
+                                    <span class="wz-opt-sub">Vale para todos os clientes do canal (ou de todos os canais).</span></span>
+                                </button>
+                                <button type="button" class="wz-opt" data-value="clientes">
+                                    <i class="bi bi-person-check"></i>
+                                    <span><span class="wz-opt-tit">Clientes específicos</span>
+                                    <span class="wz-opt-sub">Você escolhe os clientes, um a um.</span></span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="wz-bloco camp-step" data-step="canal">
+                            <div class="wz-q">Qual canal de venda?</div>
+                            <select name="canal_venda_id" id="f_canal" class="form-select mt-2" style="max-width:360px">
                                 <option value="">— Todos os canais —</option>
                                 <?php foreach ($canais as $cv): ?>
                                 <option value="<?= $cv['id'] ?>"><?= e($cv['canal']) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
-                        <!-- 4. Status -->
-                        <div class="col-md-3 camp-step d-none" data-step="status">
-                            <label class="form-label fw-semibold">Campanha</label>
-                            <select name="ativo" id="f_ativo" class="form-select">
-                                <option value="1">Ativa</option>
-                                <option value="0">Inativa</option>
-                            </select>
-                        </div>
-                        <!-- Clientes específicos (adicionados um a um) -->
-                        <div class="col-12 camp-step d-none" data-step="clientes">
-                            <label class="form-label fw-semibold"><i class="bi bi-person-check me-1"></i>Clientes da campanha</label>
+                        <div class="wz-bloco camp-step d-none" data-step="clientes">
+                            <div class="wz-q">Quais clientes?</div>
+                            <div class="wz-ajuda">Busque e clique no cliente para adicioná-lo. A campanha vale <strong>só</strong> para os clientes da lista.</div>
                             <div class="position-relative" style="max-width:560px">
                                 <input type="text" id="cliSearch" class="form-control" placeholder="Buscar cliente por nome, código ou CNPJ/CPF..." autocomplete="off">
                                 <div id="cliDropdown" class="list-group position-absolute w-100 shadow-sm" style="display:none;z-index:1056;top:100%;left:0;max-height:260px;overflow-y:auto"></div>
                             </div>
-                            <div class="form-text">A campanha vale <strong>só</strong> para os clientes da lista (o canal de venda não se aplica).</div>
-                            <div class="table-responsive mt-2 d-none" id="cliTableWrap">
+                            <div class="table-responsive mt-2 d-none" id="cliTableWrap" style="max-width:760px">
                                 <table class="table table-sm table-bordered align-middle mb-0">
                                     <thead class="table-light"><tr><th style="width:130px">Código</th><th>Cliente</th><th style="width:50px" class="text-center">—</th></tr></thead>
                                     <tbody id="cliBody"></tbody>
                                 </table>
                             </div>
                         </div>
-                        <!-- 5. Tipo -->
-                        <div class="col-md-4 camp-step d-none" data-step="tipo">
-                            <label class="form-label fw-semibold">Tipo de Campanha <span class="text-danger">*</span></label>
-                            <select name="tipo" id="f_tipo" class="form-select" onchange="campSetTipo(this.value)">
-                                <option value="desconto">Desconto (%)</option>
-                                <option value="bonificacao">Produtos Bonificados</option>
-                            </select>
-                        </div>
-                        <!-- 6. Período de vigência -->
-                        <div class="col-md-4 camp-step d-none" data-step="periodo">
-                            <label class="form-label fw-semibold">Início</label>
-                            <input type="date" name="data_inicio" id="f_dt_ini" class="form-control">
-                        </div>
-                        <div class="col-md-4 camp-step d-none" data-step="periodo">
-                            <label class="form-label fw-semibold">Fim</label>
-                            <input type="date" name="data_fim" id="f_dt_fim" class="form-control">
-                        </div>
+                    </div>
 
-                        <!-- Condições (E/OU) — ambos os tipos -->
-                        <div class="col-12 camp-step d-none" data-step="cond">
-                            <hr class="my-1">
-                            <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
-                                <label class="form-label fw-semibold mb-0">Condições</label>
-                                <select name="cond_operador" id="f_cond_op" class="form-select form-select-sm" style="width:auto" onchange="condOpAtualizar()">
-                                    <option value="E">Todas precisam ser atendidas (E)</option>
-                                    <option value="OU">Basta qualquer uma (OU)</option>
-                                </select>
+                    <!-- ===== Passo 3 — Benefício ===== -->
+                    <div class="wz-page d-none" data-page="3">
+                        <div class="wz-bloco">
+                            <div class="wz-q">O que o cliente ganha?</div>
+                            <input type="hidden" name="tipo" id="f_tipo" value="desconto" onchange="campSetTipo(this.value)">
+                            <div class="wz-opts mt-2" data-for="f_tipo">
+                                <button type="button" class="wz-opt" data-value="desconto">
+                                    <i class="bi bi-percent"></i>
+                                    <span><span class="wz-opt-tit">Desconto</span>
+                                    <span class="wz-opt-sub">Um percentual de desconto nos produtos.</span></span>
+                                </button>
+                                <button type="button" class="wz-opt" data-value="bonificacao">
+                                    <i class="bi bi-gift"></i>
+                                    <span><span class="wz-opt-tit">Produtos bonificados</span>
+                                    <span class="wz-opt-sub">Brindes que vão junto com o pedido.</span></span>
+                                </button>
                             </div>
-                            <div class="text-muted small mb-2">
-                                Cada condição combina <strong>Linha + Grupo + Subgrupo + Produto</strong> (os preenchidos dentro da mesma condição somam-se em <strong>E</strong>).
-                                Entre as condições vale o operador escolhido acima.
-                                Ex.: <em>Linha Itallian Color · Grupo Coloração ≥ 10 un.</em> <strong class="cond-op-txt">E</strong> <em>Linha Itallian Color · Grupo Oxidante ≥ 5 un.</em>
+                        </div>
+                        <div class="wz-bloco" id="dmWrap">
+                            <div class="wz-q">Como é o desconto?</div>
+                            <div class="wz-opts mt-2">
+                                <label class="wz-opt" for="f_dm_fixo">
+                                    <input class="d-none" type="radio" name="desconto_modo" id="f_dm_fixo" value="fixo" checked onchange="fxRender()">
+                                    <i class="bi bi-dash-circle"></i>
+                                    <span><span class="wz-opt-tit">Percentual fixo</span>
+                                    <span class="wz-opt-sub">Atingiu a condição, ganha sempre o mesmo %.</span></span>
+                                </label>
+                                <label class="wz-opt" for="f_dm_faixas">
+                                    <input class="d-none" type="radio" name="desconto_modo" id="f_dm_faixas" value="faixas" onchange="fxRender()">
+                                    <i class="bi bi-bar-chart-steps"></i>
+                                    <span><span class="wz-opt-tit">Por faixas</span>
+                                    <span class="wz-opt-sub">Quanto mais compra, maior o %. Ex.: 10 un. = 5%, 20 un. = 8%.</span></span>
+                                </label>
                             </div>
-                            <div id="dmWrap" class="d-flex flex-wrap align-items-center gap-3 mb-2 p-2 rounded-3 bg-light border">
-                                <span class="fw-semibold small">Forma do desconto:</span>
-                                <div class="form-check form-check-inline mb-0">
-                                    <input class="form-check-input" type="radio" name="desconto_modo" id="f_dm_fixo" value="fixo" checked onchange="fxRender()">
-                                    <label class="form-check-label" for="f_dm_fixo">Percentual fixo</label>
+                        </div>
+                        <div class="wz-bloco camp-step d-none" data-step="bmodo">
+                            <div class="wz-q">Como é o brinde?</div>
+                            <input type="hidden" name="bonif_modo" id="f_bonif_modo" value="fixo" onchange="campSetBonifModo()">
+                            <div class="wz-opts mt-2" data-for="f_bonif_modo">
+                                <button type="button" class="wz-opt" data-value="fixo">
+                                    <i class="bi bi-box-seam"></i>
+                                    <span><span class="wz-opt-tit">Produtos definidos</span>
+                                    <span class="wz-opt-sub">Você escolhe os brindes; a quantidade multiplica conforme o cliente compra mais.</span></span>
+                                </button>
+                                <button type="button" class="wz-opt" data-value="selecionavel">
+                                    <i class="bi bi-hand-index"></i>
+                                    <span><span class="wz-opt-tit">O cliente escolhe</span>
+                                    <span class="wz-opt-sub">O cliente escolhe os brindes, até um limite.</span></span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ===== Passo 4 — O que o cliente precisa comprar ===== -->
+                    <div class="wz-page d-none" data-page="4">
+                        <div class="wz-bloco">
+                            <div class="wz-q">O que o cliente precisa comprar?</div>
+                            <div class="wz-ajuda">
+                                Cada linha é uma <strong>condição</strong>: escolha a Linha, o Grupo, o Subgrupo e/ou o Produto (só o que precisar) e o mínimo.
+                                Ex.: <em>Grupo Coloração, mínimo 10 un.</em>
+                            </div>
+                            <div id="fxToolbar" class="d-none mb-2">
+                                <div id="fxAjuda" class="small text-muted mb-2">
+                                    <i class="bi bi-bar-chart-steps me-1"></i>Informe o mínimo de cada <strong>faixa</strong>. A Faixa 1 é o mínimo para a campanha valer; vale a maior faixa atingida.
                                 </div>
-                                <div class="form-check form-check-inline mb-0">
-                                    <input class="form-check-input" type="radio" name="desconto_modo" id="f_dm_faixas" value="faixas" onchange="fxRender()">
-                                    <label class="form-check-label" for="f_dm_faixas">Faixas escalonadas</label>
-                                </div>
-                                <div class="form-check form-switch mb-0" title="No pedido final, todas as condições precisam ter a mesma quantidade (além dos mínimos). Ex.: 30 un. de Coloração e 30 un. de Oxidante.">
-                                    <input type="hidden" name="cond_mesma_qtd" value="0">
-                                    <input class="form-check-input" type="checkbox" name="cond_mesma_qtd" id="f_mesma_qtd" value="1">
-                                    <label class="form-check-label" for="f_mesma_qtd">Mesmas quantidades em todas as condições</label>
-                                </div>
-                                <div id="fxToolbar" class="d-none ms-auto">
-                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="fxAdd()"><i class="bi bi-plus-lg me-1"></i>Adicionar faixa</button>
-                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="fxRemove()"><i class="bi bi-dash-lg me-1"></i>Remover última</button>
-                                </div>
-                                <div id="fxAjuda" class="small text-muted w-100 d-none">
-                                    Cada faixa é um conjunto de mínimos das condições (a Faixa 1 é o mínimo para a campanha valer).
-                                    Vale a <strong>maior faixa atingida</strong>, e o % dela (em "Percentual de Desconto padrão") vai para os produtos a conceder o desconto.
-                                </div>
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="fxAdd()"><i class="bi bi-plus-lg me-1"></i>Adicionar faixa</button>
+                                <button type="button" class="btn btn-sm btn-outline-danger" onclick="fxRemove()"><i class="bi bi-dash-lg me-1"></i>Remover última</button>
                             </div>
                             <div class="table-responsive d-none" id="condTableWrap">
                                 <table class="table table-sm table-bordered align-middle mb-2">
@@ -748,8 +821,38 @@ require_once LAYOUT_PATH . '/header.php';
                             <button type="button" class="btn btn-outline-success btn-sm" onclick="condAddRow()">
                                 <i class="bi bi-plus-lg me-1"></i>Adicionar condição
                             </button>
-                            <!-- Mínimo TOTAL das condições (opcional) -->
-                            <div class="border rounded-3 p-2 mt-3 bg-light">
+                        </div>
+
+                        <div class="wz-bloco d-none" id="wzOpWrap">
+                            <div class="wz-q">O cliente precisa cumprir:</div>
+                            <input type="hidden" name="cond_operador" id="f_cond_op" value="E" onchange="condOpAtualizar()">
+                            <div class="wz-opts mt-2" data-for="f_cond_op">
+                                <button type="button" class="wz-opt" data-value="E">
+                                    <i class="bi bi-check2-all"></i>
+                                    <span><span class="wz-opt-tit">Todas as condições</span>
+                                    <span class="wz-opt-sub">Ex.: comprar Coloração <strong>e</strong> Oxidante.</span></span>
+                                </button>
+                                <button type="button" class="wz-opt" data-value="OU">
+                                    <i class="bi bi-check2"></i>
+                                    <span><span class="wz-opt-tit">Qualquer uma delas</span>
+                                    <span class="wz-opt-sub">Ex.: comprar Coloração <strong>ou</strong> Oxidante.</span></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="wz-bloco d-none" id="wzMesmaWrap">
+                            <div class="wz-q">As quantidades precisam ser iguais?</div>
+                            <div class="wz-ajuda">No pedido final, todas as condições precisam ter a mesma quantidade (além dos mínimos). Ex.: 30 Coloração e 30 Oxidante valem; 30 e 24 não.</div>
+                            <div class="form-check form-switch">
+                                <input type="hidden" name="cond_mesma_qtd" value="0">
+                                <input class="form-check-input" type="checkbox" name="cond_mesma_qtd" id="f_mesma_qtd" value="1">
+                                <label class="form-check-label" for="f_mesma_qtd">Sim, exigir as mesmas quantidades em todas as condições</label>
+                            </div>
+                        </div>
+
+                        <details class="wz-mais" id="wzTotDet">
+                            <summary>Mais opções: mínimo total somando todas as condições</summary>
+                            <div class="border rounded-3 p-2 mt-2 bg-body-tertiary">
                                 <div class="row g-2 align-items-end">
                                     <div class="col-md-4">
                                         <label class="form-label fw-semibold small mb-1"><i class="bi bi-sigma me-1"></i>Mínimo total das condições</label>
@@ -771,28 +874,35 @@ require_once LAYOUT_PATH . '/header.php';
                                     </div>
                                 </div>
                             </div>
-                        </div>
+                        </details>
+                    </div>
 
+                    <!-- ===== Passo 5 — Detalhes do benefício ===== -->
+                    <div class="wz-page d-none" data-page="5">
                         <!-- DESCONTO -->
-                        <div class="col-12 camp-step d-none" data-step="desc" id="campDescWrap">
-                            <label class="form-label fw-semibold">Percentual de Desconto padrão (%)</label>
+                        <div class="wz-bloco camp-step" data-step="desc" id="campDescWrap">
+                            <div class="wz-q">Qual o percentual de desconto?</div>
+                            <div class="wz-ajuda" id="descAjuda">Vale para os itens das condições (ou para os produtos escolhidos abaixo que não tenham % próprio).</div>
                             <div class="d-flex flex-wrap gap-2" id="fxPctWrap">
                                 <div class="fx-par"><div class="fx-rot small text-muted d-none">Faixa 1</div>
-                                <input type="number" step="0.01" name="desconto" id="f_desc" class="form-control form-control-sm" value="0" style="width:140px"></div>
+                                <div class="input-group input-group-sm" style="width:140px"><input type="number" step="0.01" name="desconto" id="f_desc" class="form-control" value="0"><span class="input-group-text">%</span></div></div>
                             </div>
-                            <div class="form-text" id="descAjuda">Vale para os itens das condições (ou para os produtos escolhidos abaixo que não tenham % próprio).</div>
                         </div>
-                        <div class="col-12 camp-step d-none" data-step="alvo" id="campAlvoWrap">
-                            <label class="form-label fw-semibold d-block mb-1">O desconto será aplicado sobre os itens das condições?</label>
-                            <div class="mb-2">
-                                <div class="form-check form-check-inline">
-                                    <input class="form-check-input" type="radio" name="desc_itens_cond" id="f_dic_sim" value="1" checked onchange="alvoModoAtualizar()">
-                                    <label class="form-check-label" for="f_dic_sim">Sim, nos itens das condições</label>
-                                </div>
-                                <div class="form-check form-check-inline">
-                                    <input class="form-check-input" type="radio" name="desc_itens_cond" id="f_dic_nao" value="0" onchange="alvoModoAtualizar()">
-                                    <label class="form-check-label" for="f_dic_nao">Não, escolher os produtos</label>
-                                </div>
+                        <div class="wz-bloco camp-step" data-step="alvo" id="campAlvoWrap">
+                            <div class="wz-q">Em quais produtos o desconto é aplicado?</div>
+                            <div class="wz-opts mt-2 mb-3">
+                                <label class="wz-opt" for="f_dic_sim">
+                                    <input class="d-none" type="radio" name="desc_itens_cond" id="f_dic_sim" value="1" checked onchange="alvoModoAtualizar()">
+                                    <i class="bi bi-arrow-repeat"></i>
+                                    <span><span class="wz-opt-tit">Nos itens das condições</span>
+                                    <span class="wz-opt-sub">Os mesmos produtos que o cliente comprou para atingir a campanha.</span></span>
+                                </label>
+                                <label class="wz-opt" for="f_dic_nao">
+                                    <input class="d-none" type="radio" name="desc_itens_cond" id="f_dic_nao" value="0" onchange="alvoModoAtualizar()">
+                                    <i class="bi bi-list-check"></i>
+                                    <span><span class="wz-opt-tit">Em outros produtos</span>
+                                    <span class="wz-opt-sub">Você escolhe quais produtos recebem o desconto.</span></span>
+                                </label>
                             </div>
                             <div id="alvoEscolha" class="d-none">
                             <label class="form-label fw-semibold">Produtos a conceder o desconto</label>
@@ -818,50 +928,41 @@ require_once LAYOUT_PATH . '/header.php';
                         </div>
 
                         <!-- BONIFICAÇÃO -->
-                        <div class="col-12 camp-step d-none" data-step="bonif" id="campBonifWrap">
-                            <hr class="my-1">
-                            <div class="row g-2 align-items-end mb-2">
-                                <div class="col-md-5">
-                                    <label class="form-label fw-semibold">Modo do bônus</label>
-                                    <select name="bonif_modo" id="f_bonif_modo" class="form-select" onchange="campSetBonifModo()">
-                                        <option value="fixo">Fixo (gera pedido com item fixo)</option>
-                                        <option value="selecionavel">Selecionável (cliente escolhe)</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-7 d-none" id="bonifSelecCfg">
-                                    <div class="row g-2 align-items-end">
-                                        <div class="col-md-5">
-                                            <label class="form-label fw-semibold">Pool</label>
-                                            <select name="bonif_selec_modo" id="f_bonif_selec_modo" class="form-select" onchange="campSetBonifModo()">
-                                                <option value="produtos">Lista de produtos</option>
-                                                <option value="categoria">Por categoria</option>
-                                            </select>
-                                        </div>
-                                        <div class="col-md-4">
-                                            <label class="form-label fw-semibold">Limite por</label>
-                                            <select name="bonif_limite_tipo" id="f_bonif_lim_tipo" class="form-select" onchange="campSetBonifModo()">
-                                                <option value="quantidade">Quantidade</option>
-                                                <option value="valor">Valor (R$)</option>
-                                            </select>
-                                        </div>
-                                        <div class="col-md-3">
-                                            <label class="form-label fw-semibold" id="bonifLimValorLabel">Máx.</label>
-                                            <input type="number" step="0.01" min="0" name="bonif_limite_valor" id="f_bonif_lim_valor" class="form-control" value="0">
-                                        </div>
+                        <div class="camp-step d-none" data-step="bonif" id="campBonifWrap">
+                            <div class="wz-bloco d-none" id="bonifSelecCfg">
+                                <div class="wz-q">Como o cliente escolhe os brindes?</div>
+                                <div class="row g-2 align-items-end mt-1" style="max-width:780px">
+                                    <div class="col-md-5">
+                                        <label class="form-label small mb-1">Escolhe entre</label>
+                                        <select name="bonif_selec_modo" id="f_bonif_selec_modo" class="form-select" onchange="campSetBonifModo()">
+                                            <option value="produtos">Uma lista de produtos</option>
+                                            <option value="categoria">Produtos de uma categoria</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small mb-1">Limite por</label>
+                                        <select name="bonif_limite_tipo" id="f_bonif_lim_tipo" class="form-select" onchange="campSetBonifModo()">
+                                            <option value="quantidade">Quantidade</option>
+                                            <option value="valor">Valor (R$)</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label small mb-1" id="bonifLimValorLabel">Máx.</label>
+                                        <input type="number" step="0.01" min="0" name="bonif_limite_valor" id="f_bonif_lim_valor" class="form-control" value="0">
                                     </div>
                                 </div>
                             </div>
 
                             <!-- Bônus: lista de produtos (fixo ou selecionável-produtos) -->
-                            <div id="bonifListaWrap">
-                                <label class="form-label fw-semibold"><i class="bi bi-gift me-1 text-warning"></i><span id="bonifTituloLista">Produtos Bonificados</span></label>
-                                <div class="text-muted small mb-2" id="bonifAjudaFixo">
-                                    A quantidade bonificada é <strong>multiplicada</strong> conforme o total comprado atinge o gatilho.
+                            <div id="bonifListaWrap" class="wz-bloco">
+                                <div class="wz-q" id="bonifTituloLista">Quais produtos vão de brinde?</div>
+                                <div class="wz-ajuda" id="bonifAjudaFixo">
+                                    A quantidade bonificada é <strong>multiplicada</strong> conforme o total comprado atinge a condição.
                                 </div>
-                                <div class="text-muted small mb-2 d-none" id="bonifAjudaSelec">
-                                    Lista de produtos que o <strong>cliente</strong> poderá escolher como bônus, até o limite acima.
+                                <div class="wz-ajuda d-none" id="bonifAjudaSelec">
+                                    Produtos que o <strong>cliente</strong> poderá escolher como brinde, até o limite acima.
                                 </div>
-                                <div class="row g-2">
+                                <div class="row g-2" style="max-width:780px">
                                     <div class="col-md-7">
                                         <div class="position-relative">
                                             <input type="text" id="bonifSearch" class="form-control" placeholder="Buscar produto por código ou nome..." autocomplete="off">
@@ -886,9 +987,9 @@ require_once LAYOUT_PATH . '/header.php';
                             </div>
 
                             <!-- Bônus: pool por categoria (selecionável-categoria) -->
-                            <div id="bonifPoolWrap" class="d-none">
-                                <label class="form-label fw-semibold"><i class="bi bi-collection me-1 text-warning"></i>Pool elegível (por categoria/produto)</label>
-                                <div class="table-responsive d-none" id="poolTableWrap">
+                            <div id="bonifPoolWrap" class="wz-bloco d-none">
+                                <div class="wz-q">De quais categorias/produtos o cliente pode escolher?</div>
+                                <div class="table-responsive d-none mt-2" id="poolTableWrap">
                                     <table class="table table-sm table-bordered align-middle mb-2">
                                         <thead class="table-light">
                                             <tr><th style="width:120px">Tipo</th><th>Categoria / Produto</th><th style="width:50px" class="text-center">—</th></tr>
@@ -896,25 +997,34 @@ require_once LAYOUT_PATH . '/header.php';
                                         <tbody id="poolBody"></tbody>
                                     </table>
                                 </div>
-                                <button type="button" class="btn btn-outline-warning btn-sm" onclick="poolAddRow()"><i class="bi bi-plus-lg me-1"></i>Adicionar ao pool</button>
+                                <button type="button" class="btn btn-outline-warning btn-sm mt-2" onclick="poolAddRow()"><i class="bi bi-plus-lg me-1"></i>Adicionar categoria/produto</button>
                             </div>
                         </div>
+                    </div>
 
-                        <!-- Observação — última seção do formulário -->
-                        <div class="col-12 camp-step d-none" data-step="obs">
-                            <hr class="my-1">
-                            <label class="form-label fw-semibold mb-1">Observação <span class="text-muted small">(opcional)</span></label>
+                    <!-- ===== Passo 6 — Revisão ===== -->
+                    <div class="wz-page d-none" data-page="6">
+                        <div class="wz-bloco">
+                            <div class="wz-q">Confira a campanha</div>
+                            <div class="wz-ajuda">Para corrigir algo, clique na etapa lá em cima.</div>
+                            <div class="table-responsive"><table class="table table-sm align-middle mb-0" id="wzResumo"></table></div>
+                        </div>
+                        <div class="wz-bloco">
+                            <label class="form-label fw-semibold mb-1" for="f_obs">Observação <span class="text-muted small">(opcional)</span></label>
                             <textarea name="observacao" id="f_obs" class="form-control form-control-sm" rows="2" maxlength="1000" placeholder="Ex.: Na compra de 504 un. de Coloração e 42 un. de Oxidação"></textarea>
                             <div class="form-text">Se preenchida, aparece no pedido (área do cliente e admin) no lugar do texto da condição.</div>
-                            <label class="form-label fw-semibold mb-1 mt-2">Observação para o A&amp;M <span class="text-muted small">(opcional)</span></label>
+                            <label class="form-label fw-semibold mb-1 mt-2" for="f_obs_am">Observação para o A&amp;M <span class="text-muted small">(opcional)</span></label>
                             <input type="text" name="obs_am" id="f_obs_am" class="form-control form-control-sm" maxlength="255" placeholder="Ex.: Desc {pct} color">
                             <div class="form-text">Levada ao campo <strong>Obs</strong> do pedido no A&amp;M pelo <strong>Importa Pedido</strong> (com "Gravar também no A&amp;M") quando a campanha é atingida. <code>{pct}</code> vira o % atingido. Várias campanhas são separadas por vírgula.</div>
                         </div>
                     </div>
                 </div>
                 <div class="modal-footer">
+                    <span class="small text-muted me-auto" id="wzPassoTxt">Passo 1 de 6</span>
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
-                    <button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i>Salvar</button>
+                    <button type="button" class="btn btn-outline-primary" id="wzVoltar" onclick="wzIr(_wzPag - 1)"><i class="bi bi-arrow-left me-1"></i>Voltar</button>
+                    <button type="button" class="btn btn-primary" id="wzProx" onclick="wzProximo()">Próximo<i class="bi bi-arrow-right ms-1"></i></button>
+                    <button type="submit" class="btn btn-success d-none" id="wzSalvar"><i class="bi bi-save me-1"></i>Salvar</button>
                 </div>
             </form>
         </div>
@@ -934,21 +1044,175 @@ function campEsc(s)     { return String(s == null ? '' : s).replace(/&/g,'&amp;'
 function campEscAttr(s) { return campEsc(s).replace(/"/g,'&quot;'); }
 function campNorm(s)    { return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
 
-// ---- Exibição progressiva ----
+// ---- Blocos condicionais (mostra só o que vale para as escolhas feitas) ----
 function campStep() {
-    var temCod = document.getElementById('f_cod').value.trim() !== '';
+    var ehDesc      = document.getElementById('f_tipo').value === 'desconto';
+    var porClientes = document.getElementById('f_aplicacao').value === 'clientes';
     document.querySelectorAll('#modal .camp-step').forEach(function(el) {
-        var step = el.dataset.step;
-        var show = temCod;
-        var ehDesc = document.getElementById('f_tipo').value === 'desconto';
-        if (step === 'desc' || step === 'alvo') show = temCod && ehDesc;
-        if (step === 'bonif')                   show = temCod && document.getElementById('f_tipo').value === 'bonificacao';
-        var porClientes = document.getElementById('f_aplicacao').value === 'clientes';
-        if (step === 'canal')    show = temCod && !porClientes;
-        if (step === 'clientes') show = temCod && porClientes;
+        var step = el.dataset.step, show = true;
+        if (step === 'desc' || step === 'alvo')  show = ehDesc;
+        if (step === 'bonif' || step === 'bmodo') show = !ehDesc;
+        if (step === 'canal')    show = !porClientes;
+        if (step === 'clientes') show = porClientes;
         el.classList.toggle('d-none', !show);
     });
+    wzOptsAtualizar();
+    wzCondVis();
     fxRender();
+}
+
+// ==== Assistente (passo a passo) ====
+var _wzPag = 1, _wzMax = 1, _wzTotal = 6;
+// Cartões de opção ligados a um campo oculto (data-for): clicar grava o valor e dispara o onchange do campo
+function wzOptsAtualizar() {
+    document.querySelectorAll('#modal .wz-opts[data-for]').forEach(function(box) {
+        var v = document.getElementById(box.dataset.for).value;
+        box.querySelectorAll('.wz-opt').forEach(function(b) { b.classList.toggle('active', b.dataset.value === v); });
+    });
+}
+document.querySelectorAll('#modal .wz-opts[data-for]').forEach(function(box) {
+    box.addEventListener('click', function(ev) {
+        var b = ev.target.closest('.wz-opt');
+        if (!b) return;
+        var inp = document.getElementById(box.dataset.for);
+        if (inp.value !== b.dataset.value) {
+            inp.value = b.dataset.value;
+            inp.dispatchEvent(new Event('change'));
+        }
+        wzOptsAtualizar();
+    });
+});
+// "Todas / qualquer uma" só com 2+ condições; "mesmas quantidades" só no desconto com 2+ condições em E
+function wzCondVis() {
+    var n = document.querySelectorAll('#condBody tr').length;
+    var ehE = document.getElementById('f_cond_op').value === 'E';
+    var mesma = document.getElementById('f_tipo').value === 'desconto' && n >= 2 && ehE;
+    document.getElementById('wzOpWrap').classList.toggle('d-none', n < 2);
+    document.getElementById('wzMesmaWrap').classList.toggle('d-none', !mesma);
+    if (!mesma) document.getElementById('f_mesma_qtd').checked = false;
+}
+function wzIr(n) {
+    n = Math.max(1, Math.min(_wzTotal, n));
+    _wzPag = n;
+    if (n > _wzMax) _wzMax = n;
+    document.querySelectorAll('#modal .wz-page').forEach(function(p) { p.classList.toggle('d-none', +p.dataset.page !== n); });
+    document.querySelectorAll('#wzSteps button').forEach(function(b) {
+        var k = +b.dataset.go, li = b.parentNode;
+        li.classList.toggle('atual', k === n);
+        li.classList.toggle('feito', k < n || (k <= _wzMax && k !== n));
+        b.disabled = k > _wzMax;
+    });
+    var editando = document.getElementById('fa').value === 'editar';
+    document.getElementById('wzVoltar').classList.toggle('d-none', n === 1);
+    document.getElementById('wzProx').classList.toggle('d-none', n === _wzTotal);
+    document.getElementById('wzSalvar').classList.toggle('d-none', n !== _wzTotal && !editando);
+    document.getElementById('wzPassoTxt').textContent = 'Passo ' + n + ' de ' + _wzTotal;
+    if (n === 4 && !document.querySelectorAll('#condBody tr').length) condAddRow();
+    if (n === _wzTotal) wzResumo();
+    document.querySelector('#modal .modal-body').scrollTop = 0;
+}
+function wzProximo() { if (wzValidar(_wzPag)) wzIr(_wzPag + 1); }
+function wzIniciar(editando) {
+    _wzMax = editando ? _wzTotal : 1;
+    wzIr(1);
+}
+document.querySelectorAll('#wzSteps button').forEach(function(b) {
+    b.addEventListener('click', function() {
+        var k = +b.dataset.go;
+        if (k <= _wzPag) { wzIr(k); return; }
+        // avançar pela barra: valida as etapas do caminho
+        for (var p = _wzPag; p < k; p++) { if (!wzValidar(p)) return; }
+        wzIr(k);
+    });
+});
+// Enter fora da última etapa avança em vez de salvar
+function campSubmit(ev) {
+    var salvar = ev.submitter && ev.submitter.id === 'wzSalvar';
+    if (!salvar && _wzPag < _wzTotal) { wzProximo(); return false; }
+    return campValidar();
+}
+
+// ---- Resumo (última etapa) ----
+function wzDataBr(d) { return d ? d.split('-').reverse().join('/') : ''; }
+function wzSelTxt(sel) { return sel && sel.value !== '' ? sel.options[sel.selectedIndex].text : ''; }
+function wzNum(v) { return (parseFloat(String(v).replace(',', '.')) || 0).toLocaleString('pt-BR'); }
+function wzFiltroTxt(tr) {
+    return ['linha', 'grupo', 'subgrupo', 'produto'].map(function(k) {
+        var t = wzSelTxt(tr.querySelector('[name$="[' + k + ']"]'));
+        return t ? (k === 'produto' ? t : k.charAt(0).toUpperCase() + k.slice(1) + ' ' + t) : '';
+    }).filter(Boolean).join(' · ');
+}
+function wzCondTxt(tr) {
+    var valor = tr.querySelector('[name$="[modo]"]').value === 'valor';
+    var fmt = function(v) { return valor ? 'R$ ' + wzNum(v) : wzNum(v) + ' un.'; };
+    var min = tr.querySelector('[name$="[min]"]').value;
+    var txt = wzFiltroTxt(tr) || '(sem filtro)';
+    if (fxAtivo()) {
+        var fx = ['F1 ≥ ' + fmt(min)];
+        tr.querySelectorAll('td.fx-col input').forEach(function(inp, i) { fx.push('F' + (i + 2) + ' ≥ ' + fmt(inp.value)); });
+        return txt + ' — ' + fx.join(', ');
+    }
+    return txt + (parseFloat(min) > 0 ? ' — mínimo ' + fmt(min) : ' — sem mínimo próprio');
+}
+function wzResumo() {
+    var g = function(id) { return document.getElementById(id); };
+    var lin = [];
+    var add = function(rot, html) { lin.push('<tr><th>' + rot + '</th><td>' + html + '</td></tr>'); };
+    add('Campanha', '<strong>' + campEsc(g('f_cod').value.trim()) + '</strong> ' +
+        (g('f_ativo').value === '1' ? '<span class="badge bg-success">Ativa</span>' : '<span class="badge bg-secondary">Inativa</span>'));
+    var ini = g('f_dt_ini').value, fim = g('f_dt_fim').value;
+    add('Período', ini && fim ? 'de ' + wzDataBr(ini) + ' a ' + wzDataBr(fim) : ini ? 'a partir de ' + wzDataBr(ini) : fim ? 'até ' + wzDataBr(fim) : 'sem data limite');
+    if (g('f_aplicacao').value === 'clientes') {
+        var nomes = Array.prototype.map.call(document.querySelectorAll('#cliBody tr'), function(tr) { return campEsc(tr.children[1].textContent); });
+        add('Para quem', nomes.length + ' cliente(s): ' + nomes.join(', '));
+    } else {
+        add('Para quem', g('f_canal').value ? 'Clientes do canal <strong>' + campEsc(wzSelTxt(g('f_canal'))) + '</strong>' : 'Clientes de todos os canais');
+    }
+    var conds = Array.prototype.map.call(document.querySelectorAll('#condBody tr'), function(tr) { return campEsc(wzCondTxt(tr)); });
+    var op = g('f_cond_op').value === 'OU' ? 'OU' : 'E';
+    var condHtml = conds.length ? conds.join('<br><strong class="text-primary">' + op + '</strong> ') : '<span class="text-danger">nenhuma</span>';
+    if (g('f_mesma_qtd').checked) condHtml += '<br><span class="badge bg-info text-dark mt-1">Quantidades iguais entre as condições</span>';
+    if (g('f_tot_modo').value) condHtml += '<br><span class="text-muted">Mínimo total: ' + (g('f_tot_modo').value === 'valor' ? 'R$ ' : '') + wzNum(g('f_tot_min').value) + (g('f_tot_modo').value === 'valor' ? '' : ' un.') + '</span>';
+    add('Precisa comprar', condHtml);
+    if (g('f_tipo').value === 'desconto') {
+        var pct;
+        if (fxAtivo()) {
+            var p = [wzNum(g('f_desc').value) + '%'];
+            document.querySelectorAll('#fxPctWrap .fx-extra input').forEach(function(inp) { p.push(wzNum(inp.value) + '%'); });
+            pct = 'Desconto por faixas: ' + p.map(function(v, i) { return 'F' + (i + 1) + ' = ' + v; }).join(', ');
+        } else {
+            pct = 'Desconto de <strong>' + wzNum(g('f_desc').value) + '%</strong>';
+        }
+        add('Ganha', pct);
+        if (g('f_dic_nao').checked) {
+            var alvos = Array.prototype.map.call(document.querySelectorAll('#alvoBody tr'), function(tr) {
+                var t = wzFiltroTxt(tr);
+                var ap = tr.querySelector('[name$="[desconto]"]');
+                return t ? campEsc(t) + (!fxAtivo() && ap && ap.value ? ' (' + wzNum(ap.value) + '%)' : '') : '';
+            }).filter(Boolean);
+            add('Desconto aplicado em', alvos.join('<br>') || '<span class="text-danger">nenhum produto</span>');
+        } else {
+            add('Desconto aplicado em', 'Nos itens das condições');
+        }
+    } else {
+        var selec = g('f_bonif_modo').value === 'selecionavel';
+        var lim = selec ? ' — limite de ' + (g('f_bonif_lim_tipo').value === 'valor' ? 'R$ ' + wzNum(g('f_bonif_lim_valor').value) : wzNum(g('f_bonif_lim_valor').value) + ' un.') : '';
+        add('Ganha', (selec ? 'Brindes à escolha do cliente' : 'Brindes definidos (multiplicam conforme a compra)') + lim);
+        var itens;
+        if (selec && g('f_bonif_selec_modo').value === 'categoria') {
+            itens = Array.prototype.map.call(document.querySelectorAll('#poolBody tr'), function(tr) {
+                var v = tr.querySelector('[data-cell="valor"] select, [data-cell="valor"] input');
+                var t = v ? (v.tagName === 'SELECT' ? wzSelTxt(v) : v.value) : '';
+                return t ? campEsc(wzSelTxt(tr.querySelector('[data-role="tipo"]')) + ': ' + t) : '';
+            }).filter(Boolean);
+        } else {
+            itens = Array.prototype.map.call(document.querySelectorAll('#bonifBody tr'), function(tr) {
+                return (selec ? '' : tr.querySelector('[name$="[qtd]"]').value + ' × ') + campEsc(tr.children[1].textContent);
+            });
+        }
+        add('Brindes', itens.join('<br>') || '<span class="text-danger">nenhum</span>');
+    }
+    g('wzResumo').innerHTML = '<tbody>' + lin.join('') + '</tbody>';
 }
 
 // ---- Opções de Tipo / Categoria / Produto ----
@@ -1014,6 +1278,7 @@ function condAddRow(linha, grupo, subgrupo, produto, modo, qtd, valorMin, fxMins
     document.getElementById('condBody').appendChild(tr);
     fxSyncRow(tr, fxMins);
     document.getElementById('condTableWrap').classList.remove('d-none');
+    wzCondVis();
 }
 function condTotalAtualizar() {
     var on = document.getElementById('f_tot_modo').value !== '';
@@ -1100,10 +1365,13 @@ function fxPreencher(faixas) {
 function condOpAtualizar() {
     var op = document.getElementById('f_cond_op').value === 'OU' ? 'OU' : 'E';
     document.querySelectorAll('.cond-op-txt').forEach(function(el) { el.textContent = op; });
+    wzOptsAtualizar();
+    wzCondVis();
 }
 function condRemove(btn) {
     btn.closest('tr').remove();
     document.getElementById('condTableWrap').classList.toggle('d-none', document.querySelectorAll('#condBody tr').length === 0);
+    wzCondVis();
 }
 
 // ---- Alvos do desconto / Pool da bonificação (Tipo + Categoria/Produto) ----
@@ -1305,66 +1573,93 @@ function cliAtualizar() {
     inp.addEventListener('blur', function() { setTimeout(function() { dd.style.display = 'none'; }, 150); });
 })();
 
-// ---- Validação do submit ----
-function campValidar() {
-    if (document.getElementById('f_aplicacao').value === 'clientes' && !cliIds().length) {
-        alert('Adicione ao menos um cliente à campanha (ou aplique no canal de venda).');
-        document.getElementById('cliSearch').focus();
-        return false;
+// ---- Validação (por etapa do assistente; as mesmas regras do servidor) ----
+// el = campo com problema (ou nº da etapa): vai até a etapa dele antes de avisar
+function wzFalha(msg, el) {
+    var pag = typeof el === 'number' ? el : (el && el.closest('.wz-page') ? +el.closest('.wz-page').dataset.page : _wzPag);
+    if (pag !== _wzPag) wzIr(pag);
+    alert(msg);
+    if (el && typeof el !== 'number') {
+        if (el.matches('input,select,textarea') && el.type !== 'hidden') el.classList.add('is-invalid');
+        el.focus();
     }
-    if (document.querySelectorAll('#condBody tr').length === 0) {
-        alert('Adicione ao menos uma condição.');
-        return false;
+    return false;
+}
+function wzValidar(p) {
+    var g = function(id) { return document.getElementById(id); };
+    var num = function(el) { return el ? parseFloat(String(el.value).replace(',', '.')) || 0 : 0; };
+    document.querySelectorAll('#modal .is-invalid').forEach(function(el) { el.classList.remove('is-invalid'); });
+    var ehDesc = g('f_tipo').value === 'desconto';
+    var condRows = document.querySelectorAll('#condBody tr');
+    if (p === 1) {
+        if (!g('f_cod').value.trim()) return wzFalha('Informe o código da campanha.', g('f_cod'));
+        var dtIni = g('f_dt_ini').value, dtFim = g('f_dt_fim').value;
+        if (dtIni && dtFim && dtFim < dtIni) return wzFalha('A data final do período deve ser igual ou posterior à data inicial.', g('f_dt_fim'));
     }
-    var dtIni = document.getElementById('f_dt_ini').value, dtFim = document.getElementById('f_dt_fim').value;
-    if (dtIni && dtFim && dtFim < dtIni) {
-        alert('A data final do período deve ser igual ou posterior à data inicial.');
-        document.getElementById('f_dt_fim').focus();
-        return false;
+    if (p === 2) {
+        if (g('f_aplicacao').value === 'clientes' && !cliIds().length) return wzFalha('Adicione ao menos um cliente à campanha (ou escolha "Clientes de um canal de venda").', g('cliSearch'));
     }
-    // Mesmas quantidades: E entre as condições, todas por quantidade (as mesmas regras do servidor)
-    if (document.getElementById('f_tipo').value === 'desconto' && document.getElementById('f_mesma_qtd').checked) {
-        var condRows = document.querySelectorAll('#condBody tr');
-        if (condRows.length < 2) { alert('"Mesmas quantidades" exige ao menos duas condições.'); return false; }
-        if (document.getElementById('f_cond_op').value !== 'E') { alert('"Mesmas quantidades" só vale com "Todas precisam ser atendidas (E)".'); return false; }
-        if (Array.prototype.some.call(condRows, function(tr) { return tr.querySelector('[name$="[modo]"]').value !== 'quantidade'; })) {
-            alert('"Mesmas quantidades" exige todas as condições com mínimo por Quantidade.'); return false;
+    if (p === 4) {
+        var temFiltro = Array.prototype.some.call(condRows, function(tr) {
+            return Array.prototype.some.call(tr.querySelectorAll('select:not([name$="[modo]"])'), function(sl) { return sl.value !== ''; });
+        });
+        if (!condRows.length || !temFiltro) return wzFalha('Adicione ao menos uma condição (escolha a Linha, o Grupo, o Subgrupo ou o Produto).', 4);
+        var totOn = g('f_tot_modo').value !== '' && num(g('f_tot_min')) > 0;
+        var semMin = Array.prototype.find.call(condRows, function(tr) {
+            var filtro = Array.prototype.some.call(tr.querySelectorAll('select:not([name$="[modo]"])'), function(sl) { return sl.value !== ''; });
+            return filtro && num(tr.querySelector('[name$="[min]"]')) <= 0;
+        });
+        if (semMin && !totOn) return wzFalha('Informe o mínimo de cada condição (ou um mínimo total em "Mais opções").', semMin.querySelector('[name$="[min]"]'));
+        if (g('f_mesma_qtd').checked && Array.prototype.some.call(condRows, function(tr) { return tr.querySelector('[name$="[modo]"]').value !== 'quantidade'; })) {
+            return wzFalha('"Mesmas quantidades" exige todas as condições com mínimo por Quantidade.', 4);
+        }
+        if (fxAtivo()) {
+            if (_fxN < 2) return wzFalha('Adicione ao menos a Faixa 2 (ou volte e escolha "Percentual fixo").', 4);
+            for (var k = 2; k <= _fxN; k++) {
+                for (var r = 0; r < condRows.length; r++) {
+                    var mEl = condRows[r].querySelector('[name$="[fx][' + k + ']"]');
+                    if (num(condRows[r].querySelector('[name$="[min]"]')) > 0 && num(mEl) <= 0) return wzFalha('Faixa ' + k + ': informe o mínimo da condição ' + (r + 1) + '.', mEl);
+                }
+                var tEl = document.querySelector('[name="fx_total[' + k + ']"]');
+                if (g('f_tot_modo').value !== '' && num(tEl) <= 0) return wzFalha('Faixa ' + k + ': informe o mínimo total das condições.', tEl);
+            }
         }
     }
-    if (fxAtivo() && _fxN < 2) {
-        alert('Adicione ao menos a Faixa 2 (ou use "Percentual fixo").');
-        return false;
-    }
-    // Desconto em outros produtos: precisa de ao menos um produto/categoria escolhido
-    if (document.getElementById('f_tipo').value === 'desconto' && document.getElementById('f_dic_nao').checked) {
-        var temAlvo = Array.prototype.some.call(document.querySelectorAll('#alvoBody tr'), function(tr) {
+    if (p === 5 && ehDesc) {
+        var escolher = g('f_dic_nao').checked;
+        var alvoRows = Array.prototype.filter.call(document.querySelectorAll('#alvoBody tr'), function(tr) {
             return Array.prototype.some.call(tr.querySelectorAll('select'), function(sl) { return sl.value !== ''; });
         });
-        if (!temAlvo) { alert('Escolha ao menos um produto a conceder o desconto (ou marque "Sim, nos itens das condições").'); return false; }
-    }
-    // Faixas: confere aqui (as mesmas regras do servidor) para não perder o que foi digitado
-    if (fxAtivo()) {
-        var num = function(el) { return el ? parseFloat(String(el.value).replace(',', '.')) || 0 : 0; };
-        var falha = function(el, msg) { alert(msg); if (el) { el.classList.add('is-invalid'); el.focus(); } return false; };
-        document.querySelectorAll('#modal .is-invalid').forEach(function(el) { el.classList.remove('is-invalid'); });
-        var pctAnt = num(document.getElementById('f_desc'));
-        if (pctAnt <= 0) return falha(document.getElementById('f_desc'), 'Faixa 1: informe o percentual de desconto.');
-        var totOn = document.getElementById('f_tot_modo').value !== '';
-        for (var k = 2; k <= _fxN; k++) {
-            var pEl = document.querySelector('[name="fx_pct[' + k + ']"]'), pct = num(pEl);
-            if (pct <= 0) return falha(pEl, 'Faixa ' + k + ': informe o percentual de desconto.');
-            if (pct <= pctAnt) return falha(pEl, 'Faixa ' + k + ': o percentual deve ser maior que o da faixa anterior (' + pctAnt + '%).');
-            pctAnt = pct;
-            var rows = document.querySelectorAll('#condBody tr');
-            for (var r = 0; r < rows.length; r++) {
-                var min1 = num(rows[r].querySelector('[name$="[min]"]'));
-                var mEl = rows[r].querySelector('[name$="[fx][' + k + ']"]');
-                if (min1 > 0 && num(mEl) <= 0) return falha(mEl, 'Faixa ' + k + ': informe o mínimo da condição ' + (r + 1) + '.');
+        if (fxAtivo()) {
+            var pctAnt = num(g('f_desc'));
+            if (pctAnt <= 0) return wzFalha('Faixa 1: informe o percentual de desconto.', g('f_desc'));
+            for (var k2 = 2; k2 <= _fxN; k2++) {
+                var pEl = document.querySelector('[name="fx_pct[' + k2 + ']"]'), pct = num(pEl);
+                if (pct <= 0) return wzFalha('Faixa ' + k2 + ': informe o percentual de desconto.', pEl);
+                if (pct <= pctAnt) return wzFalha('Faixa ' + k2 + ': o percentual deve ser maior que o da faixa anterior (' + pctAnt + '%).', pEl);
+                pctAnt = pct;
             }
-            var tEl = document.querySelector('[name="fx_total[' + k + ']"]');
-            if (totOn && num(tEl) <= 0) return falha(tEl, 'Faixa ' + k + ': informe o mínimo total das condições.');
+        } else if (num(g('f_desc')) <= 0) {
+            var semPct = !escolher || !alvoRows.length || alvoRows.some(function(tr) { return num(tr.querySelector('[name$="[desconto]"]')) <= 0; });
+            if (semPct) return wzFalha('Informe o percentual de desconto' + (escolher ? ' (ou um % em cada produto escolhido).' : '.'), g('f_desc'));
+        }
+        if (escolher && !alvoRows.length) return wzFalha('Escolha ao menos um produto para receber o desconto (ou marque "Nos itens das condições").', 5);
+    }
+    if (p === 5 && !ehDesc) {
+        var selec = g('f_bonif_modo').value === 'selecionavel';
+        if (selec && num(g('f_bonif_lim_valor')) <= 0) return wzFalha('Informe o limite (quantidade ou valor) que o cliente pode escolher.', g('f_bonif_lim_valor'));
+        if (selec && g('f_bonif_selec_modo').value === 'categoria') {
+            var temPool = Array.prototype.some.call(document.querySelectorAll('#poolBody [data-cell="valor"] select'), function(sl) { return sl.value !== ''; });
+            if (!temPool) return wzFalha('Adicione ao menos uma categoria/produto que o cliente pode escolher.', 5);
+        } else if (!bonifIds().length) {
+            return wzFalha(selec ? 'Adicione ao menos um produto que o cliente pode escolher.' : 'Adicione ao menos um produto de brinde.', g('bonifSearch'));
         }
     }
+    return true;
+}
+// Salvar: confere todas as etapas (para no primeiro problema, já na etapa dele)
+function campValidar() {
+    for (var p = 1; p < _wzTotal; p++) { if (!wzValidar(p)) return false; }
     return true;
 }
 
@@ -1377,6 +1672,7 @@ function campLimpar() {
     cliAtualizar();
     document.getElementById('f_tot_modo').value = '';
     condTotalAtualizar();
+    document.getElementById('wzTotDet').open = false;
     document.getElementById('f_dm_fixo').checked = true;
     document.getElementById('f_mesma_qtd').checked = false;
     _fxN = 1;
@@ -1418,6 +1714,7 @@ function novoReg() {
     campLimpar();
     campSetTipo('desconto');
     campStep();
+    wzIniciar(false);
 }
 
 function editarReg(d) {
@@ -1463,6 +1760,8 @@ function editarReg(d) {
     campSetBonifModo();
     campSetTipo(d.tipo || 'desconto');
     campStep();
+    document.getElementById('wzTotDet').open = !!d.cond_total_modo;
+    wzIniciar(true);
     new bootstrap.Modal(document.getElementById('modal')).show();
 }
 </script>

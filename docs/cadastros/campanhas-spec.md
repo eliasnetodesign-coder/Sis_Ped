@@ -105,15 +105,23 @@
 ## Formulário e gravação <a name="formulario"></a>
 
 ### Regra definida
-> Modal com exibição progressiva; **salvar substitui** todas as linhas do código; **excluir** passa a ser **inativar**.
+> Modal em **assistente passo a passo** (perguntas simples); **salvar substitui** todas as linhas do código; **excluir** passa a ser **inativar**.
 
-- **Exibição progressiva** (`campStep()`): só o Código aparece de início; preenchido, abrem **Aplicar a campanha**, Canal (ou, em "Para clientes específicos", o bloco **Clientes da campanha** com busca e lista), Ativa/Inativa, Tipo, **Início / Fim** (na mesma linha do Tipo), Condições e Observações. Desconto e "onde incide" só para tipo **Desconto**; Bonificação só para tipo **Bonificação**.
+- **Assistente em 6 etapas** *(decidido em 2026-10-27)*: cada etapa é uma pergunta curta, e as opções aparecem conforme o que foi escolhido. Escolhas com poucas opções são **cartões clicáveis** com título e exemplo, em vez de selects.
+  1. **Identificação:** "Qual o código da campanha?", "Em qual período ela vale?" (Início/Fim, em branco = sem limite) e "A campanha já fica ativa?".
+  2. **Para quem:** "Clientes de um canal de venda" (abre "Qual canal de venda?", com "Todos os canais") ou "Clientes específicos" (abre a busca e a lista de clientes).
+  3. **Benefício:** "O que o cliente ganha?": Desconto ou Produtos bonificados. No Desconto, "Como é o desconto?": Percentual fixo ou Por faixas. Na Bonificação, "Como é o brinde?": Produtos definidos (fixo) ou O cliente escolhe (selecionável).
+  4. **O que comprar:** a tabela de condições (já abre com uma linha; com faixas, mostra as colunas das faixas). Com 2+ condições aparece "O cliente precisa cumprir: Todas as condições / Qualquer uma delas". Com Desconto, 2+ condições e "Todas", aparece "As quantidades precisam ser iguais?" (Mesmas quantidades). O mínimo total fica recolhido em "Mais opções".
+  5. **Detalhes:** no Desconto, o percentual (um por faixa) e "Em quais produtos o desconto é aplicado?" (Nos itens das condições / Em outros produtos). Na Bonificação, o limite e o tipo de escolha (no selecionável) e a lista de brindes ou o pool por categoria.
+  6. **Revisão:** resumo legível da campanha (período, para quem, o que precisa comprar, o que ganha, onde aplica) e as duas observações opcionais.
+- **Navegação:** Voltar/Próximo no rodapé e a barra de etapas no topo. "Próximo" só avança se a etapa estiver válida, com as mesmas regras do servidor (`wzValidar()`). Ao salvar, todas as etapas são conferidas e, se houver problema, o assistente vai até a etapa com erro. Na **criação**, só dá para pular para etapas já visitadas e "Salvar" aparece só na Revisão. Na **edição**, todas as etapas ficam liberadas e "Salvar" aparece em qualquer etapa. Enter em um campo avança a etapa em vez de salvar.
+- **Volta ao formulário anterior:** o formulário de tela única (exibição progressiva) está no commit `f75f767`. Os nomes dos campos e o salvamento são os mesmos, então restaurar `admin/cadastros/campanhas.php` desse commit volta o layout antigo sem mudar dados.
 - **Busca de clientes:** AJAX no próprio cadastro (`?buscar_cliente=`, mínimo 2 caracteres, até 20 resultados, ativos primeiro); cliente já adicionado aparece como "adicionado" e não se repete — a base tem milhares de clientes, por isso não é carregada inteira na página.
 - **Salvar:** em transação, apaga e regrava cabeçalho, condições, alvos, pool, bonificação, faixas e clientes do código original e do novo (renomear o código não deixa sobra) — evita linhas órfãs de versões anteriores.
 - **Excluir = Inativar** *(decidido em 2026-10-20)*: a ação marca `ativo = 0` em vez de apagar — a campanha some de toda avaliação, mas o histórico (condições, faixas, brindes) é preservado e ela pode ser reativada pelo campo Ativa/Inativa. Evita perder a regra que explicou descontos de pedidos já feitos.
 - **Estado atual (a mudar):** hoje o botão apaga só as linhas de `campanhas` (hard delete); condições, alvos, faixas e bonificação ficam órfãs no banco.
 - **Listagem:** agrupada por código (condições com o operador, canal — ou, em clientes específicos, "N cliente(s)" com os nomes —, tipo, desconto/bonificação, onde incide, status, observação). Status: **Ativa**, **Inativa**, **Agendada** (antes do início) ou **Encerrada** (após o fim), com o período abaixo (`dd/mm/aaaa a dd/mm/aaaa`, `…` no lado vazio); inativas e fora do período ficam esmaecidas. Campanhas com "Mesmas quantidades" mostram "Quantidades iguais entre as condições". Listas longas mostram 3 itens e "+N mais"; quando os alvos são iguais às condições, mostra "Aplica nos mesmos produtos das condições".
-- **Erros de validação:** exibidos como mensagem (flash) no topo da tela; nada é gravado parcialmente (rollback). Período e "Mesmas quantidades" são conferidos também no navegador (`campValidar()`), sem perder o que foi digitado.
+- **Erros de validação:** exibidos como mensagem (flash) no topo da tela; nada é gravado parcialmente (rollback). As regras do servidor também são conferidas no navegador, etapa por etapa (`wzValidar()`), sem perder o que foi digitado.
 - **Impacto em Legados:** ao **editar** uma campanha legada, o formulário monta as condições a partir de produtos/categoria + quantidade antigos; ao salvar, ela passa a ser do modelo novo. Campanhas já apagadas antes da mudança não são recuperadas; as linhas órfãs delas podem ser removidas numa limpeza única.
 
 ---
@@ -303,6 +311,9 @@
 - [ ] Dado uma campanha "Para clientes específicos" com o cliente A na lista, quando o cliente A faz um pedido que atinge as condições, então recebe a campanha; quando o cliente B (mesmo canal) faz o mesmo pedido, então não recebe e não vê a campanha no portal.
 - [ ] Dado "Para clientes específicos" sem nenhum cliente adicionado, quando o usuário salva, então o sistema recusa com "Adicione ao menos um cliente à campanha (ou aplique no canal de venda)."
 - [ ] Dado um pedido do A&M de um cliente da lista (pelo código do cliente), quando a Análise Financeira roda, então a campanha de clientes específicos é avaliada para ele; para outros clientes, não.
+- [ ] Dado uma nova campanha, quando o usuário clica em "Próximo" sem preencher o obrigatório da etapa (código, clientes, condição, percentual, brindes), então o assistente não avança e explica o que falta.
+- [ ] Dado uma campanha de Desconto com 2 condições em "Todas as condições", quando o usuário está na etapa "O que comprar", então vê a pergunta "As quantidades precisam ser iguais?"; com "Qualquer uma delas" ou só 1 condição, a pergunta some e a opção fica desligada.
+- [ ] Dado uma campanha existente, quando o usuário clica em editar, então o assistente abre na etapa 1 com tudo preenchido, todas as etapas clicáveis e "Salvar" disponível.
 - [ ] Dado campanhas atingidas cujo Obs montado tem 62 caracteres, quando o usuário vai gravar no A&M, então a tela avisa e mostra o texto cortado em 50, e é esse texto que é gravado.
 
 ---
@@ -345,6 +356,7 @@
 - **Período de vigência:** Início/Fim opcionais ao lado do Tipo; fora do período = ignorada (data de hoje); listagem Agendada/Encerrada — *Usuário, 2026-10-27* → [Ir para Regra](#cabecalho)
 - **Mesmas quantidades:** opção na Forma do desconto; o pedido final precisa ter a mesma quantidade em todas as condições, além dos mínimos; só com E e condições por quantidade — *Usuário, 2026-10-27* → [Ir para Regra](#desconto)
 - **Aplicação por clientes específicos:** ao criar, escolher "No canal de venda" ou "Para clientes específicos" (adicionados um a um); na segunda, só os clientes listados recebem a campanha e o canal é ignorado — *Usuário, 2026-10-27* → [Ir para Regra](#cabecalho)
+- **Cadastro em assistente:** 6 etapas com perguntas simples e cartões de opção; o formulário anterior fica no commit `f75f767` para voltar, se preferirem — *Usuário, 2026-10-27* → [Ir para Regra](#formulario)
 - **Obs no A&M — limite:** 50 caracteres; texto maior é cortado em 50 com aviso antes de gravar — *Usuário, 2026-10-20* → [Ir para Regra](#obs-am)
 
 ---
@@ -365,3 +377,4 @@
 | 3 | 2026-10-20 | Pendências resolvidas com o usuário (Modo Interativo): edição de pedido importado do A&M sem campanha; edição preserva o % dos itens sem mudança de qtd (portal e admin); % do navegador ignorado; excluir vira inativar; quadro de progresso no admin; bonificação selecionável conferida pelo limite; brinde procurado também em pedidos Tipo B; Obs do A&M limitado a 50 caracteres (descoberto nos dados do A&M) com corte e aviso. Ficam pendentes: destino do cadastro antigo/BF e o preço do limite por valor da bonificação selecionável. As decisões novas ainda **não estão implementadas** (marcadas como "Estado atual (a mudar)"). |
 | 4 | 2026-10-27 | **Período de vigência** (`data_inicio`/`data_fim`, ao lado do Tipo; `campanhaVigenteSql()` em toda avaliação; status Agendada/Encerrada na listagem) e **Mesmas quantidades em todas as condições** (`cond_mesma_qtd`, na Forma do desconto: o pedido final precisa ter a mesma quantidade em cada condição, além dos mínimos; servidor, JS dos novos pedidos, aviso no portal e linha extra na Análise Financeira). Implementados. |
 | 5 | 2026-10-27 | **Aplicar a campanha:** "No canal de venda" ou "Para clientes específicos" (`campanhas.aplicacao` + tabela `campanha_clientes`, clientes adicionados um a um por busca AJAX). Avaliação via `campanhaValeParaCliente()`; `ctxCampanha()`, `detectarBonificacaoSelecionavel()` e `campanhasComercialAvaliarPedido()` passam a receber o cliente; A&M localiza o cliente pelo código. Implementado. |
+| 6 | 2026-10-27 | **Cadastro em assistente passo a passo:** 6 etapas (Identificação, Para quem, Benefício, O que comprar, Detalhes, Revisão), com perguntas simples, cartões de opção, validação por etapa e resumo final. Campos e gravação não mudaram. O formulário anterior fica no commit `f75f767`. Implementado. |
