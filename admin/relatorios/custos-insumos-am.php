@@ -44,6 +44,9 @@ $iniA = $dataOk($_GET['ini_a'] ?? null) ?: date('Y-m-d', strtotime($iniB . ' -3 
 $fimA = $dataOk($_GET['fim_a'] ?? null) ?: date('Y-m-d', strtotime($iniB . ' -1 day'));
 $soAmbos = ($_GET['ambos'] ?? '1') === '1';
 $modoPreco = ($_GET['preco'] ?? 'fixo') === 'medio' ? 'medio' : 'fixo';   // padrão = Fixo (pedido do usuário)
+// Filtro da "Var. %" do Resumo: nenhum marcado = todos; marcado = só os insumos que subiram (Positivos) e/ou caíram (Negativos).
+$varPos = ($_GET['vpos'] ?? '') === '1';
+$varNeg = ($_GET['vneg'] ?? '') === '1';
 
 // Opções dos filtros (do tipo escolhido, todas as datas)
 $st = db()->prepare('SELECT fornecedor_codigo, MAX(fornecedor_nome) AS nome FROM custos_insumos_compras WHERE tipo = ?
@@ -91,7 +94,7 @@ foreach ($compras as $c) {
     $k = $chave($c);
     if (!isset($insumos[$k])) {
         $insumos[$k] = ['codigo' => $c['insumo_codigo'], 'nome' => $c['insumo_nome'], 'un' => $c['unidade'], 'acc' => $novoAcc(),
-                        'penultimo' => null, 'ultimo' => null, 'forn' => [], 'mes' => []];
+                        'primeiro' => $c, 'penultimo' => null, 'ultimo' => null, 'forn' => [], 'mes' => []];
     }
     $I = &$insumos[$k];
     $acumula($I['acc'], $c);
@@ -243,6 +246,7 @@ require_once LAYOUT_PATH . '/header.php';
         · <b>Período:</b> <?= dataBR($ini) ?> a <?= dataBR($fim) ?>
         <?php if ($forn !== ''): ?>· <b>Fornecedor:</b> <?= e($forn . ' - ' . ($totForn[$forn]['nome'] ?? array_column($fornecedores, 'nome', 'fornecedor_codigo')[$forn] ?? '')) ?><?php endif; ?>
         <?php if ($q !== ''): ?>· <b>Insumo:</b> <?= e($q) ?><?php endif; ?>
+        <?php if ($varPos || $varNeg): ?>· <b>Var. %:</b> <?= implode(' e ', array_filter([$varPos ? 'Positivos' : '', $varNeg ? 'Negativos' : ''])) ?><?php endif; ?>
     </div>
     <div class="small text-muted">Gerado em <?= date('d/m/Y H:i') ?><?= !empty(usuario()['nome']) ? ' por ' . e(usuario()['nome']) : '' ?></div>
 </div>
@@ -268,6 +272,15 @@ require_once LAYOUT_PATH . '/header.php';
                     <input type="radio" class="btn-check" name="preco" id="preco-<?= $pk ?>" value="<?= $pk ?>" <?= $modoPreco === $pk ? 'checked' : '' ?> onchange="this.form.submit()">
                     <label class="btn btn-outline-primary" for="preco-<?= $pk ?>"><?= $pn ?></label>
                     <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="col-12 col-md-auto">
+                <label class="form-label small fw-semibold mb-1">Var. %</label>
+                <div class="btn-group w-100" role="group" title="Resumo por insumo: mostra só os insumos com a Var. % positiva (subiu) e/ou negativa (caiu). Nenhum marcado = todos.">
+                    <input type="checkbox" class="btn-check" name="vpos" id="vpos" value="1" <?= $varPos ? 'checked' : '' ?> onchange="this.form.submit()">
+                    <label class="btn btn-outline-danger" for="vpos"><i class="bi bi-arrow-up-short"></i>Positivos</label>
+                    <input type="checkbox" class="btn-check" name="vneg" id="vneg" value="1" <?= $varNeg ? 'checked' : '' ?> onchange="this.form.submit()">
+                    <label class="btn btn-outline-success" for="vneg"><i class="bi bi-arrow-down-short"></i>Negativos</label>
                 </div>
             </div>
             <div class="col-6 col-md col-xxl-2">
@@ -411,8 +424,21 @@ $rodapeMeses = function () use ($meses, $totMes): string {
 $linhasForn = [];
 foreach ($insumos as $I) foreach ($I['forn'] as $fk => $F) $linhasForn[] = ['fk' => $fk, 'forn' => $F['nome'], 'I' => $I, 'mes' => $F['mes']];
 usort($linhasForn, fn($a, $b) => strcmp($a['forn'], $b['forn']) ?: strcmp($a['I']['nome'], $b['I']['nome']));
+// Linhas do Resumo: Var. % do período inteiro (1ª → última compra; só com 2+ compras), filtro Positivos/Negativos e ordem por valor (curva ABC).
+// Os % de representatividade e o acumulado são sempre sobre o total do período (com ou sem o filtro da Var. %).
+$linhasRes = [];
+foreach ($insumos as $I) {
+    $pu = (float)$I['ultimo']['valor_unitario'];
+    $pp = $I['penultimo'] ? (float)$I['primeiro']['valor_unitario'] : null;   // 1ª compra do período
+    $var = $pp > 0 ? ($pu / $pp - 1) * 100 : null;
+    if (($varPos || $varNeg) && !($varPos && $var !== null && $var >= 0.005) && !($varNeg && $var !== null && $var <= -0.005)) continue;
+    $linhasRes[] = ['I' => $I, 'pu' => $pu, 'pp' => $pp, 'var' => $var];
+}
+usort($linhasRes, fn($a, $b) => $b['I']['acc']['valor'] <=> $a['I']['acc']['valor'] ?: strcmp($a['I']['nome'], $b['I']['nome']));
+$colPm = $modoPreco !== 'fixo';   // no preço fixo a coluna repetiria o "Atual" (última compra)
+$nColRes = $colPm ? 13 : 12;
 $abas = [
-    'resumo'     => ['bi-list-ul', 'Resumo por insumo', count($insumos)],
+    'resumo'     => ['bi-list-ul', 'Resumo por insumo', count($linhasRes)],
     'periodo'    => ['bi-arrow-left-right', 'Período A × B', count($ab)],
     'mensal'     => ['bi-calendar3', 'Evolução mensal', count($insumos)],
     'fornecedor' => ['bi-truck', 'Por fornecedor', count($totForn)],
@@ -434,27 +460,30 @@ $abas = [
 <div class="tab-pane fade <?= $visao === 'resumo' ? 'show active' : '' ?>" id="vis-resumo" role="tabpanel">
 <h5 class="print-titulo"><?= e($abas['resumo'][1]) ?></h5>
 <div class="card shadow-sm border-0"><div class="card-body p-0"><div class="table-responsive tbl-fixa-wrap">
-<table class="table table-hover table-sm align-middle mb-0 tbl-fixa">
+<table class="table table-hover table-sm align-middle mb-0 tbl-fixa" data-acum-total="<?= round($total['valor'], 2) ?>">
     <thead class="table-light"><tr><?= $thOrd([
-        'codigo' => ['Código', '', 'num'], 'nome' => ['Insumo', '', 'txt'], 'n' => ['CP', 'text-end', 'num'],
-        'qtd' => ['Qtd. total', 'text-end', 'num'], 'valor' => ['Valor total', 'text-end', 'num'], 'pm' => [$rotPreco, 'text-end', 'num'],
-        'min' => ['Menor', 'text-end', 'num'], 'max' => ['Maior', 'text-end', 'num'], 'pen' => ['Último', 'text-end', 'num'],
-        'ult' => ['Atual', 'text-end', 'num'], 'var' => ['Var. %', 'text-end', 'num'], 'nforn' => ['Forn.', 'text-end', 'num'],
+        'codigo' => ['Código', '', 'num'], 'nome' => ['Insumo', '', 'txt'], 'n' => ['CP', 'text-end', 'num'], 'nforn' => ['Forn.', 'text-end', 'num'],
+        'qtd' => ['Qtd. total', 'text-end', 'num'], 'valor' => ['Valor total', 'text-end', 'num'],
+    ]) ?><th class="text-end" title="Soma da representatividade no total do período, na ordem em que as linhas estão">% acum.</th><?= $thOrd(($colPm ? ['pm' => [$rotPreco, 'text-end', 'num']] : []) + [
+        'min' => ['Menor', 'text-end', 'num'], 'max' => ['Maior', 'text-end', 'num'], 'pen' => ['1ª compra', 'text-end', 'num'],
+        'ult' => ['Atual', 'text-end', 'num'], 'var' => ['Var. %', 'text-end', 'num'],
     ]) ?></tr></thead>
     <tbody>
-    <?php $histJs = [];
+    <?php $histJs = []; $resN = 0; $resValor = 0.0; $acum = 0.0;
     // Total da "Var. %" (último → atual): ponderada pela quantidade da última compra de cada insumo
-    // (Σ qtd × preço última ÷ Σ qtd × preço penúltima − 1), só insumos com as duas compras.
+    // (Σ qtd × preço última ÷ Σ qtd × preço da 1ª − 1), só insumos com 2+ compras no período.
     $vtPen = 0.0; $vtUlt = 0.0; $vtN = 0; $vtSobe = 0; $vtDesce = 0;
-    foreach ($insumos as $I):
+    // Representatividade da quantidade: só faz sentido entre insumos da mesma unidade (KG com KG, PC com PC...).
+    $qtdUn = [];
+    foreach ($insumos as $I) $qtdUn[$I['un']] = ($qtdUn[$I['un']] ?? 0) + $I['acc']['qtd'];
+    foreach ($linhasRes as ['I' => $I, 'pu' => $pu, 'pp' => $pp, 'var' => $var]):
         // Histórico de compras do insumo para o modal (abre ao clicar na linha).
         $hIdx = count($histJs);
         $histJs[] = ['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
                      'url' => $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim,
                                                               'fornecedor' => $forn, 'q' => $I['codigo'], 'visao' => 'compras'])];
-        $a = $I['acc']; $pu = (float)$I['ultimo']['valor_unitario'];
-        $pp = $I['penultimo'] ? (float)$I['penultimo']['valor_unitario'] : null;
-        $var = $pp > 0 ? ($pu / $pp - 1) * 100 : null;
+        $a = $I['acc'];
+        $resN += $a['n']; $resValor += $a['valor']; $acum += $a['valor'];
         if ($var !== null) {
             $vtPen += $I['ult_qtd'] * $pp; $vtUlt += $I['ult_qtd'] * $pu; $vtN++;
             if ($var >= 0.005) $vtSobe++; elseif ($var <= -0.005) $vtDesce++;
@@ -465,33 +494,35 @@ $abas = [
             <td class="text-muted"><?= e($I['codigo']) ?></td>
             <td class="fw-semibold"><i class="bi bi-clock-history text-primary me-1 small"></i><?= e($I['nome']) ?><?= $tagUn($I['codigo'], $I['un']) ?></td>
             <td class="text-end"><?= $a['n'] ?></td>
-            <td class="text-end"><?= qtdFmt($a['qtd']) ?></td>
-            <td class="text-end"><?= moedaBR($a['valor']) ?></td>
-            <td class="text-end fw-semibold"><?= precoUn($pm($a)) ?></td>
+            <td class="text-end"><?= count($I['forn']) ?></td>
+            <td class="text-end"><?= qtdFmt($a['qtd']) ?><div class="small text-muted" data-xls="(% do período)" title="<?= e('Representatividade na quantidade total comprada em ' . $I['un'] . ' no período') ?>"><?= $qtdUn[$I['un']] > 0 ? number_format($a['qtd'] / $qtdUn[$I['un']] * 100, 2, ',', '.') . '%' : '—' ?></div></td>
+            <td class="text-end"><?= moedaBR($a['valor']) ?><div class="small text-muted" data-xls="(% do período)" title="Representatividade no total comprado do período"><?= $total['valor'] > 0 ? number_format($a['valor'] / $total['valor'] * 100, 2, ',', '.') . '%' : '—' ?></div></td>
+            <td class="text-end text-muted col-acum"><?= $total['valor'] > 0 ? number_format($acum / $total['valor'] * 100, 2, ',', '.') . '%' : '—' ?></td>
+            <?php if ($colPm): ?><td class="text-end fw-semibold"><?= precoUn($pm($a)) ?></td><?php endif; ?>
             <td class="text-end"><?= precoUn($a['min']) ?><div class="small text-muted"><?= dataBR($a['min_data']) ?></div></td>
             <td class="text-end"><?= precoUn($a['max']) ?><div class="small text-muted"><?= dataBR($a['max_data']) ?></div></td>
-            <td class="text-end"<?= $I['penultimo'] ? ' title="' . e($I['penultimo']['fornecedor_nome']) . '"' : '' ?>><?= precoUn($pp) ?><?php if ($I['penultimo']): ?><div class="small text-muted"><?= dataBR($I['penultimo']['data']) ?></div><?php endif; ?></td>
+            <td class="text-end"<?= $I['penultimo'] ? ' title="' . e($I['primeiro']['fornecedor_nome']) . '"' : '' ?>><?= precoUn($pp) ?><?php if ($I['penultimo']): ?><div class="small text-muted"><?= dataBR($I['primeiro']['data']) ?></div><?php endif; ?></td>
             <td class="text-end" title="<?= e($I['ultimo']['fornecedor_nome']) ?>"><?= precoUn($pu) ?><div class="small text-muted"><?= dataBR($I['ultimo']['data']) ?></div></td>
             <td class="text-end"><?= varPct($var) ?></td>
-            <td class="text-end"><?= count($I['forn']) ?></td>
         </tr>
-    <?php endforeach; if (!$insumos): ?>
-        <tr><td colspan="12" class="text-center text-muted py-4">Nenhuma compra com estes filtros.</td></tr>
+    <?php endforeach; if (!$linhasRes): ?>
+        <tr><td colspan="<?= $nColRes ?>" class="text-center text-muted py-4">Nenhuma compra com estes filtros.</td></tr>
     <?php endif; ?>
     </tbody>
-    <?php if ($insumos): ?>
-    <tfoot><tr class="fw-bold"><td colspan="2">Total</td><td class="text-end"><?= $total['n'] ?></td><td></td>
-        <td class="text-end"><?= moedaBR($total['valor']) ?></td><td colspan="5"></td>
-        <td class="text-end" title="<?= e("Ponderada pela quantidade da última compra; $vtN insumos com penúltima e última compra — $vtSobe subiram, $vtDesce caíram. "
-            . 'Última compra: ' . moedaBR($vtUlt) . ' | mesma quantidade ao preço da penúltima: ' . moedaBR($vtPen)) ?>">
-            <?= varPct($vtPen > 0 ? ($vtUlt / $vtPen - 1) * 100 : null) ?></td><td></td></tr></tfoot>
+    <?php if ($linhasRes): ?>
+    <tfoot><tr class="fw-bold"><td colspan="2">Total<?= count($linhasRes) < count($insumos) ? ' (' . count($linhasRes) . ' de ' . count($insumos) . ' insumos)' : '' ?></td><td class="text-end"><?= $resN ?></td><td></td><td></td>
+        <td class="text-end"><?= moedaBR($resValor) ?><div class="small text-muted" data-xls="(% do período)"><?= $total['valor'] > 0 ? number_format($resValor / $total['valor'] * 100, 2, ',', '.') . '%' : '—' ?></div></td><td colspan="<?= $colPm ? 6 : 5 ?>"></td>
+        <td class="text-end" title="<?= e("Ponderada pela quantidade da última compra; $vtN insumos com 2+ compras no período — $vtSobe subiram, $vtDesce caíram. "
+            . 'Última compra: ' . moedaBR($vtUlt) . ' | mesma quantidade ao preço da 1ª compra: ' . moedaBR($vtPen)) ?>">
+            <?= varPct($vtPen > 0 ? ($vtUlt / $vtPen - 1) * 100 : null) ?></td></tr></tfoot>
     <?php endif; ?>
 </table>
 </div></div></div>
 <p class="small text-muted mt-2 mb-0"><?= $modoPreco === 'fixo'
         ? 'Preço fixo = valor unitário da última compra do período.'
         : 'Preço médio = ponderado pela quantidade (Σ qtd × valor unitário ÷ Σ qtd).' ?>
-    CP = número de compras. “Último” = preço da penúltima compra e “Atual” = preço da última compra do período; “Var. %” compara os dois (linhas da mesma NF contam como uma compra); no Total, a variação é ponderada pela quantidade da última compra de cada insumo
+    CP = número de compras. Abaixo da quantidade e do valor total, a representatividade do insumo no período (a da quantidade é calculada entre os insumos da mesma unidade);
+    “% acum.” soma essa representatividade na ordem das linhas (abre do maior para o menor valor — curva ABC — e recalcula ao reordenar). “1ª compra” e “Atual” = preços da primeira e da última compra do período; “Var. %” compara os dois, ou seja, a variação no período inteiro (só insumos com mais de uma compra; linhas da mesma NF contam como uma compra); no Total, a variação é ponderada pela quantidade da última compra de cada insumo
     (passe o mouse para ver os valores). O mesmo insumo em unidades diferentes (ex.: M e PC) aparece em linhas separadas, com a unidade ao lado do nome. Clique na linha para ver o histórico de compras do insumo.</p>
 </div>
 
@@ -769,9 +800,19 @@ Array.prototype.forEach.call(document.querySelectorAll('.tbl-fixa'), function (t
     linhas.forEach(function (tr, i) { tr.dataset.pos = i; });
     var ths = tbl.tHead.querySelectorAll('th.col-ord');
     var colAtual = null, asc = true;
-    function ordena(th) {
+    var acumTotal = parseFloat(tbl.dataset.acumTotal) || 0;
+    // "% acum." (Resumo): soma o valor na ordem atual das linhas sobre o total do período.
+    function recalcAcum() {
+        var s = 0;
+        linhas.forEach(function (tr) {
+            var td = tr.querySelector('.col-acum');
+            s += parseFloat(tr.getAttribute('data-o-valor')) || 0;
+            if (td) td.textContent = (s / acumTotal * 100).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '%';
+        });
+    }
+    function ordena(th, dir) {
         var col = th.dataset.col, num = th.dataset.tipo === 'num';
-        asc = (col === colAtual) ? !asc : true;
+        asc = dir ? dir === 'asc' : (col === colAtual) ? !asc : true;
         colAtual = col;
         linhas.sort(function (a, b) {
             var va = a.getAttribute('data-o-' + col), vb = b.getAttribute('data-o-' + col), r;
@@ -781,6 +822,7 @@ Array.prototype.forEach.call(document.querySelectorAll('.tbl-fixa'), function (t
             return r || (a.dataset.pos - b.dataset.pos);
         });
         linhas.forEach(function (tr) { corpo.appendChild(tr); });
+        if (acumTotal > 0) recalcAcum();
         Array.prototype.forEach.call(ths, function (t) {
             var ico = t.querySelector('.ord-ico'), ativa = t === th;
             t.classList.toggle('ord-ativa', ativa);
@@ -792,6 +834,9 @@ Array.prototype.forEach.call(document.querySelectorAll('.tbl-fixa'), function (t
         th.addEventListener('click', function () { ordena(th); });
         th.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ordena(th); } });
     });
+    // O Resumo já vem do servidor por valor decrescente: marca o título para o próximo clique inverter.
+    var thValor = acumTotal > 0 && tbl.tHead.querySelector('th.col-ord[data-col="valor"]');
+    if (thValor) ordena(thValor, 'desc');
 });
 // Aba escolhida vai junto na próxima busca e fica na URL.
 Array.prototype.forEach.call(document.querySelectorAll('[data-visao]'), function (bt) {
@@ -879,6 +924,7 @@ var XLS_FILTROS = <?= json_encode([
     ['Período A × B', 'A: ' . dataBR($iniA) . ' a ' . dataBR($fimA) . ' | B: ' . dataBR($iniB) . ' a ' . dataBR($fimB) . ($soAmbos ? ' (só insumos dos dois períodos)' : '')],
     ['Fornecedor', $forn !== '' ? $forn . ' - ' . (array_column($fornecedores, 'nome', 'fornecedor_codigo')[$forn] ?? '') : 'Todos'],
     ['Insumo', $q !== '' ? $q : 'Todos'],
+    ['Var. % (Resumo)', $varPos || $varNeg ? implode(' e ', array_filter([$varPos ? 'Positivos' : '', $varNeg ? 'Negativos' : ''])) : 'Todos'],
     ['Gerado em', date('d/m/Y H:i') . (!empty(usuario()['nome']) ? ' por ' . usuario()['nome'] : '')],
 ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 var XLS_NOME = <?= json_encode('Custos ' . $tiposNome[$tipo] . ' ' . str_replace('/', '-', dataBR($ini) . ' a ' . dataBR($fim))) ?>;
@@ -912,7 +958,8 @@ function xlsTabela(tbl) {
             });
             var h = heads[ci] || '', cel = {v: xlsValor(cl.textContent, /^(Código|NF)$/.test(h)), x: extra.join(' · ')};
             if (cel.x && !detalhe[ci]) {
-                detalhe[ci] = /^\d{2}\/\d{2}\/\d{4}$/.test(cel.x) ? h + ' (data)' : /%$/.test(cel.x) ? h + ' (var.)' : td.querySelector('.badge') ? h + ' (obs.)' : h + ' (código)';
+                var rx = td.querySelector('[data-xls]');
+                detalhe[ci] = rx ? h + ' ' + rx.dataset.xls : /^\d{2}\/\d{2}\/\d{4}$/.test(cel.x) ? h + ' (data)' : /%$/.test(cel.x) ? h + ' (var.)' : td.querySelector('.badge') ? h + ' (obs.)' : h + ' (código)';
             }
             var n = td.colSpan || 1;
             lin[ci] = cel;
