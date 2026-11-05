@@ -29,8 +29,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('success', 'Campanha excluída!');
 
         } elseif ($a === 'criar' || $a === 'editar') {
+            // O nome da campanha (codigo_campanha) é a chave das tabelas filhas: precisa ser único
             $cod   = trim($_POST['codigo_campanha'] ?? '');
-            if ($cod === '') throw new Exception('Informe o código da campanha.');
+            if ($cod === '') throw new Exception('Informe o nome da campanha.');
+            if (mb_strlen($cod) > 50) throw new Exception('O nome da campanha pode ter até 50 caracteres.');
+            $codOrig = $a === 'editar' ? trim($_POST['codigo_original'] ?? '') : '';
+            if ($cod !== $codOrig) {
+                $dup = db()->prepare('SELECT 1 FROM campanhas WHERE codigo_campanha = ? LIMIT 1');
+                $dup->execute([$cod]);
+                if ($dup->fetchColumn()) throw new Exception('Já existe uma campanha com o nome "' . $cod . '".');
+            }
             $tipo  = ($_POST['tipo'] ?? 'desconto') === 'bonificacao' ? 'bonificacao' : 'desconto';
             // Canais de venda (nenhum = todos); o 1º também vai em campanhas.canal_venda_id
             $canaisClean = [];
@@ -189,8 +197,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             db()->beginTransaction();
 
-            // Substitui por completo as linhas da campanha (código original e/ou novo)
-            $codOrig = trim($_POST['codigo_original'] ?? '');
+            // ID fixo da campanha: mantido na edição; nova campanha (ou duplicada) recebe o próximo
+            $num = 0;
+            if ($codOrig !== '') {
+                $q = db()->prepare('SELECT MAX(campanha_num) FROM campanhas WHERE codigo_campanha = ?');
+                $q->execute([$codOrig]);
+                $num = (int)$q->fetchColumn();
+            }
+            if (!$num) $num = (int)db()->query('SELECT COALESCE(MAX(campanha_num), 0) FROM campanhas FOR UPDATE')->fetchColumn() + 1;
+
+            // Substitui por completo as linhas da campanha (nome original e/ou novo)
             foreach (array_unique(array_filter([$codOrig, $cod])) as $delCod) {
                 db()->prepare('DELETE FROM campanhas WHERE codigo_campanha=?')->execute([$delCod]);
                 db()->prepare('DELETE FROM campanha_bonificacao WHERE codigo_campanha=?')->execute([$delCod]);
@@ -205,9 +221,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // Linha cabeçalho — parâmetros da campanha (gatilho fica nas condições)
             db()->prepare('INSERT INTO campanhas
-                (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo,cond_operador,observacao,cond_total_modo,cond_total_min,desconto_modo,obs_am,data_inicio,data_fim,cond_mesma_qtd,aplicacao)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo, $condOp, $obsCamp !== '' ? $obsCamp : null, $totModo, $totMin, $descModo, $obsAm !== '' ? $obsAm : null, $dtIni, $dtFim, $mesmaQtd, $aplicacao]);
+                (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo,cond_operador,observacao,cond_total_modo,cond_total_min,desconto_modo,obs_am,data_inicio,data_fim,cond_mesma_qtd,aplicacao,campanha_num)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo, $condOp, $obsCamp !== '' ? $obsCamp : null, $totModo, $totMin, $descModo, $obsAm !== '' ? $obsAm : null, $dtIni, $dtFim, $mesmaQtd, $aplicacao, $num]);
 
             // Canais de venda
             if ($canaisClean) {
@@ -280,6 +296,7 @@ foreach ($rows as $r) {
     if (!isset($campanhas[$k])) {
         $campanhas[$k] = [
             'codigo_campanha'    => $r['codigo_campanha'],
+            'campanha_num'       => (int)($r['campanha_num'] ?? 0),
             'canais'             => campanhaCanaisIds($r),
             'quantidade'         => $r['quantidade'],
             'desconto'           => $r['desconto'],
@@ -467,7 +484,7 @@ require_once LAYOUT_PATH . '/header.php';
         <div class="table-responsive">
         <table class="table table-hover mb-0 align-middle">
             <thead class="table-light">
-                <tr><th>Código</th><th>Status</th><th>Condições</th><th>Canal / Clientes</th><th>Tipo / Recompensa</th><th>Ações</th></tr>
+                <tr><th>ID</th><th>Nome</th><th>Status</th><th>Condições</th><th>Canal / Clientes</th><th>Tipo / Recompensa</th><th>Ações</th></tr>
             </thead>
             <tbody>
             <?php if ($campanhas): foreach ($campanhas as $c):
@@ -502,6 +519,7 @@ require_once LAYOUT_PATH . '/header.php';
                 $alvosIguaisCond = $alvos && !$alvoTemPctProprio && $fAlvos === array_values(array_unique($fConds));
             ?>
                 <tr class="<?= $c['ativo'] && !($c['data_fim'] && $c['data_fim'] < date('Y-m-d')) ? '' : 'opacity-50' ?>">
+                    <td class="text-muted text-nowrap">#<?= $c['campanha_num'] ?: '—' ?></td>
                     <td><strong><?= e($c['codigo_campanha']) ?></strong></td>
                     <td>
                         <?php
@@ -601,7 +619,8 @@ require_once LAYOUT_PATH . '/header.php';
                         <?php endif; ?>
                     </td>
                     <td class="text-nowrap">
-                        <button class="btn btn-sm btn-outline-primary" onclick="editarReg(<?= htmlspecialchars(json_encode($c), ENT_QUOTES) ?>)"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-primary" title="Editar" onclick="editarReg(<?= htmlspecialchars(json_encode($c), ENT_QUOTES) ?>)"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary" title="Duplicar" onclick="duplicarReg(<?= htmlspecialchars(json_encode($c), ENT_QUOTES) ?>)"><i class="bi bi-copy"></i></button>
                         <form method="POST" class="d-inline" onsubmit="return confirm('Excluir campanha?')">
                             <input type="hidden" name="action" value="excluir">
                             <input type="hidden" name="codigo_campanha" value="<?= e($c['codigo_campanha']) ?>">
@@ -610,7 +629,7 @@ require_once LAYOUT_PATH . '/header.php';
                     </td>
                 </tr>
             <?php endforeach; else: ?>
-                <tr><td colspan="6" class="text-center text-muted py-4">Nenhuma campanha cadastrada.</td></tr>
+                <tr><td colspan="7" class="text-center text-muted py-4">Nenhuma campanha cadastrada.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -676,9 +695,9 @@ require_once LAYOUT_PATH . '/header.php';
                     <!-- ===== Passo 1 — Identificação ===== -->
                     <div class="wz-page" data-page="1">
                         <div class="wz-bloco">
-                            <div class="wz-q">Qual o código da campanha? <span class="text-danger">*</span></div>
-                            <div class="wz-ajuda">Um nome curto para identificar a campanha. Ex.: <em>COLOR-NOV</em></div>
-                            <input type="text" name="codigo_campanha" id="f_cod" class="form-control" style="max-width:360px" required>
+                            <div class="wz-q">Qual o nome da campanha? <span class="text-danger">*</span></div>
+                            <div class="wz-ajuda">Um nome para identificar a campanha (não pode repetir o de outra). Ex.: <em>Coloração Novembro</em></div>
+                            <input type="text" name="codigo_campanha" id="f_cod" class="form-control" style="max-width:360px" maxlength="50" required>
                         </div>
                         <div class="wz-bloco">
                             <div class="wz-q">Em qual período ela vale?</div>
@@ -1647,7 +1666,7 @@ function wzValidar(p) {
     var ehDesc = g('f_tipo').value === 'desconto';
     var condRows = document.querySelectorAll('#condBody tr');
     if (p === 1) {
-        if (!g('f_cod').value.trim()) return wzFalha('Informe o código da campanha.', g('f_cod'));
+        if (!g('f_cod').value.trim()) return wzFalha('Informe o nome da campanha.', g('f_cod'));
         var dtIni = g('f_dt_ini').value, dtFim = g('f_dt_fim').value;
         if (dtIni && dtFim && dtFim < dtIni) return wzFalha('A data final do período deve ser igual ou posterior à data inicial.', g('f_dt_fim'));
     }
@@ -1773,7 +1792,7 @@ function novoReg() {
 }
 
 function editarReg(d) {
-    document.getElementById('mt').textContent   = 'Editar Campanha';
+    document.getElementById('mt').textContent   = 'Editar Campanha' + (d.campanha_num ? ' #' + d.campanha_num : '');
     document.getElementById('fa').value         = 'editar';
     document.getElementById('f_cod_orig').value = d.codigo_campanha || '';
     document.getElementById('f_cod').value      = d.codigo_campanha || '';
@@ -1818,6 +1837,15 @@ function editarReg(d) {
     document.getElementById('wzTotDet').open = !!d.cond_total_modo;
     wzIniciar(true);
     new bootstrap.Modal(document.getElementById('modal')).show();
+}
+
+// Duplicar: abre o assistente com tudo da campanha, mas como campanha nova (novo ID, nome "(cópia)")
+function duplicarReg(d) {
+    editarReg(d);
+    document.getElementById('mt').textContent   = 'Duplicar Campanha' + (d.campanha_num ? ' #' + d.campanha_num : '');
+    document.getElementById('fa').value         = 'criar';
+    document.getElementById('f_cod_orig').value = '';
+    document.getElementById('f_cod').value      = (d.codigo_campanha || '').slice(0, 42) + ' (cópia)';
 }
 </script>
 <?php require_once LAYOUT_PATH . '/footer.php'; ?>

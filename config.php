@@ -265,6 +265,16 @@ function db() {
                 KEY idx_camp_cli (codigo_campanha),
                 KEY idx_camp_cli_cliente (cliente_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // ID da campanha: número único e fixo por campanha (não muda ao editar nem ao renomear).
+            try { $pdo->exec("ALTER TABLE campanhas ADD COLUMN campanha_num INT NULL DEFAULT NULL"); } catch (PDOException $e) {}
+            try {
+                $semNum = $pdo->query("SELECT codigo_campanha FROM campanhas WHERE campanha_num IS NULL GROUP BY codigo_campanha ORDER BY MIN(id)")->fetchAll(PDO::FETCH_COLUMN);
+                if ($semNum) {
+                    $num = (int)$pdo->query("SELECT COALESCE(MAX(campanha_num), 0) FROM campanhas")->fetchColumn();
+                    $upNum = $pdo->prepare("UPDATE campanhas SET campanha_num = ? WHERE codigo_campanha = ?");
+                    foreach ($semNum as $codSem) $upNum->execute([++$num, $codSem]);
+                }
+            } catch (PDOException $e) {}
             // Canais de venda da campanha (aplicação "canal"): nenhum = todos os canais.
             // campanhas.canal_venda_id guarda só o 1º canal (compatibilidade).
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_canais (

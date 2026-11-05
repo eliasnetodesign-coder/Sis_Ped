@@ -11,7 +11,7 @@
 > só pelo "Importa Pedido BF", fica fora deste documento (ver [Pendências](#pendencias)).
 > **Acesso ao cadastro:** usuários `comercial`, `supervisor` e `tecnologia da informacao` (`requireComercial()`).
 
-**Versão:** 3 · **Última atualização:** 2026-10-20 · **Status:** 🟡 Em definição
+**Versão:** 9 · **Última atualização:** 2026-11-05 · **Status:** 🟡 Em definição
 
 ---
 
@@ -30,13 +30,14 @@
 ## Cabeçalho da campanha <a name="cabecalho"></a>
 
 ### Regra definida
-> Uma campanha é identificada pelo **Código da Campanha** e tem canal, situação, tipo e textos de exibição.
+> Uma campanha é identificada por um **ID** numérico único e por um **Nome**, e tem canal, situação, tipo e textos de exibição.
 
 | Campo | Regra |
 |-------|-------|
-| **Código da Campanha*** | Obrigatório (`"Informe o código da campanha."`); agrupa todas as linhas da campanha (`codigo_campanha`) e é também o **nome** exibido nas telas. |
+| **ID** | Número sequencial gerado ao criar a campanha (`campanhas.campanha_num`), exibido como `#N` na listagem e no título do assistente. É **fixo**: não muda ao editar nem ao renomear. As campanhas que já existiam receberam IDs na ordem em que foram criadas. |
+| **Nome da Campanha*** | Obrigatório (`"Informe o nome da campanha."`), até 50 caracteres e **único** (`"Já existe uma campanha com o nome ..."`) — internamente continua em `codigo_campanha`, que agrupa todas as linhas da campanha nas tabelas filhas; por isso não pode repetir (duas campanhas com o mesmo nome se misturariam). |
 | **Aplicar a campanha** | `campanhas.aplicacao`: **No canal de venda** (`canal`, padrão) ou **Para clientes específicos** (`clientes`). |
-| **Canal de Venda** | Só na aplicação "No canal de venda" — vazio = todos os canais; preenchido = só clientes desse canal (`canal_venda_id`). |
+| **Canais de Venda** | Só na aplicação "No canal de venda" — um ou **vários** canais (botão "Adicionar canal"), gravados em `campanha_canais` (`codigo_campanha`, `canal_venda_id`); nenhum = todos os canais; com canais = só clientes de **qualquer um** deles. O 1º canal também vai em `campanhas.canal_venda_id` (compatibilidade). |
 | **Clientes da campanha** | Só na aplicação "Para clientes específicos" — clientes adicionados **um a um** por busca (nome, código ou CNPJ/CPF), gravados em `campanha_clientes` (`codigo_campanha`, `cliente_id`). Obrigatório ao menos um (`"Adicione ao menos um cliente à campanha..."`). A campanha vale **só** para esses clientes; o canal é ignorado (gravado `NULL`). |
 | **Ativa/Inativa** | `campanhas.ativo`; campanha inativa é ignorada em **toda** avaliação (pedidos, Análise Financeira, Importa Pedido). |
 | **Tipo** | **Desconto** ou **Bonificação**. |
@@ -45,8 +46,8 @@
 | **Observação para o A&M** | Opcional, até **255** caracteres (`campanhas.obs_am`) — texto levado ao campo **Obs** do pedido no A&M (ver [Observação no A&M](#obs-am)). |
 
 - **Dois campos de observação separados** — o texto comercial para o cliente ("Obtenha de 5% até 12%…") não serve como anotação curta no A&M ("Desc 12% color"); misturar os dois obrigaria a escolher um público.
-- **Impacto em Legados:** `obs_am` nasce `NULL` em todas as campanhas; enquanto vazio, nada é gravado no Obs do A&M. `data_inicio`/`data_fim` nascem `NULL` — as campanhas existentes continuam valendo sem limite de período. `aplicacao` nasce `canal` — as campanhas existentes mantêm a regra por canal.
-- **Clientes específicos só no modelo novo:** a regra é conferida no gatilho das condições (`avaliarCampanhaTrigger()`); os loops do modelo legado continuam só por canal — toda campanha salva pelo formulário atual já é do modelo novo.
+- **Impacto em Legados:** `obs_am` nasce `NULL` em todas as campanhas; enquanto vazio, nada é gravado no Obs do A&M. `data_inicio`/`data_fim` nascem `NULL` — as campanhas existentes continuam valendo sem limite de período. `aplicacao` nasce `canal` — as campanhas existentes mantêm a regra por canal. Campanhas sem linhas em `campanha_canais` continuam usando o canal único de `campanhas.canal_venda_id` (`campanhaCanaisIds()`) — não precisam de migração de dados.
+- **Clientes específicos só no modelo novo:** a regra é conferida no gatilho das condições (`avaliarCampanhaTrigger()`); os loops do modelo legado continuam só pelo canal único (`canal_venda_id`) — toda campanha salva pelo formulário atual já é do modelo novo.
 - **Período × data do pedido:** a vigência é conferida pela **data de hoje** (momento da avaliação), não pela data do pedido — um pedido do A&M analisado depois do fim da campanha não recebe mais a campanha.
 
 ---
@@ -108,21 +109,46 @@
 > Modal em **assistente passo a passo** (perguntas simples); **salvar substitui** todas as linhas do código; **excluir** passa a ser **inativar**.
 
 - **Assistente em 6 etapas** *(decidido em 2026-10-27)*: cada etapa é uma pergunta curta, e as opções aparecem conforme o que foi escolhido. Escolhas com poucas opções são **cartões clicáveis** com título e exemplo, em vez de selects.
-  1. **Identificação:** "Qual o código da campanha?", "Em qual período ela vale?" (Início/Fim, em branco = sem limite) e "A campanha já fica ativa?".
-  2. **Para quem:** "Clientes de um canal de venda" (abre "Qual canal de venda?", com "Todos os canais") ou "Clientes específicos" (abre a busca e a lista de clientes).
+  1. **Identificação:** "Qual o nome da campanha?", "Em qual período ela vale?" (Início/Fim, em branco = sem limite) e "A campanha já fica ativa?".
+  2. **Para quem:** "Clientes de um canal de venda" (abre "Quais canais de venda?": um select com "Todos os canais" e o botão "Adicionar canal" para incluir mais; canal já escolhido não se repete; ✕ remove) ou "Clientes específicos" (abre a busca e a lista de clientes).
   3. **Benefício:** "O que o cliente ganha?": Desconto ou Produtos bonificados. No Desconto, "Como é o desconto?": Percentual fixo ou Por faixas. Na Bonificação, "Como é o brinde?": Produtos definidos (fixo) ou O cliente escolhe (selecionável).
   4. **O que comprar:** a tabela de condições (já abre com uma linha; com faixas, mostra as colunas das faixas). Com 2+ condições aparece "O cliente precisa cumprir: Todas as condições / Qualquer uma delas". Com Desconto, 2+ condições e "Todas", aparece "As quantidades precisam ser iguais?" (Mesmas quantidades). O mínimo total fica recolhido em "Mais opções".
   5. **Detalhes:** no Desconto, o percentual (um por faixa) e "Em quais produtos o desconto é aplicado?" (Nos itens das condições / Em outros produtos). Na Bonificação, o limite e o tipo de escolha (no selecionável) e a lista de brindes ou o pool por categoria.
   6. **Revisão:** resumo legível da campanha (período, para quem, o que precisa comprar, o que ganha, onde aplica) e as duas observações opcionais.
 - **Navegação:** Voltar/Próximo no rodapé e a barra de etapas no topo. "Próximo" só avança se a etapa estiver válida, com as mesmas regras do servidor (`wzValidar()`). Ao salvar, todas as etapas são conferidas e, se houver problema, o assistente vai até a etapa com erro. Na **criação**, só dá para pular para etapas já visitadas e "Salvar" aparece só na Revisão. Na **edição**, todas as etapas ficam liberadas e "Salvar" aparece em qualquer etapa. Enter em um campo avança a etapa em vez de salvar.
 - **Volta ao formulário anterior:** o formulário de tela única (exibição progressiva) está no commit `f75f767`. Os nomes dos campos e o salvamento são os mesmos, então restaurar `admin/cadastros/campanhas.php` desse commit volta o layout antigo sem mudar dados.
+- **Duplicar** *(decidido em 2026-11-05)*: botão ao lado de Editar na listagem. Abre o assistente com **todos** os dados da campanha (período, canais/clientes, condições, faixas, alvos, brindes, observações), como **campanha nova**: nome sugerido `"<nome> (cópia)"`, novo ID ao salvar, original intacta. Serve para criar variações sem cadastrar tudo de novo. Quando a [Aprovação](#aprovacao) for implementada, a cópia é uma criação e passa por aprovação.
 - **Busca de clientes:** AJAX no próprio cadastro (`?buscar_cliente=`, mínimo 2 caracteres, até 20 resultados, ativos primeiro); cliente já adicionado aparece como "adicionado" e não se repete — a base tem milhares de clientes, por isso não é carregada inteira na página.
-- **Salvar:** em transação, apaga e regrava cabeçalho, condições, alvos, pool, bonificação, faixas e clientes do código original e do novo (renomear o código não deixa sobra) — evita linhas órfãs de versões anteriores.
+- **Salvar:** em transação, apaga e regrava cabeçalho, condições, alvos, pool, bonificação, faixas, canais e clientes do código original e do novo (renomear o código não deixa sobra) — evita linhas órfãs de versões anteriores.
 - **Excluir = Inativar** *(decidido em 2026-10-20)*: a ação marca `ativo = 0` em vez de apagar — a campanha some de toda avaliação, mas o histórico (condições, faixas, brindes) é preservado e ela pode ser reativada pelo campo Ativa/Inativa. Evita perder a regra que explicou descontos de pedidos já feitos.
 - **Estado atual (a mudar):** hoje o botão apaga só as linhas de `campanhas` (hard delete); condições, alvos, faixas e bonificação ficam órfãs no banco.
-- **Listagem:** agrupada por código (condições com o operador, canal — ou, em clientes específicos, "N cliente(s)" com os nomes —, tipo, desconto/bonificação, onde incide, status, observação). Status: **Ativa**, **Inativa**, **Agendada** (antes do início) ou **Encerrada** (após o fim), com o período abaixo (`dd/mm/aaaa a dd/mm/aaaa`, `…` no lado vazio); inativas e fora do período ficam esmaecidas. Campanhas com "Mesmas quantidades" mostram "Quantidades iguais entre as condições". Listas longas mostram 3 itens e "+N mais"; quando os alvos são iguais às condições, mostra "Aplica nos mesmos produtos das condições".
+- **Listagem:** agrupada por código (condições com o operador, canais (um selo por canal; "Todos" quando nenhum) — ou, em clientes específicos, "N cliente(s)" com os nomes —, tipo, desconto/bonificação, onde incide, status, observação). Status: **Ativa**, **Inativa**, **Agendada** (antes do início) ou **Encerrada** (após o fim), com o período abaixo (`dd/mm/aaaa a dd/mm/aaaa`, `…` no lado vazio); **inativas** e **encerradas** ficam esmaecidas; **agendadas** aparecem normais, só com o selo "Agendada" *(decidido em 2026-11-04 — agendada esmaecida parecia inativa)*. Campanhas com "Mesmas quantidades" mostram "Quantidades iguais entre as condições". Listas longas mostram 3 itens e "+N mais"; quando os alvos são iguais às condições, mostra "Aplica nos mesmos produtos das condições".
 - **Erros de validação:** exibidos como mensagem (flash) no topo da tela; nada é gravado parcialmente (rollback). As regras do servidor também são conferidas no navegador, etapa por etapa (`wzValidar()`), sem perder o que foi digitado.
 - **Impacto em Legados:** ao **editar** uma campanha legada, o formulário monta as condições a partir de produtos/categoria + quantidade antigos; ao salvar, ela passa a ser do modelo novo. Campanhas já apagadas antes da mudança não são recuperadas; as linhas órfãs delas podem ser removidas numa limpeza única.
+
+---
+
+## Aprovação da campanha <a name="aprovacao"></a>
+
+### Regra definida
+> Toda campanha **criada** é submetida à aprovação de um **usuário** ou de um **grupo de usuários**
+> definido como aprovador; enquanto não for aprovada, ela não vale em nenhuma avaliação.
+
+*(decidido em 2026-11-05)*
+
+- **Aprovador** *(decidido em 2026-11-05)*: definido **uma vez em Configurações**, valendo para todas as campanhas — um usuário específico **ou** um grupo. **Grupo = tipo de acesso** (`usuarios.tipo_acesso`, ex.: Diretoria): qualquer usuário desse tipo pode aprovar; não haverá cadastro de grupos. No grupo, basta a aprovação de **um** dos integrantes.
+- **Situação da aprovação:** **Pendente** (ao salvar a criação), **Aprovada** ou **Reprovada**.
+- **Pendente ou Reprovada:** a campanha é ignorada em **toda** avaliação (pedidos do SisPed, portal, Análise Financeira, Importa Pedido), como se estivesse inativa — mesmo com "Ativa" e dentro do período.
+- **Listagem:** mostra o selo da situação ("Aguardando aprovação" / "Reprovada"), além do status Ativa/Inativa/Agendada/Encerrada, e um filtro de pendentes.
+- **Aviso ao aprovador** *(decidido em 2026-11-05)*: além do filtro de pendentes na tela de Campanhas, o painel (dashboard) do aprovador mostra um aviso com a quantidade de campanhas aguardando aprovação e link para elas. Sem e-mail.
+- **Campanha aprovada não pode ser editada** *(decidido em 2026-11-05)*: o assistente abre só para leitura; o único ajuste permitido é o **período** (Início/Fim). Para mudar regras, duplica-se a campanha (ver [Duplicar](#formulario)) e inativa-se a antiga.
+  - **Mudança de período:** grava um **histórico** (quem, quando, período anterior → novo) e exige **nova aprovação**. Enquanto a nova aprovação não sai, a campanha **continua valendo no período antigo** (já aprovado); aprovada, passa a valer o novo; reprovada, fica o antigo.
+- **Ativar/Inativar** *(decidido em 2026-11-05)*: **inativar** uma campanha aprovada vale na hora (tirar o benefício é seguro); **reativar** volta para aprovação. As duas ações entram no histórico.
+- **Campanha pendente ou reprovada** (nunca aprovada) pode ser editada livremente por quem criou; salvar uma reprovada a devolve para Pendente.
+- **Registro:** guarda quem aprovou ou reprovou e quando; quem reprova informa o motivo, exibido para quem criou.
+- **Quem cria não aprova a própria campanha**, mesmo que faça parte do grupo aprovador.
+- **Estado atual (a mudar):** não há aprovação — a campanha vale assim que é salva como ativa. Também não existe cadastro de grupos de usuários (o único agrupamento hoje é o `usuarios.tipo_acesso`).
+- **Impacto em Legados:** as campanhas já cadastradas antes da regra entram como **Aprovadas**, para não pararem de valer.
 
 ---
 
@@ -194,7 +220,7 @@
 - **Onde procurar o brinde** *(decidido em 2026-10-20)*: no **próprio pedido** de venda **e** nos pedidos **Tipo "B"** (bonificação) do mesmo cliente no período analisado — no A&M o brinde costuma ser lançado em pedido separado. **Estado atual (a mudar):** só no próprio pedido.
 - **Bonificação fixa:** qtd encontrada ≥ qtd esperada; itens de brinde não passam pela regra do % Diretoria.
 - **Bonificação selecionável** *(decidido em 2026-10-20)*: passa a ser **conferida pelo limite** — reprova se os brindes da campanha encontrados (produtos da lista/pool) passarem do limite (quantidade ou valor) × multiplicador; escolher **menos** que o limite não reprova. **Estado atual (a mudar):** não é conferida.
-- [ ] Limite por **valor** na bonificação selecionável: qual preço usar para valorizar os brindes encontrados no A&M (preço Network do SisPed, como na tela de escolha, ou o valor do item no A&M)?
+- **Limite por valor na bonificação selecionável** *(decidido em 2026-11-05)*: os brindes encontrados são valorizados pelo **valor do item no pedido do A&M** (o mesmo critério do "Valor Total" usado nas condições). **Estado atual (a mudar):** a conferência pelo limite ainda não existe.
 - **Sem filtro "BF":** todo pedido é avaliado; o Obs do pedido no A&M não interfere.
 - **Período:** só entram campanhas vigentes **na data da análise** (ver [Cabeçalho](#cabecalho)).
 - **Clientes específicos:** o cliente do pedido do A&M é localizado no SisPed — na Análise Financeira pelo **código do cliente** (`clientes.codigo_cliente`), no Importa Pedido pelo cliente identificado/selecionado na importação. Cliente não localizado não recebe campanhas de clientes específicos.
@@ -260,7 +286,8 @@
 | `campanhasAgrupadas()` | Campanhas ativas **e vigentes** agrupadas por código, com condições |
 | `campanhaVigenteSql($alias)` | Filtro SQL: ativa e dentro do período (`data_inicio`/`data_fim`, data de hoje) — usado também nas consultas de campanhas de `admin/pedido.php`, `admin/novo-pedido.php` e `cliente/novo-pedido.php` |
 | `ctxCampanha($itens, $canal, $clienteId)` | Contexto do pedido (qtd/valor por categoria + itens normalizados + canal e cliente) — todos os chamadores passam o cliente do pedido |
-| `campanhaValeParaCliente($row, $canal, $clienteId)` | Aplicação da campanha: clientes específicos (lista `campanha_clientes`) ou canal (vazio = todos) — usado no gatilho, nas campanhas não atingidas do A&M e no filtro do portal |
+| `campanhaValeParaCliente($row, $canal, $clienteId)` | Aplicação da campanha: clientes específicos (lista `campanha_clientes`) ou canais (nenhum = todos; senão o canal do cliente precisa estar entre eles) — espelhado em JS por `_campValeCliente()` no novo pedido do admin; usado no gatilho, nas campanhas não atingidas do A&M e no filtro do portal |
+| `campanhasCanais()` / `campanhaCanaisIds($row)` | Canais por campanha (`campanha_canais`, cache por requisição) / canais de uma campanha, com fallback para `canal_venda_id` |
 | `campanhasClientes()` | Clientes específicos por campanha (`codigo => [cliente_id => true]`, cache por requisição) |
 | `avaliarCampanhaTrigger($rows, $conds, $ctx)` | Gatilho (E/OU, mínimo total, mesmas quantidades, multiplicador) — espelhado em JS por `_campAvaliar()` / `_campQtdsIguais()` nos novos pedidos |
 | `campanhaQtdsIguais($rows, $qtds)` | Regra "Mesmas quantidades": true se desligada ou se todas as condições somam a mesma quantidade |
@@ -309,6 +336,18 @@
 - [ ] Dado uma campanha E com Coloração ≥ 10 un. e Oxidante ≥ 10 un. e "Mesmas quantidades" ligado, quando o pedido tem 30 × 30, então é atingida; com 30 × 24 ou 5 × 5, não.
 - [ ] Dado "Mesmas quantidades" ligado com operador OU, uma única condição ou uma condição por valor, quando o usuário salva, então o sistema recusa a campanha.
 - [ ] Dado uma campanha "Para clientes específicos" com o cliente A na lista, quando o cliente A faz um pedido que atinge as condições, então recebe a campanha; quando o cliente B (mesmo canal) faz o mesmo pedido, então não recebe e não vê a campanha no portal.
+- [ ] Dado uma campanha nos canais Distribuidor e Varejo, quando clientes desses dois canais fazem um pedido que atinge as condições, então ambos recebem a campanha; um cliente de outro canal, não.
+- [ ] Dado uma campanha ativa com início no futuro, quando a listagem é aberta, então ela aparece com o selo "Agendada" e **sem** esmaecer; inativas e encerradas ficam esmaecidas.
+- [ ] Dado uma campanha recém-criada, ativa e dentro do período, quando um pedido atinge as condições antes da aprovação, então a campanha é ignorada e a listagem mostra "Aguardando aprovação"; depois de aprovada, ela passa a valer.
+- [ ] Dado um grupo aprovador com os usuários A e B, quando A aprova a campanha, então ela fica Aprovada sem precisar de B.
+- [ ] Dado um usuário do grupo aprovador que criou a campanha, quando tenta aprová-la, então o sistema não permite.
+- [ ] Dado uma campanha reprovada com motivo, quando quem a criou abre a listagem, então vê "Reprovada" e o motivo, e a campanha não vale em nenhuma avaliação.
+- [ ] Dado uma campanha aprovada, quando o usuário a abre para editar, então só o período fica editável; ao salvar um novo período, a mudança vai para o histórico, a campanha volta para aprovação e continua valendo no período antigo até ser aprovada.
+- [ ] Dado uma campanha aprovada, quando é inativada, então deixa de valer na hora; quando é reativada, fica "Aguardando aprovação" até ser aprovada.
+- [ ] Dado o aprovador configurado como o tipo de acesso Diretoria, quando há campanhas pendentes, então todo usuário Diretoria vê o aviso no painel com a quantidade e o link.
+- [ ] Dado uma nova campanha salva, quando aparece na listagem, então tem um ID `#N` maior que o de todas as outras; ao editá-la e renomeá-la, o ID não muda.
+- [ ] Dado uma campanha "Black Friday" já cadastrada, quando o usuário cria (ou renomeia outra para) "Black Friday", então o sistema recusa com "Já existe uma campanha com o nome ...".
+- [ ] Dado uma campanha, quando o usuário clica em Duplicar e salva sem mudar nada, então surge "<nome> (cópia)" com novo ID e as mesmas regras, e a original continua igual.
 - [ ] Dado "Para clientes específicos" sem nenhum cliente adicionado, quando o usuário salva, então o sistema recusa com "Adicione ao menos um cliente à campanha (ou aplique no canal de venda)."
 - [ ] Dado um pedido do A&M de um cliente da lista (pelo código do cliente), quando a Análise Financeira roda, então a campanha de clientes específicos é avaliada para ele; para outros clientes, não.
 - [ ] Dado uma nova campanha, quando o usuário clica em "Próximo" sem preencher o obrigatório da etapa (código, clientes, condição, percentual, brindes), então o assistente não avança e explica o que falta.
@@ -332,7 +371,7 @@
 ## Índice de Decisões já tomadas
 
 - **Modelos:** condições em `campanha_condicoes` = modelo novo; PHP é a fonte de verdade — *Dev+Contexto* → [Ir para Regra](#modelos)
-- **Cabeçalho:** código obrigatório; canal opcional; inativa é ignorada; duas observações (cliente e A&M) — *Usuário* → [Ir para Regra](#cabecalho)
+- **Cabeçalho:** código obrigatório; canais opcionais (vários); inativa é ignorada; duas observações (cliente e A&M) — *Usuário* → [Ir para Regra](#cabecalho)
 - **Condições:** filtro composto, mínimo por qtd ou valor, operador E/OU, mínimo total opcional — *Dev+Contexto* → [Ir para Regra](#condicoes)
 - **Desconto:** alvos opcionais, % fixo ou por alvo, faixas crescentes com maior faixa atingida — *Dev+Contexto* → [Ir para Regra](#desconto)
 - **Bonificação:** fixa ou selecionável; pedido bonificado separado só em venda nova — *Dev+Contexto* → [Ir para Regra](#bonificacao)
@@ -357,14 +396,25 @@
 - **Mesmas quantidades:** opção na Forma do desconto; o pedido final precisa ter a mesma quantidade em todas as condições, além dos mínimos; só com E e condições por quantidade — *Usuário, 2026-10-27* → [Ir para Regra](#desconto)
 - **Aplicação por clientes específicos:** ao criar, escolher "No canal de venda" ou "Para clientes específicos" (adicionados um a um); na segunda, só os clientes listados recebem a campanha e o canal é ignorado — *Usuário, 2026-10-27* → [Ir para Regra](#cabecalho)
 - **Cadastro em assistente:** 6 etapas com perguntas simples e cartões de opção; o formulário anterior fica no commit `f75f767` para voltar, se preferirem — *Usuário, 2026-10-27* → [Ir para Regra](#formulario)
+- **Vários canais de venda:** a campanha por canal aceita um ou mais canais (`campanha_canais`); nenhum = todos — *Usuário, 2026-11-04* → [Ir para Regra](#cabecalho)
+- **Agendada não esmaece:** na listagem só inativas e encerradas ficam esmaecidas — *Usuário, 2026-11-04* → [Ir para Regra](#formulario)
+- **Aprovação da campanha:** toda campanha criada vai para aprovação de um usuário ou grupo; pendente/reprovada não vale; legadas entram aprovadas — *Usuário, 2026-11-05* → [Ir para Regra](#aprovacao)
+- **Aprovação — detalhes:** aprovador fixo em Configurações; grupo = tipo de acesso; aprovada não se edita (só período, com histórico e nova aprovação, valendo o antigo até lá); inativar livre, reativar com aprovação; lista de pendentes + aviso no painel — *Usuário, 2026-11-05* → [Ir para Regra](#aprovacao)
+- **Nome + ID:** a pergunta passa a ser "Qual o nome da campanha?" (único, até 50 caracteres); cada campanha tem um ID numérico fixo (`campanha_num`) — *Usuário, 2026-11-05* → [Ir para Regra](#cabecalho)
+- **Duplicar campanha:** cópia completa como campanha nova, nome "(cópia)", novo ID — *Usuário, 2026-11-05* → [Ir para Regra](#formulario)
+- **Limite por valor (selecionável) no A&M:** valor do item no pedido do A&M — *Usuário, 2026-11-05* → [Ir para Regra](#avaliacao-am)
+- **`campanhas_am` / Importa Pedido BF:** mantidos por enquanto, desativados depois — *Usuário, 2026-11-05* → [Ir para Regra](#pendencias)
 - **Obs no A&M — limite:** 50 caracteres; texto maior é cortado em 50 com aviso antes de gravar — *Usuário, 2026-10-20* → [Ir para Regra](#obs-am)
 
 ---
 
 ## Pendências para decidir <a name="pendencias"></a>
 
-- [ ] O cadastro antigo `campanhas_am` e o "Importa Pedido BF" serão migrados para as campanhas do Comercial ou desativados? (o botão "Campanhas" da tela de Pedidos ainda abre o cadastro antigo) — *adiado pelo usuário em 2026-10-20*
-- [ ] Limite por **valor** na bonificação selecionável (Análise Financeira): qual preço usar para valorizar os brindes encontrados no A&M?
+Nenhuma pendência em aberto. Decididas em 2026-11-05 (ainda **não implementadas**):
+
+- [x] Cadastro antigo `campanhas_am` e "Importa Pedido BF": **ficam como estão por enquanto** e serão **desativados depois**, quando o "Importa Pedido" com as campanhas do Comercial cobrir todos os casos do BF.
+- [x] Limite por valor da bonificação selecionável na Análise Financeira: **valor do item no A&M** → [Avaliação sobre pedidos do A&M](#avaliacao-am).
+- [x] Aprovação — aprovador **fixo em Configurações**; grupo = **tipo de acesso**; campanha aprovada **não se edita**, só o período (com histórico e nova aprovação, valendo o período antigo enquanto isso); **inativar livre, reativar com aprovação**; aviso por **lista de pendentes + aviso no painel** → [Aprovação da campanha](#aprovacao).
 
 ---
 
@@ -378,3 +428,6 @@
 | 4 | 2026-10-27 | **Período de vigência** (`data_inicio`/`data_fim`, ao lado do Tipo; `campanhaVigenteSql()` em toda avaliação; status Agendada/Encerrada na listagem) e **Mesmas quantidades em todas as condições** (`cond_mesma_qtd`, na Forma do desconto: o pedido final precisa ter a mesma quantidade em cada condição, além dos mínimos; servidor, JS dos novos pedidos, aviso no portal e linha extra na Análise Financeira). Implementados. |
 | 5 | 2026-10-27 | **Aplicar a campanha:** "No canal de venda" ou "Para clientes específicos" (`campanhas.aplicacao` + tabela `campanha_clientes`, clientes adicionados um a um por busca AJAX). Avaliação via `campanhaValeParaCliente()`; `ctxCampanha()`, `detectarBonificacaoSelecionavel()` e `campanhasComercialAvaliarPedido()` passam a receber o cliente; A&M localiza o cliente pelo código. Implementado. |
 | 6 | 2026-10-27 | **Cadastro em assistente passo a passo:** 6 etapas (Identificação, Para quem, Benefício, O que comprar, Detalhes, Revisão), com perguntas simples, cartões de opção, validação por etapa e resumo final. Campos e gravação não mudaram. O formulário anterior fica no commit `f75f767`. Implementado. |
+| 7 | 2026-11-04 | **Vários canais de venda por campanha** (tabela `campanha_canais`, botão "Adicionar canal" no assistente, um selo por canal na listagem; `campanhasCanais()` / `campanhaCanaisIds()`, `campanhaValeParaCliente()` e `_campValeCliente()` aceitam qualquer canal da lista; campanhas antigas usam `canal_venda_id`). Listagem: **agendada não fica mais esmaecida**. Implementado. |
+| 8 | 2026-11-05 | **Aprovação da campanha:** toda campanha criada é submetida a um usuário ou grupo aprovador; pendente/reprovada é ignorada em toda avaliação; registro de quem aprovou/reprovou e motivo; quem cria não aprova; legadas entram aprovadas. Pendentes: onde definir o aprovador, o que é grupo, edição, aviso e reativação. **Não implementado.** |
+| 9 | 2026-11-05 | **Nome + ID:** "Qual o código da campanha?" vira "Qual o nome da campanha?" (único, até 50 caracteres); novo **ID** fixo por campanha (`campanhas.campanha_num`, sequencial, exibido como `#N`; existentes numeradas pela ordem de criação). **Duplicar campanha** (botão na listagem, cópia como nova). Implementados. **Pendências resolvidas** (não implementadas): aprovador fixo em Configurações; grupo = tipo de acesso; aprovada não se edita, só o período (histórico + nova aprovação, vale o antigo até lá); inativar livre, reativar com aprovação; aviso por lista + painel; limite por valor do selecionável = valor do item no A&M; `campanhas_am`/BF mantidos e desativados depois. |
