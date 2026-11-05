@@ -32,12 +32,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $cod   = trim($_POST['codigo_campanha'] ?? '');
             if ($cod === '') throw new Exception('Informe o código da campanha.');
             $tipo  = ($_POST['tipo'] ?? 'desconto') === 'bonificacao' ? 'bonificacao' : 'desconto';
-            $canal = $_POST['canal_venda_id'] ?: null;
+            // Canais de venda (nenhum = todos); o 1º também vai em campanhas.canal_venda_id
+            $canaisClean = [];
+            foreach ((array)($_POST['canal_venda_id'] ?? []) as $cvid) if ((int)$cvid > 0) $canaisClean[(int)$cvid] = true;
+            $canaisClean = array_keys($canaisClean);
+            $canal = $canaisClean[0] ?? null;
             // Aplicação: no canal de venda (ou todos) ou só para clientes específicos
             $aplicacao = ($_POST['aplicacao'] ?? 'canal') === 'clientes' ? 'clientes' : 'canal';
             $cliClean  = [];
             if ($aplicacao === 'clientes') {
                 $canal = null;   // o canal não se aplica: valem só os clientes listados
+                $canaisClean = [];
                 foreach (($_POST['clientes'] ?? []) as $cid) if ((int)$cid > 0) $cliClean[(int)$cid] = true;
                 $cliClean = array_keys($cliClean);
                 if (!$cliClean) throw new Exception('Adicione ao menos um cliente à campanha (ou aplique no canal de venda).');
@@ -195,6 +200,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 try { db()->prepare('DELETE FROM campanha_faixas WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
                 try { db()->prepare('DELETE FROM campanha_faixa_minimos WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
                 try { db()->prepare('DELETE FROM campanha_clientes WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
+                try { db()->prepare('DELETE FROM campanha_canais WHERE codigo_campanha=?')->execute([$delCod]); } catch (PDOException $e) {}
             }
 
             // Linha cabeçalho — parâmetros da campanha (gatilho fica nas condições)
@@ -202,6 +208,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 (codigo_campanha,produto_id,linha,grupo,subgrupo,canal_venda_id,quantidade,desconto,tipo,valor_alvo,bonif_modo,bonif_limite_tipo,bonif_limite_valor,ativo,bonif_selec_modo,cond_operador,observacao,cond_total_modo,cond_total_min,desconto_modo,obs_am,data_inicio,data_fim,cond_mesma_qtd,aplicacao)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
                 ->execute([$cod, null, null, null, null, $canal, 0, $desc, $tipo, null, $bonifModo, $bonifLimTipo, $bonifLimValor, $ativo, $bonifSelecModo, $condOp, $obsCamp !== '' ? $obsCamp : null, $totModo, $totMin, $descModo, $obsAm !== '' ? $obsAm : null, $dtIni, $dtFim, $mesmaQtd, $aplicacao]);
+
+            // Canais de venda
+            if ($canaisClean) {
+                $insCanal = db()->prepare('INSERT INTO campanha_canais (codigo_campanha, canal_venda_id) VALUES (?,?)');
+                foreach ($canaisClean as $cvid) $insCanal->execute([$cod, $cvid]);
+            }
 
             // Clientes específicos
             if ($cliClean) {
@@ -268,8 +280,7 @@ foreach ($rows as $r) {
     if (!isset($campanhas[$k])) {
         $campanhas[$k] = [
             'codigo_campanha'    => $r['codigo_campanha'],
-            'canal_venda_id'     => $r['canal_venda_id'],
-            'canal'              => $r['canal'],
+            'canais'             => campanhaCanaisIds($r),
             'quantidade'         => $r['quantidade'],
             'desconto'           => $r['desconto'],
             'tipo'               => $r['tipo'] ?? 'desconto',
@@ -305,6 +316,9 @@ foreach ($rows as $r) {
     if ($r['grupo']    !== null && $r['grupo']    !== '') $campanhas[$k]['grupo']    = $r['grupo'];
     if ($r['subgrupo'] !== null && $r['subgrupo'] !== '') $campanhas[$k]['subgrupo'] = $r['subgrupo'];
 }
+
+// Nomes dos canais de venda (listagem)
+$canalNome = array_column(db()->query('SELECT id, canal FROM canal_venda')->fetchAll(), 'canal', 'id');
 
 // Clientes específicos por campanha (aplicação "clientes")
 try {
@@ -439,11 +453,6 @@ function critLabel(array $cd, array $prodById): string {
 }
 
 // Campanha fora do período de vigência (ainda não começou ou já terminou)
-function campanhaForaPeriodo(array $c): bool {
-    $hoje = date('Y-m-d');
-    return ($c['data_inicio'] && $c['data_inicio'] > $hoje) || ($c['data_fim'] && $c['data_fim'] < $hoje);
-}
-
 $pageTitle = 'Cadastro de Campanhas';
 require_once LAYOUT_PATH . '/header.php';
 ?>
@@ -492,7 +501,7 @@ require_once LAYOUT_PATH . '/header.php';
                 $fConds = array_map($chaveF, $c['condicoes']);      sort($fConds);
                 $alvosIguaisCond = $alvos && !$alvoTemPctProprio && $fAlvos === array_values(array_unique($fConds));
             ?>
-                <tr class="<?= $c['ativo'] && !campanhaForaPeriodo($c) ? '' : 'opacity-50' ?>">
+                <tr class="<?= $c['ativo'] && !($c['data_fim'] && $c['data_fim'] < date('Y-m-d')) ? '' : 'opacity-50' ?>">
                     <td><strong><?= e($c['codigo_campanha']) ?></strong></td>
                     <td>
                         <?php
@@ -548,7 +557,11 @@ require_once LAYOUT_PATH . '/header.php';
                             <span class="badge bg-primary"><i class="bi bi-person-check me-1"></i><?= count($c['clientes']) ?> cliente(s)</span>
                             <div class="small text-muted" style="max-width:220px"><?= $c['clientes'] ? listaCompacta(array_map(fn($cl) => $cl['nome'] ?: $cl['codigo'], $c['clientes']), ', ', 2) : '<span class="text-danger">nenhum</span>' ?></div>
                         <?php else: ?>
-                            <?= $c['canal'] ? '<span class="badge bg-secondary">'.e($c['canal']).'</span>' : '<span class="text-muted small">Todos</span>' ?>
+                            <?php if ($c['canais']): foreach ($c['canais'] as $cvid): ?>
+                                <span class="badge bg-secondary"><?= e($canalNome[$cvid] ?? ('#' . $cvid)) ?></span>
+                            <?php endforeach; else: ?>
+                                <span class="text-muted small">Todos</span>
+                            <?php endif; ?>
                         <?php endif; ?>
                     </td>
                     <td>
@@ -700,7 +713,7 @@ require_once LAYOUT_PATH . '/header.php';
                                 <button type="button" class="wz-opt" data-value="canal">
                                     <i class="bi bi-diagram-3"></i>
                                     <span><span class="wz-opt-tit">Clientes de um canal de venda</span>
-                                    <span class="wz-opt-sub">Vale para todos os clientes do canal (ou de todos os canais).</span></span>
+                                    <span class="wz-opt-sub">Vale para todos os clientes dos canais escolhidos (ou de todos os canais).</span></span>
                                 </button>
                                 <button type="button" class="wz-opt" data-value="clientes">
                                     <i class="bi bi-person-check"></i>
@@ -710,13 +723,23 @@ require_once LAYOUT_PATH . '/header.php';
                             </div>
                         </div>
                         <div class="wz-bloco camp-step" data-step="canal">
-                            <div class="wz-q">Qual canal de venda?</div>
-                            <select name="canal_venda_id" id="f_canal" class="form-select mt-2" style="max-width:360px">
-                                <option value="">— Todos os canais —</option>
-                                <?php foreach ($canais as $cv): ?>
-                                <option value="<?= $cv['id'] ?>"><?= e($cv['canal']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
+                            <div class="wz-q">Quais canais de venda?</div>
+                            <div class="wz-ajuda">Deixe em "Todos os canais" para valer em qualquer canal, ou adicione quantos canais quiser.</div>
+                            <div id="canalLista" class="mt-2"></div>
+                            <button type="button" class="btn btn-sm btn-outline-primary mt-1" id="canalAddBtn" onclick="canalAddRow('')">
+                                <i class="bi bi-plus-lg me-1"></i>Adicionar canal
+                            </button>
+                            <template id="canalTpl">
+                                <div class="input-group mb-2 canal-row" style="max-width:360px">
+                                    <select name="canal_venda_id[]" class="form-select" onchange="canalAtualizar()">
+                                        <option value="">— Todos os canais —</option>
+                                        <?php foreach ($canais as $cv): ?>
+                                        <option value="<?= $cv['id'] ?>"><?= e($cv['canal']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <button type="button" class="btn btn-outline-danger" title="Remover canal" onclick="canalRemover(this)"><i class="bi bi-x-lg"></i></button>
+                                </div>
+                            </template>
                         </div>
                         <div class="wz-bloco camp-step d-none" data-step="clientes">
                             <div class="wz-q">Quais clientes?</div>
@@ -1044,6 +1067,36 @@ function campEsc(s)     { return String(s == null ? '' : s).replace(/&/g,'&amp;'
 function campEscAttr(s) { return campEsc(s).replace(/"/g,'&quot;'); }
 function campNorm(s)    { return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
 
+// ---- Canais de venda (vários; nenhum escolhido = todos) ----
+function canalAddRow(id) {
+    var row = document.getElementById('canalTpl').content.firstElementChild.cloneNode(true);
+    row.querySelector('select').value = id ? String(id) : '';
+    document.getElementById('canalLista').appendChild(row);
+    canalAtualizar();
+}
+function canalRemover(btn) {
+    btn.closest('.canal-row').remove();
+    if (!document.querySelector('#canalLista .canal-row')) canalAddRow('');
+    canalAtualizar();
+}
+function canalSetar(ids) {
+    document.getElementById('canalLista').innerHTML = '';
+    (ids && ids.length ? ids : ['']).forEach(canalAddRow);
+}
+// Um canal já escolhido não aparece nos outros selects; o "remover" só aparece com mais de um.
+function canalAtualizar() {
+    var sels = Array.prototype.slice.call(document.querySelectorAll('#canalLista select'));
+    var usados = sels.map(function(sl) { return sl.value; }).filter(Boolean);
+    sels.forEach(function(sl) {
+        Array.prototype.forEach.call(sl.options, function(o) {
+            o.hidden = o.value !== '' && o.value !== sl.value && usados.indexOf(o.value) !== -1;
+        });
+        sl.closest('.canal-row').querySelector('.btn-outline-danger').classList.toggle('d-none', sels.length < 2);
+    });
+    var livres = document.getElementById('canalTpl').content.querySelectorAll('option[value]:not([value=""])').length - usados.length;
+    document.getElementById('canalAddBtn').disabled = livres <= 0 || sels.some(function(sl) { return !sl.value; });
+}
+
 // ---- Blocos condicionais (mostra só o que vale para as escolhas feitas) ----
 function campStep() {
     var ehDesc      = document.getElementById('f_tipo').value === 'desconto';
@@ -1166,7 +1219,9 @@ function wzResumo() {
         var nomes = Array.prototype.map.call(document.querySelectorAll('#cliBody tr'), function(tr) { return campEsc(tr.children[1].textContent); });
         add('Para quem', nomes.length + ' cliente(s): ' + nomes.join(', '));
     } else {
-        add('Para quem', g('f_canal').value ? 'Clientes do canal <strong>' + campEsc(wzSelTxt(g('f_canal'))) + '</strong>' : 'Clientes de todos os canais');
+        var cvNomes = Array.prototype.filter.call(document.querySelectorAll('#canalLista select'), function(sl) { return sl.value; })
+            .map(function(sl) { return '<strong>' + campEsc(wzSelTxt(sl)) + '</strong>'; });
+        add('Para quem', cvNomes.length ? 'Clientes ' + (cvNomes.length > 1 ? 'dos canais ' : 'do canal ') + cvNomes.join(', ') : 'Clientes de todos os canais');
     }
     var conds = Array.prototype.map.call(document.querySelectorAll('#condBody tr'), function(tr) { return campEsc(wzCondTxt(tr)); });
     var op = g('f_cond_op').value === 'OU' ? 'OU' : 'E';
@@ -1704,7 +1759,7 @@ function novoReg() {
     document.getElementById('fa').value         = 'criar';
     document.getElementById('f_cod_orig').value = '';
     document.getElementById('f_cod').value      = '';
-    document.getElementById('f_canal').value    = '';
+    canalSetar([]);
     document.getElementById('f_aplicacao').value = 'canal';
     document.getElementById('f_ativo').value    = '1';
     document.getElementById('f_dt_ini').value   = '';
@@ -1722,7 +1777,7 @@ function editarReg(d) {
     document.getElementById('fa').value         = 'editar';
     document.getElementById('f_cod_orig').value = d.codigo_campanha || '';
     document.getElementById('f_cod').value      = d.codigo_campanha || '';
-    document.getElementById('f_canal').value    = d.canal_venda_id  || '';
+    canalSetar(d.canais || []);
     document.getElementById('f_aplicacao').value = d.aplicacao === 'clientes' ? 'clientes' : 'canal';
     document.getElementById('f_ativo').value    = String(d.ativo == null ? 1 : d.ativo);
     document.getElementById('f_dt_ini').value   = d.data_inicio || '';

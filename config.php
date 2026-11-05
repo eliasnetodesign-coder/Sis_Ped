@@ -265,6 +265,14 @@ function db() {
                 KEY idx_camp_cli (codigo_campanha),
                 KEY idx_camp_cli_cliente (cliente_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Canais de venda da campanha (aplicação "canal"): nenhum = todos os canais.
+            // campanhas.canal_venda_id guarda só o 1º canal (compatibilidade).
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS campanha_canais (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_campanha VARCHAR(50) NOT NULL,
+                canal_venda_id  INT NOT NULL,
+                KEY idx_camp_canal (codigo_campanha)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN criterio_modo VARCHAR(20) NOT NULL DEFAULT 'quantidade'"); } catch (PDOException $e) {}
             try { $pdo->exec("ALTER TABLE campanha_condicoes ADD COLUMN valor_min DECIMAL(12,2) NULL DEFAULT NULL"); } catch (PDOException $e) {}
             // Condição = filtro composto (linha E grupo E subgrupo E produto). Ex.: "linha X do grupo Y".
@@ -446,6 +454,16 @@ function db() {
                 KEY idx_tipo_data (tipo, data),
                 KEY idx_insumo (insumo_codigo),
                 KEY idx_fornecedor (fornecedor_codigo)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Cadastro de materiais (planilha do A&M): classificação da coluna P, usada como filtro do relatório.
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS custos_insumos_cadastro (
+                tipo          ENUM('mp','emb') NOT NULL,
+                insumo_codigo VARCHAR(30) NOT NULL,
+                insumo_nome   VARCHAR(200) NULL,
+                grupo         VARCHAR(150) NOT NULL DEFAULT '',
+                rotulo        VARCHAR(100) NULL,
+                PRIMARY KEY (tipo, insumo_codigo),
+                KEY idx_grupo (tipo, grupo)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
             try {
                 if ((int)$pdo->query('SELECT COUNT(*) FROM campanhas_am')->fetchColumn() === 0) {
@@ -3175,15 +3193,41 @@ function campanhasClientes(): array {
 }
 
 /**
+ * Canais de venda das campanhas (cache por requisição).
+ * @return array codigo_campanha => [canal_venda_id, ...]
+ */
+function campanhasCanais(): array {
+    static $cache = null;
+    if ($cache !== null) return $cache;
+    $cache = [];
+    try {
+        foreach (db()->query('SELECT codigo_campanha, canal_venda_id FROM campanha_canais ORDER BY id')->fetchAll() as $r) {
+            $cache[$r['codigo_campanha']][] = (int)$r['canal_venda_id'];
+        }
+    } catch (PDOException $e) { /* tabela ainda não existe */ }
+    return $cache;
+}
+
+/**
+ * Canais de venda a que a campanha se aplica ([] = todos). Campanhas antigas, sem linhas em
+ * campanha_canais, usam o canal único de campanhas.canal_venda_id.
+ */
+function campanhaCanaisIds(array $row): array {
+    $canais = campanhasCanais()[$row['codigo_campanha'] ?? ''] ?? [];
+    if (!$canais && (int)($row['canal_venda_id'] ?? 0)) $canais = [(int)$row['canal_venda_id']];
+    return $canais;
+}
+
+/**
  * A campanha vale para este pedido? Aplicação "clientes": só os clientes listados (o canal
- * não importa); aplicação "canal": sem canal = todos, com canal = só clientes desse canal.
+ * não importa); aplicação "canal": sem canal = todos, com canais = só clientes desses canais.
  */
 function campanhaValeParaCliente(array $row, int $canalVendaId, int $clienteId): bool {
     if (($row['aplicacao'] ?? 'canal') === 'clientes') {
         return $clienteId > 0 && isset(campanhasClientes()[$row['codigo_campanha'] ?? ''][$clienteId]);
     }
-    $canal = (int)($row['canal_venda_id'] ?? 0);
-    return !$canal || $canal === $canalVendaId;
+    $canais = campanhaCanaisIds($row);
+    return !$canais || in_array($canalVendaId, $canais, true);
 }
 
 /**
@@ -4429,7 +4473,11 @@ function bonusExportacaoSelecionavel(float $valorBase, string $moeda = 'BRL'): a
  * e as compras (Data = número de série do Excel; Empresa = fornecedor "<cód> - <nome>").
  * Retorna ['tipo'=>'mp'|'emb'|null, 'empresa', 'ini', 'fim', 'linhas'=>[...], 'avisos'=>[...]] ou lança Exception.
  */
-function custosInsumosLerXlsx(string $path): array {
+/**
+ * Lê a 1ª planilha de um .xlsx (ZipArchive + SimpleXML, sem lib) e devolve as linhas como
+ * [nº da linha => [índice da coluna (A = 0) => valor em texto]]. Linhas vazias não vêm.
+ */
+function xlsxLerLinhas(string $path): array {
     $zip = new ZipArchive();
     if ($zip->open($path) !== true) throw new Exception('Arquivo não é um .xlsx válido.');
     $ss = [];
@@ -4442,6 +4490,12 @@ function custosInsumosLerXlsx(string $path): array {
         }
     }
     $sheet = $zip->getFromName('xl/worksheets/sheet1.xml');
+    if ($sheet === false) {   // exportações que não nomeiam a 1ª planilha como sheet1.xml
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $n = $zip->getNameIndex($i);
+            if (preg_match('#^xl/worksheets/[^/]+\.xml$#', $n)) { $sheet = $zip->getFromName($n); break; }
+        }
+    }
     $zip->close();
     if ($sheet === false) throw new Exception('Planilha não encontrada no arquivo.');
     $sx = simplexml_load_string($sheet);
@@ -4451,6 +4505,21 @@ function custosInsumosLerXlsx(string $path): array {
         foreach (str_split(preg_replace('/\d+/', '', $ref)) as $ch) $n = $n * 26 + ord($ch) - 64;
         return $n - 1;
     };
+    $linhas = [];
+    foreach ($sx->sheetData->row as $row) {
+        $c = [];
+        foreach ($row->c as $cell) {
+            $t = (string)$cell['t'];
+            $v = $t === 'inlineStr' ? (string)$cell->is->t : (string)$cell->v;
+            if ($t === 's') $v = $ss[(int)$v] ?? '';
+            if (($v = trim($v)) !== '') $c[$colIdx((string)$cell['r'])] = $v;
+        }
+        if ($c) $linhas[(int)$row['r']] = $c;
+    }
+    return $linhas;
+}
+
+function custosInsumosLerXlsx(string $path): array {
     $codNome = function (string $s): array {
         $s = trim(preg_replace('/\s+/u', ' ', $s));
         return preg_match('/^(\S+)\s*-\s*(.*)$/u', $s, $m) ? [$m[1], trim($m[2])] : ['', $s];
@@ -4459,16 +4528,8 @@ function custosInsumosLerXlsx(string $path): array {
 
     $res = ['tipo' => null, 'empresa' => null, 'ini' => null, 'fim' => null, 'linhas' => [], 'avisos' => []];
     $insumo = null;
-    foreach ($sx->sheetData->row as $row) {
-        $c = [];
-        foreach ($row->c as $cell) {
-            $t = (string)$cell['t'];
-            $v = $t === 'inlineStr' ? (string)$cell->is->t : (string)$cell->v;
-            if ($t === 's') $v = $ss[(int)$v] ?? '';
-            $c[$colIdx((string)$cell['r'])] = trim($v);
-        }
+    foreach (xlsxLerLinhas($path) as $rowNum => $c) {
         $a = $c[0] ?? '';
-        if ($a === '' && empty(array_filter($c, 'strlen'))) continue;
         if (preg_match('/^Tipo:\s*(.*?)\s+De:\s*(\S+)\s+At[ée]:\s*(\S+)/iu', $a, $m)) {
             $tipoTxt = mb_strtolower($m[1]);
             $res['tipo'] = strpos($tipoTxt, 'embalag') !== false ? 'emb' : (strpos($tipoTxt, 'mat') !== false ? 'mp' : null);
@@ -4486,7 +4547,7 @@ function custosInsumosLerXlsx(string $path): array {
         $vu  = $c[1] ?? '';
         $qtd = $c[2] ?? '';
         if (!$data || !is_numeric($vu) || !is_numeric($qtd)) {
-            $res['avisos'][] = 'Linha ' . (int)$row['r'] . ' ignorada (data/valor/quantidade inválidos).';
+            $res['avisos'][] = 'Linha ' . $rowNum . ' ignorada (data/valor/quantidade inválidos).';
             continue;
         }
         [$fCod, $fNome] = $codNome($c[5] ?? '');
@@ -4535,4 +4596,89 @@ function custosInsumosImportar(array $dados, string $arquivo): array {
         throw $e;
     }
     return ['importacao_id' => $impId, 'linhas' => count($dados['linhas']), 'substituidas' => $subst];
+}
+
+/** Coluna da planilha de cadastro usada como classificação dos insumos (P = 16ª coluna). */
+const CUSTOS_CADASTRO_COLUNA = 15;
+
+/**
+ * Lê a planilha de cadastro de materiais (exportada do A&M) e tira, de cada material, o código e o valor
+ * da coluna P (classificação usada como filtro no relatório de custos). O layout não é fixo: a coluna do
+ * código é a que mais casa com os códigos já importados nas compras (aceita "601351" ou "601351 - NOME");
+ * o rótulo do filtro é o cabeçalho da coluna P (última linha de texto acima dos dados).
+ * Retorna ['rotulo', 'linhas' => [['insumo_codigo', 'insumo_nome', 'grupo'], ...]] ou lança Exception.
+ */
+function custosInsumosLerCadastroXlsx(string $path): array {
+    $rows = xlsxLerLinhas($path);
+    $colP = CUSTOS_CADASTRO_COLUNA;
+    $cod = fn($v) => preg_match('/^(\d{3,})(?:\.0+)?(?:\s*-\s*(.*))?$/u', trim((string)$v), $m) ? [$m[1], trim($m[2] ?? '')] : null;
+
+    $conhecidos = array_flip(db()->query('SELECT DISTINCT insumo_codigo FROM custos_insumos_compras')->fetchAll(PDO::FETCH_COLUMN));
+    $acertos = [];
+    foreach ($rows as $c) {
+        foreach ($c as $i => $v) {
+            if ($i === $colP || !($k = $cod($v))) continue;
+            $acertos[$i] = ($acertos[$i] ?? 0) + (isset($conhecidos[$k[0]]) ? 1000 : 1);   // casar com compra pesa mais
+        }
+    }
+    if (!$acertos) throw new Exception('Não encontrei uma coluna com códigos de material na planilha.');
+    arsort($acertos);
+    $colCod = array_key_first($acertos);
+
+    // Coluna do nome: cabeçalho "Descrição"/"Nome"/"Material" na linha de cabeçalho (se houver).
+    $res = ['rotulo' => null, 'linhas' => []];
+    $colNome = null; $cab = [];
+    foreach ($rows as $c) {
+        $k = $cod($c[$colCod] ?? '');
+        if (!$k) {
+            if (!$res['linhas']) $cab = $c;   // última linha sem código antes dos dados = cabeçalho
+            continue;
+        }
+        if ($colNome === null) {
+            $colNome = false;
+            foreach ($cab as $i => $v) if ($i !== $colCod && preg_match('/descri|nome|material|produto/iu', $v)) { $colNome = $i; break; }
+            $res['rotulo'] = isset($cab[$colP]) && !is_numeric($cab[$colP]) ? mb_substr($cab[$colP], 0, 100) : null;
+        }
+        $res['linhas'][$k[0]] = [
+            'insumo_codigo' => $k[0],
+            'insumo_nome'   => mb_substr($k[1] !== '' ? $k[1] : ($colNome !== false ? ($c[$colNome] ?? '') : ''), 0, 200),
+            // "60008  608-BISNAGA" → "BISNAGA" (o A&M põe os códigos do sub grupo na frente do nome)
+            'grupo'         => mb_substr(preg_replace('/^(\d+\s+)?\d+\s*-\s*/u', '', trim(preg_replace('/\s+/u', ' ', $c[$colP] ?? ''))), 0, 150),
+        ];
+    }
+    if (!$res['linhas']) throw new Exception('Nenhum material encontrado na planilha de cadastro.');
+    if (!array_filter(array_column($res['linhas'], 'grupo'), 'strlen')) {
+        throw new Exception('A coluna P está vazia em todas as linhas — confira se é a planilha de cadastro de materiais.');
+    }
+    $res['linhas'] = array_values($res['linhas']);
+    return $res;
+}
+
+/**
+ * Grava o cadastro lido por custosInsumosLerCadastroXlsx(). Substitui o cadastro inteiro do tipo
+ * (a planilha é a lista completa de materiais). Registra em custos_insumos_importacoes com empresa = "CADASTRO".
+ */
+function custosInsumosImportarCadastro(string $tipo, array $dados, string $arquivo): array {
+    $pdo = db();
+    $u = usuario();
+    $pdo->beginTransaction();
+    try {
+        $del = $pdo->prepare('DELETE FROM custos_insumos_cadastro WHERE tipo = ?');
+        $del->execute([$tipo]);
+        $subst = $del->rowCount();
+        $ins = $pdo->prepare('INSERT INTO custos_insumos_cadastro (tipo, insumo_codigo, insumo_nome, grupo, rotulo) VALUES (?,?,?,?,?)');
+        foreach ($dados['linhas'] as $l) $ins->execute([$tipo, $l['insumo_codigo'], $l['insumo_nome'], $l['grupo'], $dados['rotulo']]);
+        $pdo->prepare('INSERT INTO custos_insumos_importacoes (tipo, empresa, arquivo, linhas, substituidas, usuario_id, usuario_nome)
+                       VALUES (?,?,?,?,?,?,?)')
+            ->execute([$tipo, 'CADASTRO', mb_substr($arquivo, 0, 200), count($dados['linhas']), $subst, $u['id'] ?? null, $u['nome'] ?? null]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+    $st = $pdo->prepare('SELECT COUNT(DISTINCT c.insumo_codigo) FROM custos_insumos_compras c
+                         JOIN custos_insumos_cadastro k ON k.tipo = c.tipo AND k.insumo_codigo = c.insumo_codigo WHERE c.tipo = ?');
+    $st->execute([$tipo]);
+    return ['linhas' => count($dados['linhas']), 'com_compra' => (int)$st->fetchColumn(),
+            'grupos' => count(array_unique(array_filter(array_column($dados['linhas'], 'grupo'), 'strlen')))];
 }

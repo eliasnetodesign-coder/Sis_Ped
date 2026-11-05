@@ -667,7 +667,7 @@ var _campCondicoes = <?= json_encode((function () use ($campanhas, $condByCode, 
         $conds = $condByCode[$code] ?? [];
         if (!$conds) continue; // só novo modelo (com condições)
         $out[] = [
-            'canal_id'  => $c['canal_venda_id'] ? (int)$c['canal_venda_id'] : null,
+            'canais'    => campanhaCanaisIds($c),
             'desconto'  => (float)$c['desconto'],
             'total'     => campanhaTotalCond([$c]),
             'ou'        => campanhaOperador([$c]) === 'OU',
@@ -796,10 +796,10 @@ function _campQtdsIguais(c, itens) {
     var qs = c.conds.map(function(cd) { return _campSomaFiltros(itens, [cd], 'quantidade'); });
     return qs.every(function(q) { return q === qs[0]; });
 }
-// Campanha vale para o cliente selecionado? "Clientes específicos": só os listados; senão, pelo canal.
+// Campanha vale para o cliente selecionado? "Clientes específicos": só os listados; senão, pelos canais.
 function _campValeCliente(c) {
     if (c.clientes) return c.clientes.indexOf(parseInt(document.getElementById('cli_id').value, 10) || 0) !== -1;
-    return !c.canal_id || c.canal_id === _canalId;
+    return !c.canais.length || c.canais.indexOf(_canalId) !== -1;
 }
 function _campAvaliar(c, itens) {
     var nao = { acionada: false, mult: 0, atingidas: [] };
