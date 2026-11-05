@@ -6,9 +6,23 @@ $self = BASE_URL . '/admin/relatorios/custos-insumos-am.php';
 $tiposNome = ['mp' => 'Matéria-prima', 'emb' => 'Material de embalagem'];
 
 // ── Importação: "Listagem Resumida" do A&M (.xlsx), um ou vários arquivos de uma vez ──
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivos'])) {
-    $f = $_FILES['arquivos'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_FILES['arquivos']) || isset($_FILES['cadastro']))) {
+    $f = $_FILES['arquivos'] ?? ['name' => []];
     $ok = []; $erros = []; $ultTipo = null;
+    // Cadastro de materiais de embalagem: a coluna P vira o filtro "classificação" do relatório.
+    $fc = $_FILES['cadastro'] ?? null;
+    if ($fc && $fc['name'] !== '') {
+        if ($fc['error'] !== UPLOAD_ERR_OK) $erros[] = "{$fc['name']}: falha no envio (código {$fc['error']}).";
+        else try {
+            $d = custosInsumosLerCadastroXlsx($fc['tmp_name']);
+            $r = custosInsumosImportarCadastro('emb', $d, $fc['name']);
+            $ultTipo = 'emb';
+            $ok[] = "{$fc['name']}: cadastro de embalagem com {$r['linhas']} materiais e {$r['grupos']} classificações"
+                  . ($d['rotulo'] ? " em “{$d['rotulo']}”" : '') . " (coluna P); {$r['com_compra']} deles têm compras importadas.";
+        } catch (Throwable $e) {
+            $erros[] = "{$fc['name']}: " . $e->getMessage();
+        }
+    }
     foreach ((array)$f['name'] as $i => $nome) {
         if ($nome === '') continue;
         if ($f['error'][$i] !== UPLOAD_ERR_OK) { $erros[] = "$nome: falha no envio (código {$f['error'][$i]})."; continue; }
@@ -36,7 +50,7 @@ $fim   = $dataOk($_GET['fim'] ?? null) ?: date('Y-m-d');
 if ($fim < $ini) [$ini, $fim] = [$fim, $ini];
 $forn  = trim($_GET['fornecedor'] ?? '');
 $q     = trim($_GET['q'] ?? '');
-$visao = in_array($_GET['visao'] ?? '', ['resumo', 'periodo', 'mensal', 'fornecedor', 'compras'], true) ? $_GET['visao'] : 'resumo';
+$visao = in_array($_GET['visao'] ?? '', ['resumo', 'grupo', 'variacao', 'periodo', 'mensal', 'fornecedor', 'compras'], true) ? $_GET['visao'] : 'resumo';
 // Comparativo Período A × B (independe do período principal). Padrão: B = 3 últimos meses até o fim; A = 3 meses antes.
 $iniB = $dataOk($_GET['ini_b'] ?? null) ?: date('Y-m-01', strtotime(date('Y-m-01', strtotime($fim)) . ' -2 months'));
 $fimB = $dataOk($_GET['fim_b'] ?? null) ?: $fim;
@@ -47,6 +61,20 @@ $modoPreco = ($_GET['preco'] ?? 'fixo') === 'medio' ? 'medio' : 'fixo';   // pad
 // Filtro da "Var. %" do Resumo: nenhum marcado = todos; marcado = só os insumos que subiram (Positivos) e/ou caíram (Negativos).
 $varPos = ($_GET['vpos'] ?? '') === '1';
 $varNeg = ($_GET['vneg'] ?? '') === '1';
+// Classificação = coluna P do cadastro de materiais (só aparece quando há cadastro importado para o tipo).
+// '__sem__' = insumos comprados que não estão no cadastro ou estão com a coluna P vazia.
+$grupo = trim($_GET['grupo'] ?? '');
+$st = db()->prepare("SELECT grupo, COUNT(*) AS n, MAX(rotulo) AS rotulo FROM custos_insumos_cadastro WHERE tipo = ? AND grupo <> '' GROUP BY grupo ORDER BY grupo");
+$st->execute([$tipo]);
+$grupos = $st->fetchAll();
+$rotGrupo = ($grupos ? array_values(array_filter(array_column($grupos, 'rotulo')))[0] ?? null : null) ?: 'Classificação';
+if (!$grupos) { $grupo = ''; if ($visao === 'grupo') $visao = 'resumo'; }
+$grupoDe = [];
+if ($grupos) {
+    $st = db()->prepare("SELECT insumo_codigo, grupo FROM custos_insumos_cadastro WHERE tipo = ? AND grupo <> ''");
+    $st->execute([$tipo]);
+    $grupoDe = $st->fetchAll(PDO::FETCH_KEY_PAIR);
+}
 
 // Opções dos filtros (do tipo escolhido, todas as datas)
 $st = db()->prepare('SELECT fornecedor_codigo, MAX(fornecedor_nome) AS nome FROM custos_insumos_compras WHERE tipo = ?
@@ -58,11 +86,16 @@ $st = db()->prepare('SELECT insumo_codigo, MAX(insumo_nome) AS nome FROM custos_
 $st->execute([$tipo]);
 $insumosOpc = $st->fetchAll();
 
-$buscar = function (string $de, string $ate) use ($tipo, $forn, $q): array {
+$buscar = function (string $de, string $ate) use ($tipo, $forn, $q, $grupo): array {
     $sql = 'SELECT * FROM custos_insumos_compras WHERE tipo = ? AND data BETWEEN ? AND ?';
     $par = [$tipo, $de, $ate];
     if ($forn !== '') { $sql .= ' AND fornecedor_codigo = ?'; $par[] = $forn; }
     if ($q !== '')    { $sql .= ' AND (insumo_codigo = ? OR insumo_nome LIKE ?)'; $par[] = $q; $par[] = '%' . $q . '%'; }
+    if ($grupo === '__sem__') {
+        $sql .= " AND insumo_codigo NOT IN (SELECT insumo_codigo FROM custos_insumos_cadastro WHERE tipo = ? AND grupo <> '')"; $par[] = $tipo;
+    } elseif ($grupo !== '') {
+        $sql .= ' AND insumo_codigo IN (SELECT insumo_codigo FROM custos_insumos_cadastro WHERE tipo = ? AND grupo = ?)'; $par[] = $tipo; $par[] = $grupo;
+    }
     $st = db()->prepare($sql . ' ORDER BY data, id');
     $st->execute($par);
     return $st->fetchAll();
@@ -180,8 +213,8 @@ $mesNome = function (string $ym): string {
     static $n = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
     return $n[(int)substr($ym, 5, 2) - 1] . '/' . substr($ym, 2, 2);
 };
-$linkInsumo = function (string $codigo, string $nome, string $visaoDest = 'compras') use ($self, $tipo, $ini, $fim, $forn, $modoPreco): string {
-    $u = $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim, 'fornecedor' => $forn, 'q' => $codigo, 'visao' => $visaoDest]);
+$linkInsumo = function (string $codigo, string $nome, string $visaoDest = 'compras') use ($self, $tipo, $ini, $fim, $forn, $grupo, $modoPreco): string {
+    $u = $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim, 'fornecedor' => $forn, 'grupo' => $grupo, 'q' => $codigo, 'visao' => $visaoDest]);
     return '<a href="' . e($u) . '" class="text-reset text-decoration-none" title="Ver as compras deste insumo">' . e($nome) . '</a>';
 };
 // Sem coluna "Un.": a unidade só aparece (selo ao lado do nome) quando o mesmo insumo tem compras em mais de uma unidade.
@@ -189,6 +222,9 @@ $unsPorInsumo = [];
 foreach (array_merge($compras, $comprasAB) as $c) $unsPorInsumo[$c['insumo_codigo']][$c['unidade']] = 1;
 $tagUn = fn(string $codigo, string $un): string => count($unsPorInsumo[$codigo] ?? []) > 1
     ? ' <span class="badge text-bg-light border fw-normal" title="Unidade (insumo comprado em mais de uma unidade)">' . e($un) . '</span>' : '';
+// Classificação do cadastro (coluna P) embaixo do nome, quando não há filtro por uma classificação só.
+$tagGrupo = fn(string $codigo): string => isset($grupoDe[$codigo]) && ($grupo === '' || $grupo === '__sem__')
+    ? '<div class="small text-muted fw-normal" title="' . e($rotGrupo) . ' (coluna P do cadastro)">' . e($grupoDe[$codigo]) . '</div>' : '';
 $ordAttrs = function (array $o): string {
     $s = '';
     foreach ($o as $k => $v) $s .= ' data-o-' . $k . '="' . e($v) . '"';
@@ -245,6 +281,7 @@ require_once LAYOUT_PATH . '/header.php';
         <b>Tipo:</b> <?= e($tiposNome[$tipo]) ?> · <b>Preço:</b> <?= $modoPreco === 'fixo' ? 'Fixo (última compra)' : 'Médio ponderado' ?>
         · <b>Período:</b> <?= dataBR($ini) ?> a <?= dataBR($fim) ?>
         <?php if ($forn !== ''): ?>· <b>Fornecedor:</b> <?= e($forn . ' - ' . ($totForn[$forn]['nome'] ?? array_column($fornecedores, 'nome', 'fornecedor_codigo')[$forn] ?? '')) ?><?php endif; ?>
+        <?php if ($grupo !== ''): ?>· <b><?= e($rotGrupo) ?>:</b> <?= $grupo === '__sem__' ? 'Sem classificação' : e($grupo) ?><?php endif; ?>
         <?php if ($q !== ''): ?>· <b>Insumo:</b> <?= e($q) ?><?php endif; ?>
         <?php if ($varPos || $varNeg): ?>· <b>Var. %:</b> <?= implode(' e ', array_filter([$varPos ? 'Positivos' : '', $varNeg ? 'Negativos' : ''])) ?><?php endif; ?>
     </div>
@@ -260,7 +297,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <div class="btn-group w-100" role="group">
                     <?php foreach ($tiposNome as $tk => $tn): ?>
                     <input type="radio" class="btn-check" name="tipo" id="tipo-<?= $tk ?>" value="<?= $tk ?>" <?= $tipo === $tk ? 'checked' : '' ?>
-                           onchange="this.form.fornecedor.value='';this.form.q.value='';this.form.submit()">
+                           onchange="this.form.fornecedor.value='';this.form.q.value='';if(this.form.grupo)this.form.grupo.value='';this.form.submit()">
                     <label class="btn btn-outline-primary" for="tipo-<?= $tk ?>"><i class="bi <?= $tk === 'mp' ? 'bi-droplet' : 'bi-box-seam' ?> me-1"></i><?= $tn ?></label>
                     <?php endforeach; ?>
                 </div>
@@ -291,6 +328,18 @@ require_once LAYOUT_PATH . '/header.php';
                 <label class="form-label small fw-semibold mb-1">Até</label>
                 <input type="date" name="fim" class="form-control" value="<?= e($fim) ?>">
             </div>
+            <?php if ($grupos): ?>
+            <div class="col-12 col-md col-xxl-2">
+                <label class="form-label small fw-semibold mb-1" title="Coluna P do cadastro de materiais importado"><?= e($rotGrupo) ?></label>
+                <select name="grupo" class="form-select" onchange="this.form.submit()">
+                    <option value="">Todas</option>
+                    <?php foreach ($grupos as $g): ?>
+                    <option value="<?= e($g['grupo']) ?>" <?= $grupo === $g['grupo'] ? 'selected' : '' ?>><?= e($g['grupo']) ?></option>
+                    <?php endforeach; ?>
+                    <option value="__sem__" <?= $grupo === '__sem__' ? 'selected' : '' ?>>(sem classificação)</option>
+                </select>
+            </div>
+            <?php endif; ?>
             <div class="col-12 col-md-6 col-xxl">
                 <label class="form-label small fw-semibold mb-1">Insumo</label>
                 <input type="search" name="q" class="form-control" list="lstInsumos" value="<?= e($q) ?>" placeholder="Todos (código ou parte do nome)">
@@ -342,7 +391,7 @@ main{min-width:0}   /* item flex do layout: sem isso a tabela larga estica a pá
 .tbl-fixa .col-fixa{position:sticky;left:0;z-index:2;background:var(--bs-body-bg)}
 .tbl-fixa thead th.col-fixa{z-index:4}
 .grp-ini td{border-top:2px solid var(--bs-border-color)}
-tr[data-hist]{cursor:pointer}
+tr[data-hist],tr[data-grp],tr[data-ghist]{cursor:pointer}
 /* ── PDF (impressão do navegador): some menu, filtros e abas; tabelas sem rolagem; cabeçalho repete a cada página ── */
 .print-cab,.print-titulo{display:none}
 @media print{
@@ -435,10 +484,60 @@ foreach ($insumos as $I) {
     $linhasRes[] = ['I' => $I, 'pu' => $pu, 'pp' => $pp, 'var' => $var];
 }
 usort($linhasRes, fn($a, $b) => $b['I']['acc']['valor'] <=> $a['I']['acc']['valor'] ?: strcmp($a['I']['nome'], $b['I']['nome']));
+// Por sub grupo (coluna P do cadastro): totais do período e Var. % ponderada como no Total do Resumo
+// (Σ qtd da última compra × preço atual ÷ Σ qtd da última compra × preço da 1ª compra − 1).
+$linhasGrupo = [];
+if ($grupos) {
+    foreach ($insumos as $I) {
+        $gk = $grupoDe[$I['codigo']] ?? '';
+        if (!isset($linhasGrupo[$gk])) $linhasGrupo[$gk] = ['nome' => $gk, 'ins' => [], 'lista' => [], 'n' => 0, 'valor' => 0.0, 'forn' => [], 'pen' => 0.0, 'ult' => 0.0, 'nvar' => 0, 'sobe' => 0, 'desce' => 0];
+        $G = &$linhasGrupo[$gk];
+        $G['ins'][$I['codigo']] = 1;
+        $G['lista'][] = $I;
+        $G['n'] += $I['acc']['n'];
+        $G['valor'] += $I['acc']['valor'];
+        $G['forn'] += $I['forn'];
+        if ($I['penultimo'] && ($pp = (float)$I['primeiro']['valor_unitario']) > 0) {
+            $pu = (float)$I['ultimo']['valor_unitario'];
+            $G['pen'] += $I['ult_qtd'] * $pp; $G['ult'] += $I['ult_qtd'] * $pu; $G['nvar']++;
+            if ($pu / $pp - 1 >= 0.00005) $G['sobe']++; elseif ($pu / $pp - 1 <= -0.00005) $G['desce']++;
+        }
+        unset($G);
+    }
+    usort($linhasGrupo, fn($a, $b) => $b['valor'] <=> $a['valor'] ?: strcmp($a['nome'], $b['nome']));
+}
+// Variação total: quanto subiu ou caiu no final, em R$. Para cada insumo, a quantidade total do período ao preço da
+// 1ª compra × ao preço atual (última compra); "Pago − 1ª compra" = valor realmente pago × a mesma quantidade ao preço da 1ª.
+// Compra única (sem 1ª compra para comparar) entra só no valor pago, para o total fechar com o comprado no período.
+$varSit = ['sobe' => ['Subiram', 'text-danger', 'bi-arrow-up-circle'], 'desce' => ['Caíram', 'text-success', 'bi-arrow-down-circle'],
+           'igual' => ['Sem variação', 'text-muted', 'bi-dash-circle'], 'unica' => ['Compra única', 'text-muted', 'bi-1-circle']];
+$varTot = []; $linhasVar = [];
+foreach (array_keys($varSit) + ['total' => 'total'] as $sk) $varTot[$sk] = ['ins' => 0, 'pago' => 0.0, 'v1' => 0.0, 'va' => 0.0];
+foreach ($insumos as $I) {
+    $pago = $I['acc']['valor'];
+    if ($I['penultimo']) {
+        $pp = (float)$I['primeiro']['valor_unitario']; $pu = (float)$I['ultimo']['valor_unitario'];
+        $v1 = $I['acc']['qtd'] * $pp; $va = $I['acc']['qtd'] * $pu;
+        $var = $pp > 0 ? ($pu / $pp - 1) * 100 : null;
+        $sk = $var === null || abs($var) < 0.005 ? 'igual' : ($var > 0 ? 'sobe' : 'desce');
+        $linhasVar[] = ['I' => $I, 'pp' => $pp, 'pu' => $pu, 'var' => $var, 'v1' => $v1, 'va' => $va, 'pago' => $pago];
+    } else {
+        $sk = 'unica'; $v1 = $va = $pago;
+    }
+    foreach ([$sk, 'total'] as $t) { $varTot[$t]['ins']++; $varTot[$t]['pago'] += $pago; $varTot[$t]['v1'] += $v1; $varTot[$t]['va'] += $va; }
+}
+usort($linhasVar, fn($a, $b) => ($b['va'] - $b['v1']) <=> ($a['va'] - $a['v1']) ?: strcmp($a['I']['nome'], $b['I']['nome']));
+// R$ com sinal (subir = custo maior = vermelho; cair = verde).
+$difR = function (float $v, bool $cor = true): string {
+    if (abs($v) < 0.005) return '<span class="text-muted">R$ 0,00</span>';
+    return '<span class="text-nowrap' . ($cor ? ' fw-semibold ' . ($v > 0 ? 'text-danger' : 'text-success') : '') . '">' . ($v > 0 ? '+' : '−') . moedaBR(abs($v)) . '</span>';
+};
 $colPm = $modoPreco !== 'fixo';   // no preço fixo a coluna repetiria o "Atual" (última compra)
 $nColRes = $colPm ? 13 : 12;
 $abas = [
     'resumo'     => ['bi-list-ul', 'Resumo por insumo', count($linhasRes)],
+] + ($grupos ? ['grupo' => ['bi-tags', 'Por ' . mb_strtolower($rotGrupo), count($linhasGrupo)]] : []) + [
+    'variacao'   => ['bi-graph-up-arrow', 'Variação total', count($linhasVar)],
     'periodo'    => ['bi-arrow-left-right', 'Período A × B', count($ab)],
     'mensal'     => ['bi-calendar3', 'Evolução mensal', count($insumos)],
     'fornecedor' => ['bi-truck', 'Por fornecedor', count($totForn)],
@@ -469,30 +568,34 @@ $abas = [
         'ult' => ['Atual', 'text-end', 'num'], 'var' => ['Var. %', 'text-end', 'num'],
     ]) ?></tr></thead>
     <tbody>
-    <?php $histJs = []; $resN = 0; $resValor = 0.0; $acum = 0.0;
+    <?php $histJs = []; $histIdx = []; $resN = 0; $resValor = 0.0; $acum = 0.0;
     // Total da "Var. %" (último → atual): ponderada pela quantidade da última compra de cada insumo
     // (Σ qtd × preço última ÷ Σ qtd × preço da 1ª − 1), só insumos com 2+ compras no período.
     $vtPen = 0.0; $vtUlt = 0.0; $vtN = 0; $vtSobe = 0; $vtDesce = 0;
+    // Desconto pelo valor total (insumos com 2+ compras): quantidade total do período × preço da 1ª compra e × preço atual.
+    $vlPri = 0.0; $vlUlt = 0.0;
     // Representatividade da quantidade: só faz sentido entre insumos da mesma unidade (KG com KG, PC com PC...).
     $qtdUn = [];
     foreach ($insumos as $I) $qtdUn[$I['un']] = ($qtdUn[$I['un']] ?? 0) + $I['acc']['qtd'];
     foreach ($linhasRes as ['I' => $I, 'pu' => $pu, 'pp' => $pp, 'var' => $var]):
         // Histórico de compras do insumo para o modal (abre ao clicar na linha).
         $hIdx = count($histJs);
-        $histJs[] = ['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
+        $histIdx[$I['codigo'] . '|' . $I['un']] = $hIdx;
+        $histJs[] =['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
                      'url' => $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim,
-                                                              'fornecedor' => $forn, 'q' => $I['codigo'], 'visao' => 'compras'])];
+                                                              'fornecedor' => $forn, 'grupo' => $grupo, 'q' => $I['codigo'], 'visao' => 'compras'])];
         $a = $I['acc'];
         $resN += $a['n']; $resValor += $a['valor']; $acum += $a['valor'];
         if ($var !== null) {
             $vtPen += $I['ult_qtd'] * $pp; $vtUlt += $I['ult_qtd'] * $pu; $vtN++;
+            $vlPri += $a['qtd'] * $pp; $vlUlt += $a['qtd'] * $pu;
             if ($var >= 0.005) $vtSobe++; elseif ($var <= -0.005) $vtDesce++;
         } ?>
         <tr class="lin-ord"<?= $ordAttrs(['codigo' => $I['codigo'], 'nome' => $I['nome'], 'n' => $a['n'], 'qtd' => $a['qtd'],
             'valor' => round($a['valor'], 2), 'pm' => $pm($a), 'min' => $a['min'], 'max' => $a['max'], 'pen' => $pp ?? -1, 'ult' => $pu,
             'var' => $var ?? -99999, 'nforn' => count($I['forn'])]) ?> data-hist="<?= $hIdx ?>" tabindex="0" title="Clique para ver o histórico de compras">
             <td class="text-muted"><?= e($I['codigo']) ?></td>
-            <td class="fw-semibold"><i class="bi bi-clock-history text-primary me-1 small"></i><?= e($I['nome']) ?><?= $tagUn($I['codigo'], $I['un']) ?></td>
+            <td class="fw-semibold"><i class="bi bi-clock-history text-primary me-1 small"></i><?= e($I['nome']) ?><?= $tagUn($I['codigo'], $I['un']) ?><?= $tagGrupo($I['codigo']) ?></td>
             <td class="text-end"><?= $a['n'] ?></td>
             <td class="text-end"><?= count($I['forn']) ?></td>
             <td class="text-end"><?= qtdFmt($a['qtd']) ?><div class="small text-muted" data-xls="(% do período)" title="<?= e('Representatividade na quantidade total comprada em ' . $I['un'] . ' no período') ?>"><?= $qtdUn[$I['un']] > 0 ? number_format($a['qtd'] / $qtdUn[$I['un']] * 100, 2, ',', '.') . '%' : '—' ?></div></td>
@@ -511,7 +614,13 @@ $abas = [
     </tbody>
     <?php if ($linhasRes): ?>
     <tfoot><tr class="fw-bold"><td colspan="2">Total<?= count($linhasRes) < count($insumos) ? ' (' . count($linhasRes) . ' de ' . count($insumos) . ' insumos)' : '' ?></td><td class="text-end"><?= $resN ?></td><td></td><td></td>
-        <td class="text-end"><?= moedaBR($resValor) ?><div class="small text-muted" data-xls="(% do período)"><?= $total['valor'] > 0 ? number_format($resValor / $total['valor'] * 100, 2, ',', '.') . '%' : '—' ?></div></td><td colspan="<?= $colPm ? 6 : 5 ?>"></td>
+        <td class="text-end"><?= moedaBR($resValor) ?><div class="small text-muted" data-xls="(% do período)"><?= $total['valor'] > 0 ? number_format($resValor / $total['valor'] * 100, 2, ',', '.') . '%' : '—' ?></div>
+            <?php if ($vtN && $vlPri > 0): $vlDesc = $vlPri - $vlUlt; ?>
+            <div class="small text-muted text-nowrap" title="<?= e("Quantidade total do período × preço da 1ª compra, somando os $vtN insumos com 2+ compras") ?>">1ª compra: <?= moedaBR($vlPri) ?></div>
+            <div class="small text-muted text-nowrap" title="Mesma quantidade × preço atual (última compra)">Atual: <?= moedaBR($vlUlt) ?></div>
+            <div class="small <?= $vlDesc >= 0.005 ? 'text-success' : ($vlDesc <= -0.005 ? 'text-danger' : 'text-muted') ?> text-nowrap" title="1ª compra − atual, em % da 1ª compra">
+                <?= $vlDesc <= -0.005 ? 'Aumento' : 'Desconto' ?>: <?= moedaBR(abs($vlDesc)) ?> (<?= number_format(abs($vlDesc) / $vlPri * 100, 2, ',', '.') ?>%)</div>
+            <?php endif; ?></td><td colspan="<?= $colPm ? 6 : 5 ?>"></td>
         <td class="text-end" title="<?= e("Ponderada pela quantidade da última compra; $vtN insumos com 2+ compras no período — $vtSobe subiram, $vtDesce caíram. "
             . 'Última compra: ' . moedaBR($vtUlt) . ' | mesma quantidade ao preço da 1ª compra: ' . moedaBR($vtPen)) ?>">
             <?= varPct($vtPen > 0 ? ($vtUlt / $vtPen - 1) * 100 : null) ?></td></tr></tfoot>
@@ -522,8 +631,168 @@ $abas = [
         ? 'Preço fixo = valor unitário da última compra do período.'
         : 'Preço médio = ponderado pela quantidade (Σ qtd × valor unitário ÷ Σ qtd).' ?>
     CP = número de compras. Abaixo da quantidade e do valor total, a representatividade do insumo no período (a da quantidade é calculada entre os insumos da mesma unidade);
-    “% acum.” soma essa representatividade na ordem das linhas (abre do maior para o menor valor — curva ABC — e recalcula ao reordenar). “1ª compra” e “Atual” = preços da primeira e da última compra do período; “Var. %” compara os dois, ou seja, a variação no período inteiro (só insumos com mais de uma compra; linhas da mesma NF contam como uma compra); no Total, a variação é ponderada pela quantidade da última compra de cada insumo
+    “% acum.” soma essa representatividade na ordem das linhas (abre do maior para o menor valor — curva ABC — e recalcula ao reordenar). “1ª compra” e “Atual” = preços da primeira e da última compra do período; “Var. %” compara os dois, ou seja, a variação no período inteiro (só insumos com mais de uma compra; linhas da mesma NF contam como uma compra); no Total, abaixo do Valor total, a quantidade total do período ao preço da 1ª compra e ao preço atual (insumos com mais de uma compra) e o desconto (1ª compra − atual) em R$ e em % da 1ª compra; a “Var. %” do Total é ponderada pela quantidade da última compra de cada insumo
     (passe o mouse para ver os valores). O mesmo insumo em unidades diferentes (ex.: M e PC) aparece em linhas separadas, com a unidade ao lado do nome. Clique na linha para ver o histórico de compras do insumo.</p>
+</div>
+
+<?php if ($grupos): ?>
+<!-- ══ Por sub grupo (coluna P do cadastro de materiais) ══ -->
+<div class="tab-pane fade <?= $visao === 'grupo' ? 'show active' : '' ?>" id="vis-grupo" role="tabpanel">
+<h5 class="print-titulo"><?= e($abas['grupo'][1]) ?></h5>
+<div class="card shadow-sm border-0"><div class="card-body p-0"><div class="table-responsive tbl-fixa-wrap">
+<table class="table table-hover table-sm align-middle mb-0 tbl-fixa" data-acum-total="<?= round($total['valor'], 2) ?>">
+    <thead class="table-light"><tr><?= $thOrd([
+        'nome' => [e($rotGrupo), '', 'txt'], 'ins' => ['Insumos', 'text-end', 'num'], 'n' => ['CP', 'text-end', 'num'],
+        'nforn' => ['Forn.', 'text-end', 'num'], 'valor' => ['Valor total', 'text-end', 'num'],
+    ]) ?><th class="text-end" title="Soma da representatividade no total do período, na ordem em que as linhas estão">% acum.</th><?= $thOrd([
+        'var' => ['Var. %', 'text-end', 'num'],
+    ]) ?></tr></thead>
+    <tbody>
+    <?php $acum = 0.0; $gPen = 0.0; $gUlt = 0.0; $grupoJs = [];
+    foreach ($linhasGrupo as $G):
+        $acum += $G['valor']; $gPen += $G['pen']; $gUlt += $G['ult'];
+        $varG = $G['pen'] > 0 ? ($G['ult'] / $G['pen'] - 1) * 100 : null;
+        $gVal = $G['nome'] !== '' ? $G['nome'] : '__sem__';
+        $uG = $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim, 'fornecedor' => $forn, 'q' => $q,
+                                              'grupo' => $gVal, 'visao' => 'resumo', 'ini_a' => $iniA, 'fim_a' => $fimA, 'ini_b' => $iniB, 'fim_b' => $fimB, 'ambos' => $soAmbos ? '1' : '0']);
+        // Insumos do sub grupo para o modal: [código, nome, un., CP, qtd, valor, 1ª compra, atual, data atual, índice no HIST]
+        $itens = [];
+        foreach ($G['lista'] as $I) {
+            $hk = $I['codigo'] . '|' . $I['un'];
+            if (!isset($histIdx[$hk])) {   // fora do Resumo pelo filtro da Var. %: entra no HIST só para o modal
+                $histIdx[$hk] = count($histJs);
+                $histJs[] = ['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
+                             'url' => $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim,
+                                                                      'fornecedor' => $forn, 'grupo' => $grupo, 'q' => $I['codigo'], 'visao' => 'compras'])];
+            }
+            $itens[] = [$I['codigo'], $I['nome'], count($unsPorInsumo[$I['codigo']] ?? []) > 1 ? $I['un'] : '', $I['acc']['n'], $I['acc']['qtd'], round($I['acc']['valor'], 2),
+                        $I['penultimo'] ? (float)$I['primeiro']['valor_unitario'] : null, (float)$I['ultimo']['valor_unitario'], $I['ultimo']['data'], $histIdx[$hk]];
+        }
+        usort($itens, fn($a, $b) => $b[5] <=> $a[5]);
+        $gIdx = count($grupoJs);
+        $grupoJs[] = ['n' => $G['nome'] !== '' ? $G['nome'] : '(sem classificação)', 'url' => $uG, 'var' => $varG, 'i' => $itens]; ?>
+        <tr class="lin-ord"<?= $ordAttrs(['nome' => $G['nome'] !== '' ? $G['nome'] : '~', 'ins' => count($G['ins']), 'n' => $G['n'], 'nforn' => count($G['forn']),
+            'valor' => round($G['valor'], 2), 'var' => $varG ?? -99999]) ?> data-grp="<?= $gIdx ?>" tabindex="0" title="Clique para ver os insumos deste <?= e(mb_strtolower($rotGrupo)) ?>">
+            <td class="fw-semibold"><i class="bi bi-list-ul text-primary me-1 small"></i><?= $G['nome'] !== '' ? e($G['nome']) : '<span class="text-muted fst-italic">(sem classificação)</span>' ?></td>
+            <td class="text-end"><?= count($G['ins']) ?></td>
+            <td class="text-end"><?= $G['n'] ?></td>
+            <td class="text-end"><?= count($G['forn']) ?></td>
+            <td class="text-end"><?= moedaBR($G['valor']) ?><div class="small text-muted" data-xls="(% do período)" title="Representatividade no total comprado do período"><?= $total['valor'] > 0 ? number_format($G['valor'] / $total['valor'] * 100, 2, ',', '.') . '%' : '—' ?></div></td>
+            <td class="text-end text-muted col-acum"><?= $total['valor'] > 0 ? number_format($acum / $total['valor'] * 100, 2, ',', '.') . '%' : '—' ?></td>
+            <td class="text-end" title="<?= e("{$G['nvar']} insumos com 2+ compras no período — {$G['sobe']} subiram, {$G['desce']} caíram") ?>"><?= varPct($varG) ?></td>
+        </tr>
+    <?php endforeach; if (!$linhasGrupo): ?>
+        <tr><td colspan="7" class="text-center text-muted py-4">Nenhuma compra com estes filtros.</td></tr>
+    <?php endif; ?>
+    </tbody>
+    <?php if ($linhasGrupo): ?>
+    <tfoot><tr class="fw-bold"><td>Total</td><td class="text-end"><?= count($insumos) ?></td><td class="text-end"><?= $total['n'] ?></td><td class="text-end"><?= count($totForn) ?></td>
+        <td class="text-end"><?= moedaBR($total['valor']) ?></td><td></td><td class="text-end"><?= varPct($gPen > 0 ? ($gUlt / $gPen - 1) * 100 : null) ?></td></tr></tfoot>
+    <?php endif; ?>
+</table>
+</div></div></div>
+<p class="small text-muted mt-2 mb-0"><?= e($rotGrupo) ?> = coluna P do cadastro de materiais importado. Insumos = materiais com compra no período; CP = número de compras.
+    Abaixo do valor, a representatividade no total do período; “% acum.” soma essa representatividade na ordem das linhas (curva ABC).
+    “Var. %” = variação da 1ª para a última compra do período, ponderada pela quantidade da última compra de cada insumo (só insumos com mais de uma compra), igual ao Total do Resumo.
+    Clique no <?= e(mb_strtolower($rotGrupo)) ?> para ver os insumos que o compõem.</p>
+</div>
+<?php endif; ?>
+
+<!-- ══ Variação total: quanto subiu / caiu no final ══ -->
+<div class="tab-pane fade <?= $visao === 'variacao' ? 'show active' : '' ?>" id="vis-variacao" role="tabpanel">
+<h5 class="print-titulo"><?= e($abas['variacao'][1]) ?></h5>
+<?php $vS = $varTot['sobe']; $vD = $varTot['desce']; $vT = $varTot['total']; $saldo = $vT['va'] - $vT['v1']; ?>
+<div class="row g-3 mb-3">
+    <?php foreach ([
+        ['Subiu no final', $difR($vS['va'] - $vS['v1']), 'danger', $vS['ins'] . ' insumos · ' . ($vS['v1'] > 0 ? '+' . number_format(($vS['va'] / $vS['v1'] - 1) * 100, 2, ',', '.') . '%' : '—') . ' sobre a 1ª compra'],
+        ['Diminuiu no final', $difR($vD['va'] - $vD['v1']), 'success', $vD['ins'] . ' insumos · ' . ($vD['v1'] > 0 ? number_format(($vD['va'] / $vD['v1'] - 1) * 100, 2, ',', '.') . '%' : '—') . ' sobre a 1ª compra'],
+        ['Saldo no final', $difR($saldo), $saldo > 0.005 ? 'danger' : 'success', ($vT['v1'] > 0 ? ($saldo > 0 ? '+' : '') . number_format(($vT['va'] / $vT['v1'] - 1) * 100, 2, ',', '.') . '%' : '—') . ' · ' . ($saldo > 0.005 ? 'custo subiu' : 'custo caiu') . ' no período'],
+        ['Pago − preço da 1ª compra', $difR($vT['pago'] - $vT['v1']), 'secondary', 'realizado: pago ' . moedaBR($vT['pago']) . ' × ' . moedaBR($vT['v1'])],
+    ] as [$rot, $val, $cor, $sub]): ?>
+    <div class="col-6 col-xl-3">
+        <div class="card shadow-sm border-0 border-start border-4 border-<?= $cor ?> h-100">
+            <div class="card-body py-3">
+                <div class="text-muted small fw-semibold text-uppercase"><?= e($rot) ?></div>
+                <div class="fs-4 fw-bold kpi-val"><?= $val ?></div>
+                <div class="small text-muted"><?= e($sub) ?></div>
+            </div>
+        </div>
+    </div>
+    <?php endforeach; ?>
+</div>
+<div class="card shadow-sm border-0 mb-3"><div class="card-body p-0"><div class="table-responsive">
+<table class="table table-sm align-middle mb-0" id="tblVarResumo">
+    <thead class="table-light"><tr><th>Situação</th><th class="text-end">Insumos</th><th class="text-end">Valor pago</th>
+        <th class="text-end" title="Quantidade total do período × preço da 1ª compra">Qtd. × 1ª compra</th><th class="text-end" title="Quantidade total do período × preço atual (última compra)">Qtd. × atual</th>
+        <th class="text-end" title="Qtd. × atual − Qtd. × 1ª compra">Variação final</th><th class="text-end">Var. %</th>
+        <th class="text-end" title="Valor pago − Qtd. × 1ª compra">Pago − 1ª compra</th><th class="text-end">%</th></tr></thead>
+    <tbody>
+    <?php foreach ($varSit + ['total' => ['Total', '', 'bi-sigma']] as $sk => [$rot, $cls, $ico]): $T = $varTot[$sk]; ?>
+        <tr class="<?= $sk === 'total' ? 'fw-bold table-light' : '' ?>">
+            <td class="fw-semibold"><i class="bi <?= $ico ?> <?= $cls ?> me-1"></i><?= e($rot) ?></td>
+            <td class="text-end"><?= $T['ins'] ?></td>
+            <td class="text-end"><?= moedaBR($T['pago']) ?></td>
+            <td class="text-end"><?= moedaBR($T['v1']) ?></td>
+            <td class="text-end"><?= moedaBR($T['va']) ?></td>
+            <td class="text-end"><?= $difR($T['va'] - $T['v1']) ?></td>
+            <td class="text-end"><?= varPct($T['v1'] > 0 && $sk !== 'unica' ? ($T['va'] / $T['v1'] - 1) * 100 : null) ?></td>
+            <td class="text-end"><?= $difR($T['pago'] - $T['v1']) ?></td>
+            <td class="text-end"><?= varPct($T['v1'] > 0 && $sk !== 'unica' ? ($T['pago'] / $T['v1'] - 1) * 100 : null) ?></td>
+        </tr>
+    <?php endforeach; ?>
+    </tbody>
+</table>
+</div></div></div>
+<div class="card shadow-sm border-0"><div class="card-body p-0"><div class="table-responsive tbl-fixa-wrap">
+<table class="table table-hover table-sm align-middle mb-0 tbl-fixa" id="tblVarInsumos">
+    <thead class="table-light"><tr><?= $thOrd([
+        'codigo' => ['Código', '', 'num'], 'nome' => ['Insumo', '', 'txt'], 'qtd' => ['Qtd. total', 'text-end', 'num'],
+        'pen' => ['1ª compra', 'text-end', 'num'], 'ult' => ['Atual', 'text-end', 'num'], 'var' => ['Var. %', 'text-end', 'num'],
+        'v1' => ['Qtd. × 1ª compra', 'text-end', 'num'], 'va' => ['Qtd. × atual', 'text-end', 'num'], 'dif' => ['Variação final', 'text-end', 'num'],
+        'pago' => ['Valor pago', 'text-end', 'num'], 'real' => ['Pago − 1ª compra', 'text-end', 'num'],
+    ]) ?></tr></thead>
+    <tbody>
+    <?php foreach ($linhasVar as $L): $I = $L['I'];
+        $hk = $I['codigo'] . '|' . $I['un'];
+        if (!isset($histIdx[$hk])) {   // fora do Resumo pelo filtro da Var. %: entra no HIST só para o modal
+            $histIdx[$hk] = count($histJs);
+            $histJs[] = ['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
+                         'url' => $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim,
+                                                                  'fornecedor' => $forn, 'grupo' => $grupo, 'q' => $I['codigo'], 'visao' => 'compras'])];
+        }
+        $dif = $L['va'] - $L['v1']; $real = $L['pago'] - $L['v1']; ?>
+        <tr class="lin-ord"<?= $ordAttrs(['codigo' => $I['codigo'], 'nome' => $I['nome'], 'qtd' => $I['acc']['qtd'], 'pen' => $L['pp'], 'ult' => $L['pu'],
+            'var' => $L['var'] ?? -99999, 'v1' => round($L['v1'], 2), 'va' => round($L['va'], 2), 'dif' => round($dif, 2), 'pago' => round($L['pago'], 2), 'real' => round($real, 2)]) ?>
+            data-hist="<?= $histIdx[$hk] ?>" tabindex="0" title="Clique para ver o histórico de compras">
+            <td class="text-muted"><?= e($I['codigo']) ?></td>
+            <td class="fw-semibold"><i class="bi bi-clock-history text-primary me-1 small"></i><?= e($I['nome']) ?><?= $tagUn($I['codigo'], $I['un']) ?><?= $tagGrupo($I['codigo']) ?></td>
+            <td class="text-end"><?= qtdFmt($I['acc']['qtd']) ?></td>
+            <td class="text-end"><?= precoUn($L['pp']) ?><div class="small text-muted"><?= dataBR($I['primeiro']['data']) ?></div></td>
+            <td class="text-end"><?= precoUn($L['pu']) ?><div class="small text-muted"><?= dataBR($I['ultimo']['data']) ?></div></td>
+            <td class="text-end"><?= varPct($L['var']) ?></td>
+            <td class="text-end"><?= moedaBR($L['v1']) ?></td>
+            <td class="text-end"><?= moedaBR($L['va']) ?></td>
+            <td class="text-end"><?= $difR($dif) ?></td>
+            <td class="text-end"><?= moedaBR($L['pago']) ?></td>
+            <td class="text-end"><?= $difR($real) ?></td>
+        </tr>
+    <?php endforeach; if (!$linhasVar): ?>
+        <tr><td colspan="11" class="text-center text-muted py-4">Nenhum insumo com mais de uma compra com estes filtros.</td></tr>
+    <?php endif; ?>
+    </tbody>
+    <?php if ($linhasVar): $t1 = $vS['v1'] + $vD['v1'] + $varTot['igual']['v1']; $tA = $vS['va'] + $vD['va'] + $varTot['igual']['va']; $tP = $vS['pago'] + $vD['pago'] + $varTot['igual']['pago']; ?>
+    <tfoot><tr class="fw-bold"><td colspan="5">Total (<?= count($linhasVar) ?> insumos com 2+ compras)</td>
+        <td class="text-end"><?= varPct($t1 > 0 ? ($tA / $t1 - 1) * 100 : null) ?></td>
+        <td class="text-end"><?= moedaBR($t1) ?></td><td class="text-end"><?= moedaBR($tA) ?></td><td class="text-end"><?= $difR($tA - $t1) ?></td>
+        <td class="text-end"><?= moedaBR($tP) ?></td><td class="text-end"><?= $difR($tP - $t1) ?></td></tr></tfoot>
+    <?php endif; ?>
+</table>
+</div></div></div>
+<p class="small text-muted mt-2 mb-0">Para cada insumo, a quantidade total comprada no período é valorizada ao preço da 1ª compra e ao preço atual (última compra do período).
+    “Variação final” = Qtd. × atual − Qtd. × 1ª compra: quanto a mesma compra custaria a mais (vermelho) ou a menos (verde) hoje. “Pago − 1ª compra” = valor realmente pago
+    menos a mesma quantidade ao preço da 1ª compra: quanto se pagou a mais ou a menos de fato ao longo do período.
+    Insumos com uma única compra não têm com o que comparar: entram só no valor pago (linha “Compra única”), para o Total fechar com o total comprado.
+    A lista abre da maior alta para a maior queda em R$; clique na linha para ver o histórico de compras.</p>
 </div>
 
 <!-- ══ Período A × B ══ -->
@@ -743,6 +1012,38 @@ $abas = [
     </div>
 </div>
 
+<!-- ══ Modal: insumos de um sub grupo (aba Por sub grupo) ══ -->
+<div class="modal fade" id="modalGrupo" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0"><i class="bi bi-tags me-2"></i><span id="grpTitulo"></span></h5>
+                    <div class="small text-muted" id="grpSub"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0" style="font-size:.85rem">
+                    <thead class="table-light"><tr>
+                        <th>Código</th><th>Insumo</th><th class="text-end">CP</th><th class="text-end">Qtd. total</th><th class="text-end">Valor total</th>
+                        <th class="text-end">1ª compra</th><th class="text-end">Atual</th><th class="text-end">Var. %</th>
+                    </tr></thead>
+                    <tbody id="grpCorpo"></tbody>
+                    <tfoot id="grpRodape" class="fw-bold"></tfoot>
+                </table>
+                </div>
+                <p class="small text-muted mt-2 mb-0">Abaixo do valor, a participação do insumo no <?= e(mb_strtolower($rotGrupo)) ?>. Clique no insumo para ver o histórico de compras.</p>
+            </div>
+            <div class="modal-footer">
+                <a href="#" id="grpLink" class="btn btn-outline-secondary btn-sm"><i class="bi bi-funnel me-1"></i>Filtrar o relatório por este <?= e(mb_strtolower($rotGrupo)) ?></a>
+                <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- ══ Modal de importação ══ -->
 <div class="modal fade" id="modalImportar" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -754,11 +1055,16 @@ $abas = [
             <div class="modal-body">
                 <p class="small mb-2">Selecione a <b>Listagem Resumida</b> exportada do A&amp;M em Excel (.xlsx), de <b>Matéria Prima</b> e/ou de <b>Materiais de Embalagem</b>.
                     Pode enviar os dois arquivos juntos — o tipo, a empresa e o período são lidos do cabeçalho de cada planilha.</p>
-                <input type="file" name="arquivos[]" class="form-control" accept=".xlsx" multiple required>
+                <input type="file" name="arquivos[]" class="form-control" accept=".xlsx" multiple>
                 <div class="alert alert-light border small mt-3 mb-0">
                     <i class="bi bi-arrow-repeat me-1"></i>Reimportar não duplica: as compras já gravadas do mesmo tipo e empresa
                     <b>dentro do período do arquivo</b> (“De … Até …”) são substituídas pelas do arquivo novo. Compras de fora desse período ficam como estão.
                 </div>
+                <h6 class="fw-bold mt-4 mb-2"><i class="bi bi-tags me-1"></i>Cadastro de materiais de embalagem</h6>
+                <p class="small mb-2">Planilha de cadastro dos materiais de embalagem (.xlsx). A <b>coluna P</b> vira o filtro
+                    <b><?= e($tipo === 'emb' ? $rotGrupo : 'Classificação') ?></b> do relatório (tipo Material de embalagem); o código do material é localizado automaticamente.
+                    Reimportar substitui o cadastro inteiro.</p>
+                <input type="file" name="cadastro" class="form-control" accept=".xlsx">
                 <div id="impCarregando" class="d-none text-center text-muted small mt-3"><span class="spinner-border spinner-border-sm me-2"></span>Importando…</div>
                 <?php if ($importacoes): ?>
                 <h6 class="fw-bold mt-4 mb-2">Últimas importações</h6>
@@ -770,7 +1076,7 @@ $abas = [
                     <tr>
                         <td class="text-nowrap"><?= date('d/m/Y H:i', strtotime($im['created_at'])) ?></td>
                         <td><?= e($tiposNome[$im['tipo']] ?? $im['tipo']) ?></td>
-                        <td class="text-nowrap"><?= dataBR($im['periodo_ini']) ?> a <?= dataBR($im['periodo_fim']) ?></td>
+                        <td class="text-nowrap"><?= $im['empresa'] === 'CADASTRO' ? 'Cadastro (coluna P)' : dataBR($im['periodo_ini']) . ' a ' . dataBR($im['periodo_fim']) ?></td>
                         <td class="text-end"><?= (int)$im['linhas'] ?><?= $im['substituidas'] ? ' <span class="text-muted" title="compras anteriores substituídas">(' . (int)$im['substituidas'] . ' subst.)</span>' : '' ?></td>
                         <td><?= e($im['arquivo']) ?></td>
                         <td><?= e($im['usuario_nome'] ?: '—') ?></td>
@@ -899,6 +1205,51 @@ Array.prototype.forEach.call(document.querySelectorAll('tr[data-hist]'), functio
     tr.addEventListener('click', function () { abrirHist(+tr.dataset.hist); });
     tr.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') abrirHist(+tr.dataset.hist); });
 });
+// Insumos do sub grupo: [código, nome, un., CP, qtd, valor, 1ª compra, atual, data atual, índice no HIST].
+// Clicar num insumo troca para o histórico; ao fechar o histórico, o modal do sub grupo volta.
+var GRUPOS = <?= json_encode($grupoJs ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+var grpVoltar = null;
+function abrirGrupo(i) {
+    var g = GRUPOS[i]; if (!g) return;
+    var tot = 0, cp = 0;
+    g.i.forEach(function (r) { tot += r[5]; cp += r[3]; });
+    document.getElementById('grpTitulo').textContent = g.n;
+    document.getElementById('grpSub').textContent = g.i.length + ' insumo(s) com compra · ' + PERIODO;
+    document.getElementById('grpCorpo').innerHTML = g.i.map(function (r) {
+        var v = r[6] > 0 ? (r[7] / r[6] - 1) * 100 : null;
+        return '<tr data-ghist="' + r[9] + '" tabindex="0" title="Clique para ver o histórico de compras">'
+             + '<td class="text-muted">' + hEsc(r[0]) + '</td>'
+             + '<td class="fw-semibold"><i class="bi bi-clock-history text-primary me-1 small"></i>' + hEsc(r[1])
+             + (r[2] ? ' <span class="badge text-bg-light border fw-normal">' + hEsc(r[2]) + '</span>' : '') + '</td>'
+             + '<td class="text-end">' + r[3] + '</td><td class="text-end">' + hQtd(r[4]) + '</td>'
+             + '<td class="text-end">' + hMoeda(r[5]) + '<div class="small text-muted">'
+             + (tot > 0 ? (r[5] / tot * 100).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '%' : '—') + '</div></td>'
+             + '<td class="text-end">' + (r[6] === null ? '<span class="text-muted">—</span>' : hPreco(r[6])) + '</td>'
+             + '<td class="text-end">' + hPreco(r[7]) + '<div class="small text-muted">' + hData(r[8]) + '</div></td>'
+             + '<td class="text-end">' + hVar(v) + '</td></tr>';
+    }).join('');
+    document.getElementById('grpRodape').innerHTML = '<tr><td colspan="2">Total</td><td class="text-end">' + cp + '</td><td></td><td class="text-end">'
+        + hMoeda(tot) + '</td><td colspan="2"></td><td class="text-end">' + hVar(g['var']) + '</td></tr>';
+    document.getElementById('grpLink').href = g.url;
+    Array.prototype.forEach.call(document.querySelectorAll('#grpCorpo tr[data-ghist]'), function (tr) {
+        function vai() {
+            grpVoltar = i;
+            var mg = document.getElementById('modalGrupo');
+            mg.addEventListener('hidden.bs.modal', function () { abrirHist(+tr.dataset.ghist); }, {once: true});
+            bootstrap.Modal.getInstance(mg).hide();
+        }
+        tr.addEventListener('click', vai);
+        tr.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') vai(); });
+    });
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('modalGrupo')).show();
+}
+document.getElementById('modalHist').addEventListener('hidden.bs.modal', function () {
+    if (grpVoltar !== null) { var i = grpVoltar; grpVoltar = null; abrirGrupo(i); }
+});
+Array.prototype.forEach.call(document.querySelectorAll('tr[data-grp]'), function (tr) {
+    tr.addEventListener('click', function () { abrirGrupo(+tr.dataset.grp); });
+    tr.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') abrirGrupo(+tr.dataset.grp); });
+});
 // PDF pela impressão do navegador ("Salvar como PDF"). Imprime sempre em tema claro; "todas" mostra as 5 abas, uma por página.
 function gerarPdf(todas) {
     var html = document.documentElement, tema = html.getAttribute('data-bs-theme');
@@ -924,6 +1275,7 @@ var XLS_FILTROS = <?= json_encode([
     ['Período A × B', 'A: ' . dataBR($iniA) . ' a ' . dataBR($fimA) . ' | B: ' . dataBR($iniB) . ' a ' . dataBR($fimB) . ($soAmbos ? ' (só insumos dos dois períodos)' : '')],
     ['Fornecedor', $forn !== '' ? $forn . ' - ' . (array_column($fornecedores, 'nome', 'fornecedor_codigo')[$forn] ?? '') : 'Todos'],
     ['Insumo', $q !== '' ? $q : 'Todos'],
+    [$rotGrupo, $grupo === '' ? 'Todos' : ($grupo === '__sem__' ? 'Sem classificação' : $grupo)],
     ['Var. % (Resumo)', $varPos || $varNeg ? implode(' e ', array_filter([$varPos ? 'Positivos' : '', $varNeg ? 'Negativos' : ''])) : 'Todos'],
     ['Gerado em', date('d/m/Y H:i') . (!empty(usuario()['nome']) ? ' por ' . usuario()['nome'] : '')],
 ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
@@ -1001,7 +1353,7 @@ function gerarExcel() {
     var fil = XLSX.utils.aoa_to_sheet(XLS_FILTROS);
     fil['!cols'] = [{wch: 16}, {wch: 80}];
     XLSX.utils.book_append_sheet(wb, fil, 'Filtros');
-    [['#vis-resumo', 'Resumo por insumo'], ['#vis-periodo', 'Período A x B'], ['#vis-mensal', 'Evolução mensal'],
+    [['#vis-resumo', 'Resumo por insumo'], ['#vis-grupo', <?= json_encode(mb_substr('Por ' . mb_strtolower($rotGrupo), 0, 31)) ?>], ['#tblVarResumo', 'Variação total'], ['#tblVarInsumos', 'Variação por insumo'], ['#vis-periodo', 'Período A x B'], ['#vis-mensal', 'Evolução mensal'],
      ['#vis-fornecedor', 'Por fornecedor'], ['#vis-compras', 'Compras']].forEach(function (p) {
         var el = document.querySelector(p[0]);
         var tbl = el && (el.tagName === 'TABLE' ? el : el.querySelector('table'));
