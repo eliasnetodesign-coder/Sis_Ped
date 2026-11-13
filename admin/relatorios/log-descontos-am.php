@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/../../config.php';
-requireAdmin();   // comercial, financeiro, supervisor e TI (o financeiro acessa pelo menu Financeiro)
+requireAdmin();   // comercial, financeiro, supervisor e TI (menu Administração)
 
 // "Print" da tela do A&M guardado no log (?ver=<id>&tela=validar|conclui): devolve o HTML cru num
 // sandbox sem scripts/forms, com <base> no A&M para o CSS e as imagens da tela carregarem.
@@ -119,16 +119,11 @@ require_once LAYOUT_PATH . '/header.php';
     <div>
         <h4 class="fw-bold mb-0"><i class="bi bi-journal-text me-2"></i>Log de Descontos A&amp;M</h4>
         <p class="text-muted small mb-0">
-            Cada gravação do % Diretoria no pedido do A&amp;M feita pelo <strong>“Importa Pedido BF”</strong>
+            Cada gravação do % Diretoria no pedido do A&amp;M feita pelo <strong>“Importa Pedido”</strong>
             (opção “Gravar o % Diretoria também no pedido do A&amp;M”): itens alterados, aba
             <strong>Validar</strong> e <strong>Conclui Pedido</strong>.
         </p>
     </div>
-    <?php if (usuario()['tipo'] !== 'financeiro'): // o hub Relatórios A&M é só do Comercial ?>
-    <a href="<?= BASE_URL ?>/admin/relatorios/am.php" class="btn btn-outline-secondary btn-sm">
-        <i class="bi bi-arrow-left me-1"></i>Relatórios A&amp;M
-    </a>
-    <?php endif; ?>
 </div>
 
 <form class="card shadow-sm border-0 mb-3 p-3">

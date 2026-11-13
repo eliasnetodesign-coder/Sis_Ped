@@ -22,6 +22,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['ajax_margem'])) {
         'pedido_accademia'  => in_array($acc, ['SIM', 'NAO'], true) ? $acc : null,
         'is_a_vista'        => !empty($in['is_a_vista']),
         'credito_utilizado' => max(0.0, (float)($in['credito_utilizado'] ?? 0)),
+        'codigo'            => (string)($in['codigo'] ?? ''),
+        'data_pedido'       => preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($in['data_pedido'] ?? '')) ? $in['data_pedido'] : null,
+        'eh_bf'             => !empty($in['eh_bf']),
+        'obs'               => (string)($in['obs'] ?? ''),
         'itens'             => [],
     ];
     foreach ($in['itens'] as $it) {
@@ -46,16 +50,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['ajax_margem'])) {
     if (($_GET['modo'] ?? '') === 'compacto') {
         // Visualização compacta (a 1ª versão do detalhe): uma linha por item com o waterfall resumido.
         $pctFmt = fn($v) => rtrim(rtrim(number_format((float)$v, 2, ',', '.'), '0'), ',') . '%';
-        ?>
+        $sep = margemSepararCampanha($p, $m);   // % Diretoria do A&M = campanha (conferida no SisPed) + diretoria extra
+        if (empty($in['importado'])) $sep['obs_ok'] = null;   // texto das campanhas no Obs só existe nos importados pelo SisPed
+        if ($sep['campanhas']): ?>
+<div class="small mb-2"><b>Campanhas atingidas<?= $p['eh_bf'] ? ' (campanhas BF)' : '' ?>:</b>
+    <?php foreach ($sep['campanhas'] as $cn => $cp): $vo = in_array($cn, $sep['via_obs'], true); ?><span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 me-1"<?= $vo ? ' title="Campanha desativada: vale neste pedido por estar citada no Obs do A&amp;M"' : '' ?>><?= e($cn) ?> · <?= $pctFmt($cp) ?><?= $vo ? ' <i class="bi bi-chat-square-text"></i>' : '' ?></span><?php endforeach; ?>
+</div>
+<?php endif; ?>
+<?php if ($sep['obs_ok'] === false): ?>
+<div class="alert alert-warning small py-1 mb-2"><i class="bi bi-chat-square-text me-1"></i>O Obs do A&amp;M não cita as campanhas calculadas pelo SisPed (esperado: “<?= e($sep['obs_esperada']) ?>”).</div>
+<?php endif; ?>
 <div class="table-responsive">
 <table class="table table-sm table-hover align-middle mb-0" style="font-size:.8rem">
     <thead class="table-light"><tr>
         <th>Código</th><th>Produto</th><th class="text-end">Qtd</th>
-        <th class="text-end">Valor Tabela</th><th class="text-end">Descontos</th><th class="text-end">Crédito</th>
+        <th class="text-end">Valor Tabela</th><th class="text-end">Descontos</th>
+        <th class="text-end" title="% Diretoria do A&amp;M">% Dir.</th><th class="text-end" title="% da faixa de campanha atingida (SisPed)">% Camp.</th>
+        <th class="text-end" title="Desconto de campanha (R$)">Campanha</th><th class="text-end" title="% Diretoria acima da faixa da campanha (R$)">Dir. extra</th>
+        <th class="text-end">Crédito</th>
         <th class="text-end">Impostos</th><th class="text-end">Custo MP</th><th class="text-end">Despesas</th><th class="text-end">Margem</th>
     </tr></thead>
     <tbody>
-    <?php foreach ($m['impItens'] as $it):
+    <?php foreach ($m['impItens'] as $ix => $it):
+        $sp   = $sep['itens'][$ix];
         $q    = (int)$it['qtd'];
         $vTab = $it['precoPadrao'] * $q;
         $vDes = ($it['vCanal'] + $it['vCliente'] + $it['vPedido'] + $it['vCampanha']) * $q;
@@ -72,6 +89,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['ajax_margem'])) {
             <td class="text-end"><?= $q ?></td>
             <td class="text-end"><?= moedaBR($vTab) ?></td>
             <td class="text-end text-danger"><?= $vDes ? '− ' . moedaBR($vDes) : '—' ?></td>
+            <td class="text-end"><?= $sp['pct_dir'] > 0.005 ? $pctFmt($sp['pct_dir']) : '—' ?></td>
+            <?php
+            $sitCor = ['ok' => 'success', 'abaixo' => 'warning', 'acima' => 'danger', 'sem_campanha' => 'danger'][$sp['situacao']] ?? null;
+            $sitIco = ['ok' => 'bi-check-circle-fill', 'abaixo' => 'bi-arrow-down-circle-fill', 'acima' => 'bi-arrow-up-circle-fill', 'sem_campanha' => 'bi-arrow-up-circle-fill'][$sp['situacao']] ?? '';
+            $sitTxt = ['ok' => '% Diretoria igual à faixa', 'abaixo' => '% Diretoria ABAIXO da faixa (poderia ter mais desconto)',
+                       'acima' => '% Diretoria ACIMA da faixa (diretoria extra)', 'sem_campanha' => '% Diretoria sem campanha atingida (diretoria extra)'][$sp['situacao']] ?? '';
+            ?>
+            <td class="text-end text-nowrap<?= $sitCor ? ' text-' . $sitCor . ' fw-semibold' : '' ?>" title="<?= e($sp['brinde'] ? 'Brinde de bonificação: todo o % Diretoria conta como campanha' : ($sp['campanha'] ?? 'Sem campanha atingida')) ?><?= $sitTxt ? ' — ' . $sitTxt : '' ?>">
+                <?= $sp['brinde'] ? '<i class="bi bi-gift"></i>' : ($sp['pct_esperado'] > 0.005 ? $pctFmt($sp['pct_esperado']) : '—') ?>
+                <?php if ($sitIco && !$sp['brinde']): ?><i class="bi <?= $sitIco ?>" style="font-size:.7rem"></i><?php endif; ?>
+            </td>
+            <td class="text-end text-danger"><?= $sp['v_campanha'] * $q > 0.005 ? '− ' . moedaBR($sp['v_campanha'] * $q) : '—' ?></td>
+            <td class="text-end<?= $sp['v_extra'] > 0 ? ' text-danger fw-semibold' : '' ?>" title="<?= $sp['pct_extra'] > 0.005 ? $pctFmt($sp['pct_extra']) . ' além da campanha' : '' ?>"><?= $sp['v_extra'] * $q > 0.005 ? '− ' . moedaBR($sp['v_extra'] * $q) : '—' ?></td>
             <td class="text-end text-danger"><?= $vCre ? '− ' . moedaBR($vCre) : '—' ?></td>
             <td class="text-end text-danger">− <?= moedaBR($vImp) ?></td>
             <td class="text-end text-danger">
@@ -124,15 +154,19 @@ $falhas = [];          // pedidos cujo detalhe (PD0303/PD0303F) não pôde ser l
 $divergentes = [];     // pedidos com valores do A&M que não fecham com os percentuais — fora do cálculo
 $comSemCadastro = 0;   // pedidos com produto(s) sem cadastro no SisPed
 $tot = ['produtos'=>0,'descontos'=>0,'credito'=>0,'impostos'=>0,'mp'=>0,'despesas'=>0,'margem'=>0,
-        'canal'=>0,'cliente'=>0,'comercial'=>0,'campanha'=>0,'financeiro'=>0];
+        'canal'=>0,'cliente'=>0,'comercial'=>0,'campanha'=>0,'extra'=>0,'financeiro'=>0];
+$pedAbaixo = 0;        // pedidos com item de % Diretoria abaixo da faixa da campanha
+$pedCamp   = 0;        // pedidos com campanha atingida
+$pedAcima  = 0;        // pedidos com item de % Diretoria acima da faixa (ou % Diretoria sem campanha)
+$pedObsDif = 0;        // pedidos cujo Obs do A&M não cita as campanhas calculadas
 // Visões agregadas (abas "Por vendedor" / "Por produto") — mesmas colunas do waterfall.
 $porVend = [];         // supervisor (coluna VendPed do A&M) => acumulado
 $porProd = [];         // código do produto => acumulado (só itens com cadastro no SisPed)
-$novoAcum = fn() => ['pedidos'=>0,'clientes'=>[],'qtd'=>0,'produtos'=>0,'descontos'=>0,'credito'=>0,
+$novoAcum = fn() => ['pedidos'=>0,'clientes'=>[],'qtd'=>0,'produtos'=>0,'descontos'=>0,'campanha'=>0,'extra'=>0,'credito'=>0,
                      'impostos'=>0,'mp'=>0,'despesas'=>0,'margem'=>0,
                      'camp_qtd'=>0,'campanhas'=>[]];   // por produto: qtd vendida com campanha + nome => [% mín, % máx]
 $somaAcum = function (array &$a, array $v) {
-    foreach (['produtos','descontos','credito','impostos','mp','despesas','margem'] as $k) $a[$k] += $v[$k];
+    foreach (['produtos','descontos','campanha','extra','credito','impostos','mp','despesas','margem'] as $k) $a[$k] += $v[$k] ?? 0;
 };
 $visao = in_array($_GET['visao'] ?? '', ['pedido', 'vendedor', 'produto'], true) ? $_GET['visao'] : 'pedido';
 
@@ -175,6 +209,16 @@ if ($buscar && !$erro) {
         $margem    = (float)$m['impTotalFinal'];
         $margemPct = (float)$m['impMargemPct'];
         if ($m['nao_mapeados']) $comSemCadastro++;
+        // % Diretoria do A&M separado em campanha (faixa conferida no SisPed) x diretoria extra.
+        $sep      = margemSepararCampanha($p, $m);
+        // Obs com o texto das campanhas só é gravado pelo "Importa Pedido" — nos demais pedidos não há o que conferir.
+        if (!isset($locais[$p['numero']])) $sep['obs_ok'] = null;
+        $campanha = $sep['tot']['campanha'];
+        $extra    = $sep['tot']['extra'];
+        if ($sep['abaixo']) $pedAbaixo++;
+        if ($sep['campanhas']) $pedCamp++;
+        if ($sep['acima'] || $sep['sem_campanha']) $pedAcima++;
+        if ($sep['obs_ok'] === false) $pedObsDif++;
 
         $linhas[] = [
             'p'         => $p,
@@ -192,6 +236,13 @@ if ($buscar && !$erro) {
             'data_pedido' => $p['data_pedido'],
             'produtos'  => $produtos,
             'descontos' => $descontos,
+            'campanha'  => $campanha,
+            'extra'     => $extra,
+            'sep'       => $sep,
+            'descontos_det' => [
+                'Canal' => -(float)$m['impDeltaCanal'], 'Cliente' => -(float)$m['impDeltaCliente'],
+                'Comercial (% Negociação)' => $sep['tot']['comercial'], 'Campanha' => $campanha, 'Diretoria extra' => $extra,
+            ],
             'credito'   => $credito,
             'impostos'  => $impostos,
             'impostos_pct' => $produtos > 0 ? $impostos / $produtos * 100 : 0,
@@ -212,8 +263,9 @@ if ($buscar && !$erro) {
         $tot['despesas']  += $despesas;
         $tot['canal']      += -(float)$m['impDeltaCanal'];
         $tot['cliente']    += -(float)$m['impDeltaCliente'];
-        $tot['comercial']  += -(float)$m['impDeltaComercial'];
-        $tot['campanha']   += -(float)$m['impDeltaCampanha'];
+        $tot['comercial']  += $sep['tot']['comercial'];
+        $tot['campanha']   += $campanha;
+        $tot['extra']      += $extra;
         $tot['financeiro'] += -(float)$m['impDeltaFinanceiro'];
         $tot['margem']    += $margem;
 
@@ -223,28 +275,19 @@ if ($buscar && !$erro) {
         $porVend[$vk]['pedidos']++;
         $porVend[$vk]['clientes'][$p['codigo']] = true;
         $porVend[$vk]['qtd'] += array_sum(array_column($m['impItens'], 'qtd'));
-        $somaAcum($porVend[$vk], compact('produtos', 'descontos', 'credito', 'impostos', 'mp', 'despesas', 'margem'));
-
-        // Campanha: só pedido com "BF" no Obs (mesma regra do Importa Pedido BF e do check 5 da Análise
-        // Financeira). Item de campanha com faixa atingida no pedido = participou, com o % da faixa.
-        $campItem = [];
-        if ($p['eh_bf']) {
-            $av = campanhasAmAvaliarPedido($p['itens'], $p['pedido_accademia'] === 'SIM' ? 'distribuidor' : 'varejo');
-            foreach ($av['campanhas_atingidas'] as $ca) {
-                if ((float)$ca['percentual_esperado'] <= 0.005) continue;
-                foreach ($ca['itens'] as $ci) $campItem[$ci['codigo']] = [$ca['nome'], (float)$ca['percentual_esperado']];
-            }
-        }
+        $somaAcum($porVend[$vk], compact('produtos', 'descontos', 'campanha', 'extra', 'credito', 'impostos', 'mp', 'despesas', 'margem'));
 
         // Por produto: mesmo rateio por item da visualização compacta (Σ itens = totais do pedido).
-        foreach ($m['impItens'] as $it) {
+        // Campanha do item = a da separação acima (item com desconto de campanha no % Diretoria).
+        foreach ($m['impItens'] as $ix => $it) {
             $q  = (int)$it['qtd'];
             $pk = (string)$it['codigo'];
+            $sp = $sep['itens'][$ix];
             $porProd[$pk] = $porProd[$pk] ?? $novoAcum() + ['codigo' => $pk, 'descricao' => $it['descricao']];
             if (!isset($porProd[$pk]['_ped'][$p['numero']])) { $porProd[$pk]['_ped'][$p['numero']] = true; $porProd[$pk]['pedidos']++; }
             $porProd[$pk]['qtd'] += $q;
-            if (isset($campItem[$pk])) {
-                [$cNome, $cPct] = $campItem[$pk];
+            if ($sp['pct_camp'] > 0.005 && $sp['campanha'] !== null) {
+                [$cNome, $cPct] = [$sp['campanha'], $sp['brinde'] ? $sp['pct_camp'] : $sp['pct_esperado']];
                 $porProd[$pk]['camp_qtd'] += $q;
                 $fx = $porProd[$pk]['campanhas'][$cNome] ?? [$cPct, $cPct];
                 $porProd[$pk]['campanhas'][$cNome] = [min($fx[0], $cPct), max($fx[1], $cPct)];
@@ -252,6 +295,8 @@ if ($buscar && !$erro) {
             $somaAcum($porProd[$pk], [
                 'produtos'  => $it['precoPadrao'] * $q,
                 'descontos' => ($it['vCanal'] + $it['vCliente'] + $it['vPedido'] + $it['vCampanha']) * $q,
+                'campanha'  => $sp['v_campanha'] * $q,
+                'extra'     => $sp['v_extra'] * $q,
                 'credito'   => $it['vCredito'] * $q,
                 'impostos'  => ($it['netTotal'] + array_sum(array_column($it['blocosOutros'], 'total'))) * $q,
                 'mp'        => $it['custoMP'] * $q,
@@ -400,6 +445,17 @@ require_once LAYOUT_PATH . '/header.php';
     </div>
 <?php endif; ?>
 
+<?php if ($linhas): ?>
+    <div class="alert alert-light border small py-2">
+        <i class="bi bi-megaphone me-1"></i>Conferência de campanha:
+        <?= implode(' · ', array_filter([
+            '<i class="bi bi-check-circle-fill text-success"></i> <b>' . $pedCamp . '</b> pedido(s) com campanha atingida',
+            $pedAbaixo ? '<i class="bi bi-arrow-down-circle-fill text-warning"></i> <b>' . $pedAbaixo . '</b> com item <b>abaixo</b> da faixa (poderia ter mais desconto)' : '',
+            $pedAcima ? '<i class="bi bi-arrow-up-circle-fill text-danger"></i> <b>' . $pedAcima . '</b> com item <b>acima</b> da faixa ou % Diretoria sem campanha (diretoria extra)' : '',
+            $pedObsDif ? '<i class="bi bi-chat-square-text text-warning"></i> <b>' . $pedObsDif . '</b> importado(s) pelo SisPed cujo Obs do A&amp;M não cita as campanhas calculadas' : '',
+        ])) ?>
+    </div>
+<?php endif; ?>
 <?php if ($linhas && count($situacoes) > 1): $porSit = array_count_values(array_column($linhas, 'situacao_cod')); ?>
 <div class="small text-muted mb-2">
     <i class="bi bi-funnel me-1"></i>Por situação:
@@ -417,8 +473,9 @@ require_once LAYOUT_PATH . '/header.php';
     $descontosDet = [
         'Canal'               => $tot['canal'],
         'Cliente'             => $tot['cliente'],
-        'Comercial/Diretoria' => $tot['comercial'],
+        'Comercial (% Negociação)' => $tot['comercial'],
         'Campanha'            => $tot['campanha'],
+        'Diretoria extra'     => $tot['extra'],
         'Crédito aplicado'    => $tot['credito'],
     ];
     $tituloDescontos = implode("\n", array_map(
@@ -434,7 +491,8 @@ require_once LAYOUT_PATH . '/header.php';
     $resumo = [
         ['Valor de Tabela', $tot['produtos'], 'secondary'],
         ['Descontos Aplicados', $totDescontos, 'danger', $totDescontosPct, $tituloDescontos,
-            'Tabela − descontos: <b>' . moedaBR($saldoDescontos) . '</b>'],
+            'Tabela − descontos: <b>' . moedaBR($saldoDescontos) . '</b>'
+            . '<br>Campanha: <b>' . moedaBR($tot['campanha']) . '</b> · Dir. extra: <b>' . moedaBR($tot['extra']) . '</b>'],
         ['Carga de Impostos', $tot['impostos'], 'warning', $totImpostosPct, null,
             'Após impostos: <b>' . moedaBR($saldoImpostos) . '</b>'],
         ['Custo MP', $tot['mp'], 'info', $totMpPct, null,
@@ -494,7 +552,8 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
                 $colunas = [
                     'num_am' => ['Nº A&amp;M', '', 'num'], 'interno' => ['Pedido Interno', '', 'num'], 'codigo' => ['Cód. Cliente', '', 'num'],
                     'cliente' => ['Cliente', '', 'txt'], 'vendedor' => ['Supervisor', '', 'txt'], 'data' => ['Data', '', 'txt'],
-                    'tabela' => ['Valor Tabela', 'text-end', 'num'], 'descontos' => ['Descontos', 'text-end', 'num'], 'credito' => ['Crédito', 'text-end', 'num'],
+                    'tabela' => ['Valor Tabela', 'text-end', 'num'], 'descontos' => ['Descontos', 'text-end', 'num'],
+                    'campanha' => ['Campanha', 'text-end', 'num'], 'extra' => ['Dir. extra', 'text-end', 'num'], 'credito' => ['Crédito', 'text-end', 'num'],
                     'impostos' => ['Carga Impostos', 'text-end', 'num'], 'mp' => ['Custo MP', 'text-end', 'num'], 'despesas' => ['Despesas', 'text-end', 'num'],
                     'margem' => ['Margem', 'text-end', 'num'],
                 ];
@@ -511,10 +570,16 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
             $ord = [
                 'num_am' => $soDig($l['num_am']), 'interno' => $soDig($l['p']['pedido_interno']), 'codigo' => $soDig($l['codigo']),
                 'cliente' => $l['cliente'], 'vendedor' => $l['vendedor'], 'data' => $l['data'] . ' ' . str_pad((string)$soDig($l['p']['pedido_interno']), 10, '0', STR_PAD_LEFT),
-                'tabela' => round($l['produtos'], 2), 'descontos' => round($l['descontos'], 2), 'credito' => round($l['credito'], 2),
+                'tabela' => round($l['produtos'], 2), 'descontos' => round($l['descontos'], 2),
+                'campanha' => round($l['campanha'], 2), 'extra' => round($l['extra'], 2), 'credito' => round($l['credito'], 2),
                 'impostos' => round($l['impostos'], 2), 'mp' => round($l['mp'], 2), 'despesas' => round($l['despesas'], 2),
                 'margem' => round($l['margem'], 2),
             ];
+            $sepL = $l['sep'];
+            $titCamp = $sepL['campanhas']
+                ? 'Campanhas atingidas' . ($l['eh_bf'] ? ' (BF)' : '') . ":\n" . implode("\n", array_map(fn($n, $v) => $n . ' — ' . $pctFmt($v)
+                    . (in_array($n, $sepL['via_obs'], true) ? ' (desativada — vale por estar citada no Obs)' : ''), array_keys($sepL['campanhas']), $sepL['campanhas']))
+                : 'Nenhuma campanha atingida';
         ?>
             <tr class="lin-ord"<?php foreach ($ord as $k => $v) echo ' data-o-' . $k . '="' . e($v) . '"'; ?>>
                 <td class="fw-semibold text-nowrap">
@@ -527,6 +592,19 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
                     <?php if ($l['nao_mapeados']): ?>
                     <i class="bi bi-exclamation-triangle-fill text-warning ms-1" title="Sem cadastro no SisPed (fora do cálculo):&#10;<?= e(implode("\n", $l['nao_mapeados'])) ?>"></i>
                     <?php endif; ?>
+                    <?php if ($sepL['campanhas']): ?>
+                    <i class="bi bi-check-circle-fill text-success ms-1" title="<?= e($titCamp) ?>&#10;<?= $sepL['ok'] ?> item(ns) com o % Diretoria igual à faixa"></i>
+                    <?php endif; ?>
+                    <?php if ($sepL['abaixo']): ?>
+                    <i class="bi bi-arrow-down-circle-fill text-warning ms-1" title="<?= $sepL['abaixo'] ?> item(ns) com % Diretoria ABAIXO da faixa de campanha atingida (poderia ter mais desconto)"></i>
+                    <?php endif; ?>
+                    <?php if ($sepL['acima'] || $sepL['sem_campanha']): ?>
+                    <i class="bi bi-arrow-up-circle-fill text-danger ms-1" title="<?= e(trim(($sepL['acima'] ? $sepL['acima'] . " item(ns) com % Diretoria ACIMA da faixa de campanha\n" : '')
+                        . ($sepL['sem_campanha'] ? $sepL['sem_campanha'] . ' item(ns) com % Diretoria sem campanha atingida' : ''))) ?>&#10;Diretoria extra: <?= e(moedaBR($l['extra'])) ?>"></i>
+                    <?php endif; ?>
+                    <?php if ($sepL['obs_ok'] === false): ?>
+                    <i class="bi bi-chat-square-text text-warning ms-1" title="O Obs do A&amp;M não cita as campanhas calculadas pelo SisPed.&#10;Esperado: <?= e($sepL['obs_esperada']) ?>&#10;Obs: <?= e($l['p']['obs']) ?>"></i>
+                    <?php endif; ?>
                 </td>
                 <td>
                     <?= e($l['p']['pedido_interno']) ?>
@@ -537,7 +615,9 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
                 <td class="text-nowrap" title="<?= e($l['vendedor_cod']) ?>"><?= $l['vendedor'] !== '' ? e($l['vendedor']) : '<span class="text-muted">—</span>' ?></td>
                 <td class="text-nowrap"<?= $l['data_pedido'] && $l['data_pedido'] !== $l['data'] ? ' title="Pedido feito em ' . dataBR($l['data_pedido']) . '"' : '' ?>><?= dataBR($l['data']) ?></td>
                 <td class="text-end"><?= moedaBR($l['produtos']) ?></td>
-                <td class="text-end text-danger"><?= $l['descontos'] ? '− ' . moedaBR($l['descontos']) : '—' ?></td>
+                <td class="text-end text-danger" title="<?= e(implode("\n", array_map(fn($k, $v) => $k . ': ' . moedaBR($v), array_keys($l['descontos_det']), $l['descontos_det']))) ?>"><?= $l['descontos'] ? '− ' . moedaBR($l['descontos']) : '—' ?></td>
+                <td class="text-end text-primary" title="<?= e($titCamp) ?>"><?= $l['campanha'] > 0.005 ? '− ' . moedaBR($l['campanha']) : '—' ?><?= $sepL['via_obs'] ? ' <i class="bi bi-chat-square-text" style="font-size:.7rem"></i>' : '' ?></td>
+                <td class="text-end<?= $l['extra'] > 0.005 ? ' text-danger fw-semibold' : '' ?>" title="<?= $sepL['com_extra'] ? $sepL['com_extra'] . ' item(ns) com % Diretoria acima da faixa da campanha' : '' ?>"><?= $l['extra'] > 0.005 ? '− ' . moedaBR($l['extra']) : '—' ?></td>
                 <td class="text-end text-danger"><?= $l['credito'] ? '− ' . moedaBR($l['credito']) : '—' ?></td>
                 <td class="text-end text-danger">
                     − <?= moedaBR($l['impostos']) ?>
@@ -564,7 +644,7 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
                 </td>
             </tr>
         <?php endforeach; else: ?>
-            <tr><td colspan="14" class="text-center text-muted py-4">Nenhum pedido no A&amp;M no período com a situação <?= e(implode(', ', array_map(fn($c) => '“' . $situacoesOpc[$c] . '”', $situacoes))) ?><?= $cliente !== '' ? ' para o cliente “' . e($cliente) . '”' : '' ?>.</td></tr>
+            <tr><td colspan="16" class="text-center text-muted py-4">Nenhum pedido no A&amp;M no período com a situação <?= e(implode(', ', array_map(fn($c) => '“' . $situacoesOpc[$c] . '”', $situacoes))) ?><?= $cliente !== '' ? ' para o cliente “' . e($cliente) . '”' : '' ?>.</td></tr>
         <?php endif; ?>
         </tbody>
         <?php if ($linhas): ?>
@@ -573,6 +653,8 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
                 <td colspan="6">Total — <?= count($linhas) ?> pedido(s)</td>
                 <td class="text-end"><?= moedaBR($tot['produtos']) ?></td>
                 <td class="text-end text-danger"><?= $tot['descontos'] ? '− ' . moedaBR($tot['descontos']) : '—' ?></td>
+                <td class="text-end text-primary"><?= $tot['campanha'] > 0.005 ? '− ' . moedaBR($tot['campanha']) : '—' ?></td>
+                <td class="text-end text-danger"><?= $tot['extra'] > 0.005 ? '− ' . moedaBR($tot['extra']) : '—' ?></td>
                 <td class="text-end text-danger"><?= $tot['credito'] ? '− ' . moedaBR($tot['credito']) : '—' ?></td>
                 <td class="text-end text-danger">− <?= moedaBR($tot['impostos']) ?> <span class="text-muted d-block" style="font-size:.75rem"><?= $pctFmt($totImpostosPct) ?></span></td>
                 <td class="text-end text-danger"><?= $tot['mp'] ? '− ' . moedaBR($tot['mp']) : '—' ?></td>
@@ -593,7 +675,12 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
     pedido nas demais situações. Nos faturados, itens e quantidades são os faturados (produto em falta fica de fora) e o valor é o faturado.
     “Supervisor” = supervisor do cadastro do cliente, com o nome do cadastro de usuários do A&amp;M. Descontos de canal/cliente, % Negociação,
     % Diretoria, crédito utilizado, forma de pagamento e o preço de tabela (coluna “Preço Tabela”) vêm do próprio pedido no A&amp;M;
-    NCM/impostos e custo MP vêm dos cadastros do SisPed. “Despesas” = custos fixos (%) + desconto financeiro.
+    NCM/impostos e custo MP vêm dos cadastros do SisPed. “Despesas” = custos fixos (%) + desconto financeiro.<br>
+    <i class="bi bi-megaphone me-1"></i>“Campanha” e “Dir. extra” já estão dentro de “Descontos”: o % Diretoria do A&amp;M é dividido em
+    <b>campanha</b> (até o % da faixa atingida, conferida no SisPed com as campanhas do Comercial vigentes na data do pedido; pedidos BF usam as
+    campanhas BF antigas) e <b>diretoria extra</b> (o que passa da faixa, em cascata). Item sem campanha atingida = todo o % Diretoria é extra.
+    Campanha <b>desativada</b> vale no pedido cujo Obs do A&amp;M cita o texto dela (“Observação para o A&amp;M” do cadastro) — ainda com as regras
+    do cadastro (produtos, condições e faixa); marcada com <i class="bi bi-chat-square-text"></i>. Campanha apagada do cadastro não tem como ser reconhecida.<br>
     <i class="bi bi-list-ul"></i> abre o detalhe da margem por item (o mesmo modal “Margem” da tela do pedido);
     <i class="bi bi-table"></i> mostra os itens numa tabela compacta (uma linha por item); <i class="bi bi-eye"></i> abre o pedido quando ele também foi importado no SisPed.
 </p>
@@ -602,7 +689,8 @@ $abas = ['pedido' => ['bi-receipt', 'Por pedido', count($linhas)], 'vendedor' =>
 <?php
 // Células numéricas comuns às visões "Por vendedor" e "Por produto" (mesmas colunas do "Por pedido").
 $colsValores = [
-    'tabela' => ['Valor Tabela', 'text-end', 'num'], 'descontos' => ['Descontos', 'text-end', 'num'], 'credito' => ['Crédito', 'text-end', 'num'],
+    'tabela' => ['Valor Tabela', 'text-end', 'num'], 'descontos' => ['Descontos', 'text-end', 'num'],
+    'vcamp' => ['Desc. Campanha', 'text-end', 'num'], 'extra' => ['Dir. extra', 'text-end', 'num'], 'credito' => ['Crédito', 'text-end', 'num'],
     'impostos' => ['Carga Impostos', 'text-end', 'num'], 'mp' => ['Custo MP', 'text-end', 'num'], 'despesas' => ['Despesas', 'text-end', 'num'],
     'margem' => ['Margem', 'text-end', 'num'], 'part' => ['% da Margem', 'text-end', 'num'],
 ];
@@ -613,7 +701,8 @@ $thOrd = function (array $cols) {
     }
 };
 $ordValores = fn(array $a) => [
-    'tabela' => round($a['produtos'], 2), 'descontos' => round($a['descontos'], 2), 'credito' => round($a['credito'], 2),
+    'tabela' => round($a['produtos'], 2), 'descontos' => round($a['descontos'], 2),
+    'vcamp' => round($a['campanha'], 2), 'extra' => round($a['extra'], 2), 'credito' => round($a['credito'], 2),
     'impostos' => round($a['impostos'], 2), 'mp' => round($a['mp'], 2), 'despesas' => round($a['despesas'], 2),
     'margem' => round($a['margem'], 2), 'part' => round($a['margem'], 2),
 ];
@@ -624,6 +713,8 @@ $tdValores = function (array $a) use ($tot, $pctFmt, $corMargem) {
     ?>
     <td class="text-end"><?= moedaBR($a['produtos']) ?></td>
     <td class="text-end text-danger"><?= $a['descontos'] ? '− ' . moedaBR($a['descontos']) : '—' ?></td>
+    <td class="text-end text-primary"><?= $a['campanha'] > 0.005 ? '− ' . moedaBR($a['campanha']) : '—' ?></td>
+    <td class="text-end<?= $a['extra'] > 0.005 ? ' text-danger fw-semibold' : '' ?>"><?= $a['extra'] > 0.005 ? '− ' . moedaBR($a['extra']) : '—' ?></td>
     <td class="text-end text-danger"><?= $a['credito'] ? '− ' . moedaBR($a['credito']) : '—' ?></td>
     <td class="text-end text-danger">− <?= moedaBR($a['impostos']) ?><span class="text-muted d-block" style="font-size:.75rem"><?= $pctFmt($impPct) ?></span></td>
     <td class="text-end text-danger"><?= $a['mp'] ? '− ' . moedaBR($a['mp']) : '—' ?></td>
@@ -666,7 +757,7 @@ foreach ($porProd as $a) { $somaAcum($totProd, $a); $totProd['qtd'] += $a['qtd']
                 <?php $tdValores($a); ?>
             </tr>
         <?php endforeach; ?>
-        <?php if (!$porVend): ?><tr><td colspan="12" class="text-center text-muted py-4">Nenhum pedido.</td></tr><?php endif; ?>
+        <?php if (!$porVend): ?><tr><td colspan="14" class="text-center text-muted py-4">Nenhum pedido.</td></tr><?php endif; ?>
         </tbody>
         <?php if ($porVend) $trTotal(4, 'Total — ' . count($porVend) . ' supervisor(es), ' . count($linhas) . ' pedido(s)', $tot); ?>
     </table>
@@ -714,7 +805,7 @@ foreach ($porProd as $a) { $somaAcum($totProd, $a); $totProd['qtd'] += $a['qtd']
                 <?php $tdValores($a); ?>
             </tr>
         <?php endforeach; ?>
-        <?php if (!$porProd): ?><tr><td colspan="14" class="text-center text-muted py-4">Nenhum item com cadastro no SisPed.</td></tr><?php endif; ?>
+        <?php if (!$porProd): ?><tr><td colspan="16" class="text-center text-muted py-4">Nenhum item com cadastro no SisPed.</td></tr><?php endif; ?>
         </tbody>
         <?php if ($porProd) $trTotal(6, 'Total — ' . count($porProd) . ' produto(s), ' . number_format($totProd['qtd'], 0, ',', '.') . ' un.'
             . ' — ' . count(array_filter(array_column($porProd, 'camp_qtd'))) . ' produto(s) com campanha, '
@@ -726,9 +817,9 @@ foreach ($porProd as $a) { $somaAcum($totProd, $a); $totProd['qtd'] += $a['qtd']
     <i class="bi bi-info-circle me-1"></i>Soma dos itens de todos os pedidos, com o mesmo cálculo por item do detalhe de margem (descontos, crédito,
     impostos, custo MP e despesas rateados por item). Itens sem cadastro no SisPed ficam de fora
     <?php if ($comSemCadastro): ?>(<?= $comSemCadastro ?> pedido(s) com item(ns) nessa situação)<?php endif; ?>.<br>
-    <i class="bi bi-megaphone me-1"></i>“Campanha” = campanhas do A&amp;M de que o produto participou, com o % de desconto
-    da faixa atingida (intervalo quando variou entre pedidos). Só contam pedidos com “BF” no Obs e campanha com faixa atingida no pedido — mesma
-    regra do Importa Pedido BF. “% em Campanha” = parte das unidades vendidas do produto que saiu com campanha.
+    <i class="bi bi-megaphone me-1"></i>“Campanha” (coluna de texto) = campanhas de que o produto participou, com o % de desconto
+    da faixa atingida (intervalo quando variou entre pedidos): item com faixa atingida no pedido e % Diretoria no A&amp;M. Campanhas do Comercial
+    vigentes na data do pedido; pedidos BF, campanhas BF antigas. “% em Campanha” = parte das unidades vendidas do produto que saiu com campanha.
 </p>
 </div>
 </div><!-- /tab-content -->
@@ -796,7 +887,8 @@ foreach ($linhas as $i => $l) {
         'cliente' => $l['cliente'], 'cnpj' => $p['cnpj'], 'uf' => $l['uf'], 'canal' => $l['canal'], 'vendedor' => $l['vendedor'],
         'data' => dataBR($p['data']), 'forma' => $p['forma'], 'valor' => moedaBR($p['valor_pedido']),
         'credito' => moedaBR($p['credito_utilizado']), 'obs' => $p['obs'],
-        'pedido' => array_intersect_key($p, array_flip(['numero', 'cnpj', 'uf', 'data', 'pedido_accademia', 'is_a_vista', 'credito_utilizado', 'itens'])),
+        'pedido' => array_intersect_key($p, array_flip(['numero', 'cnpj', 'uf', 'data', 'pedido_accademia', 'is_a_vista', 'credito_utilizado', 'itens',
+                                                        'codigo', 'data_pedido', 'eh_bf', 'obs'])) + ['importado' => (bool)$l['local_id']],
     ];
 }
 // Pedidos com divergência: dados crus do A&M para a conferência item a item (botão da lista do topo).
@@ -808,7 +900,8 @@ foreach ($divergentes as $di => $p) {
         'data' => dataBR($p['data']), 'forma' => $p['forma'], 'valor_pedido' => (float)$p['valor_pedido'],
         'credito' => (float)$p['credito_utilizado'], 'obs' => $p['obs'], 'descto_zerado' => (int)$p['descto_zerado'],
         'divergencias' => $p['divergencias'], 'itens' => $p['itens'],
-        'pedido' => array_intersect_key($p, array_flip(['numero', 'cnpj', 'uf', 'data', 'pedido_accademia', 'is_a_vista', 'credito_utilizado', 'itens'])),
+        'pedido' => array_intersect_key($p, array_flip(['numero', 'cnpj', 'uf', 'data', 'pedido_accademia', 'is_a_vista', 'credito_utilizado', 'itens',
+                                                        'codigo', 'data_pedido', 'eh_bf', 'obs'])) + ['importado' => isset($locais[$p['numero']])],
     ];
 }
 ?>

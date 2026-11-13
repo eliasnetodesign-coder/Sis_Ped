@@ -29,70 +29,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 requireComercial();
 
-// Contadores do mês corrente (pedidos distintos, agrupados por lote).
+// Contadores do mês corrente.
 $ini = date('Y-m-01');
 $fim = date('Y-m-t');
-
-function _contaPedidosAM(string $likeObs, string $ini, string $fim): int {
-    $q = db()->prepare("
-        SELECT COUNT(*) FROM (
-            SELECT 1
-            FROM pedidos p
-            WHERE p.observacoes LIKE ?
-              AND DATE(p.data_pedido) BETWEEN ? AND ?
-            GROUP BY COALESCE(p.lote_id, CAST(p.id AS CHAR)), p.numero_pedido
-        ) t");
-    $q->execute([$likeObs, $ini, $fim]);
-    return (int)$q->fetchColumn();
-}
-
-$qtdMargem = _contaPedidosAM('Importado do sistema A&M%', $ini, $fim);
-$qtdBf     = _contaPedidosAM('Importado do sistema A&M (BF)%', $ini, $fim);
-
-$qLog = db()->prepare('SELECT COUNT(*) FROM descontos_diretoria_am_logs WHERE DATE(created_at) BETWEEN ? AND ?');
-$qLog->execute([$ini, $fim]);
-$qtdLogAm = (int)$qLog->fetchColumn();
 
 $qtdInsumos = (int)db()->query("SELECT COUNT(DISTINCT tipo, insumo_codigo) FROM custos_insumos_compras")->fetchColumn();
 
 $quadros = [
     [
-        'slug'  => 'margem-am',
-        'titulo'=> 'Margem dos Pedidos A&M',
-        'tag'   => 'Pedidos colocados',
-        'desc'  => 'Resultado (margem) de cada pedido importado do sistema A&M, com a carga de impostos, custo de matéria-prima e demais deduções calculadas em cima do pedido.',
-        'icon'  => 'bi-graph-up-arrow',
-        'cor'   => 'success',
-        'contador' => $qtdMargem,
-        'contador_label' => 'pedidos A&M neste mês',
-    ],
-    [
         'slug'  => 'margem-am-faturados',
         'titulo'=> 'Margem dos Pedidos A&M',
         'tag'   => 'Pedidos faturados',
-        'desc'  => 'Mesmo cálculo de margem, sobre os pedidos faturados no A&M (Vendas > Consulta/Reimprime Pedidos, grupo Faturados: data, valor e itens do faturamento) — ou também Liberado para o faturamento, Liberado para o financeiro e Bloqueado (Vendas > Consulta/Reimprime) — buscados na hora direto no sistema A&M; nada é gravado.',
+        'desc'  => 'Resultado (margem) de cada pedido, com impostos, custo de MP, despesas e a separação Comercial / Campanha / Diretoria extra, sobre os pedidos faturados no A&M (Vendas > Consulta/Reimprime Pedidos, grupo Faturados: data, valor e itens do faturamento) — ou também Liberado para o faturamento, Liberado para o financeiro e Bloqueado (Vendas > Consulta/Reimprime) — buscados na hora direto no sistema A&M; nada é gravado.',
         'icon'  => 'bi-receipt',
         'cor'   => 'success',
         'contador' => null,   // sem contador: a busca no A&M só roda ao executar o relatório
         'contador_label' => 'busca sob demanda no A&M',
-    ],
-    [
-        'slug'  => 'bf-am',
-        'titulo'=> 'Pedidos BF — Campanhas',
-        'desc'  => 'Pedidos importados do A&M com a característica “BF”: valor real (sem campanha) x desconto de campanha aplicado no % Diretoria dos itens, com as campanhas atingidas.',
-        'icon'  => 'bi-tags',
-        'cor'   => 'primary',
-        'contador' => $qtdBf,
-        'contador_label' => 'pedidos BF neste mês',
-    ],
-    [
-        'slug'  => 'log-descontos-am',
-        'titulo'=> 'Log de Descontos A&M',
-        'desc'  => 'Gravações do % Diretoria direto no pedido do A&M feitas pelo “Importa Pedido BF”: itens alterados, resultado da aba Validar e do “Conclui Pedido”, com a resposta do A&M.',
-        'icon'  => 'bi-journal-text',
-        'cor'   => 'primary',
-        'contador' => $qtdLogAm,
-        'contador_label' => 'gravações neste mês',
     ],
     [
         'slug'  => 'custos-insumos-am',

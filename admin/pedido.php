@@ -510,7 +510,7 @@ $valorTotalGeral = array_sum(array_column($itensPedido, 'valor_total'));
 $margemNegociacao = (float)($pedido['margem_negociacao'] ?? 0);
 
 // ===== Detalhamento fiscal + Margem (waterfall) — cálculo em calcularMargemPedido() (config.php),
-// compartilhado com o relatório admin/relatorios/margem-am.php. Traz para o escopo desta página:
+// compartilhado com os relatórios de margem. Traz para o escopo desta página:
 //   $clienteUF/$ufNome/$ehLocal/$icmsTipoLabel, $fiscalItens/$fiscalTot,
 //   $descCliente/$descCanal/$campanhasAtingidas, $creditoUsadoAdmin/$descontoPixAdmin/$totalAPagarAdmin,
 //   $competenciaPedido, $impItens e os totais $impTotal*/$impDelta* do waterfall.

@@ -89,58 +89,7 @@ if (isset($_GET['ajax_aem_preview'])) {
         'itens'         => $itens,
     ];
 
-    // "Importa Pedido BF" (&bf=1): confere o Obs do pedido e, quando começa com "BF",
-    // roda a análise de campanha (campanhasAmAvaliarPedido) para trazer, por item, o
-    // %Diretoria esperado pela faixa de campanha atingida.
-    if (($_GET['bf'] ?? '') === '1') {
-        $resp['ehBf'] = !empty($r['ehBf']);
-        $resp['obs']  = $r['obs'] ?? '';
-        $campItens = [];
-        foreach ($r['itens'] as $it) {
-            $campItens[] = [
-                'codigo'      => $it['codigoAEM'],
-                'nome'        => $it['nomeProduto'],
-                'qtd'         => $it['qtd'],
-                'pct_diretoria' => $it['descDiretoria'] ?? 0,
-                'valor_total' => $it['valorTotal'] ?? 0,
-            ];
-        }
-        // Canal do cliente no A&M: "Pedido Accademia = SIM" é Distribuidor; NAO/não localizado é Varejo.
-        $canalCamp = (($r['pedidoAccademia'] ?? '') === 'SIM') ? 'distribuidor' : 'varejo';
-        $av = $resp['ehBf'] ? campanhasAmAvaliarPedido($campItens, $canalCamp) : null;
-        $expByCod = []; $campByCod = [];
-        if ($av) {
-            foreach ($av['campanhas_atingidas'] as $ca) {
-                foreach ($ca['itens'] as $ci) {
-                    $expByCod[$ci['codigo']]  = (float)$ca['percentual_esperado'];
-                    $campByCod[$ci['codigo']] = $ca['nome'];
-                }
-            }
-        }
-        foreach ($resp['itens'] as &$ri) {
-            $ri['pctDiretoriaCampanha'] = $resp['ehBf'] ? (float)($expByCod[$ri['codigoAEM']] ?? 0) : null;
-            // Campanha de que o item participa (null = não participa de nenhuma).
-            $ri['campanhaNome'] = $resp['ehBf'] ? ($campByCod[$ri['codigoAEM']] ?? null) : null;
-        }
-        unset($ri);
-        $resp['campanhasAtingidas'] = $av ? array_map(function ($ca) {
-            return [
-                'id'                => (string)$ca['campanha_id'],
-                'pctPorCodigo'      => (object)($ca['pct_por_codigo'] ?? []),
-                'nome'              => $ca['nome'],
-                'criterio'          => $ca['criterio'],
-                'unidade'           => $ca['unidade'],
-                'agregado'          => $ca['agregado'],
-                'percentualEsperado' => $ca['percentual_esperado'],
-                'produtosFaltantes' => $ca['produtos_faltantes'] ?? [],
-                'qtdsDiferentes'    => !empty($ca['quantidades_diferentes']),
-                'qtdPorProduto'     => $ca['qtd_por_produto'] ?? [],
-            ];
-        }, $av['campanhas_atingidas']) : [];
-        $resp['temForaCampanha'] = $av ? $av['tem_item_fora_campanha'] : false;
-    }
-
-    // "Importa Pedido" (&camp=comercial): mesmo fluxo do BF, mas sem conferir o Obs e com as
+    // "Importa Pedido" (&camp=comercial): analisa o pedido com as
     // campanhas do módulo Comercial > Campanhas (campanhasComercialAvaliarPedido) — traz, por
     // item, o %Diretoria esperado pela campanha acionada que cobre o produto.
     if (($_GET['camp'] ?? '') === 'comercial') {
@@ -227,36 +176,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         $colPreco = colPrecoMoeda($moedaCliente, $r['tipoVenda'] === 'bonificacao');
         $competencia = date('Y-m-01');
 
-        // "Importa Pedido BF": quando marcado e o pedido tem "BF" no Obs, substitui o
-        // %Diretoria de cada item pelo percentual da faixa de campanha atingida
-        // (campanhasAmAvaliarPedido — mesma regra do módulo Análise Financeira).
-        // Item que não pertence a nenhuma campanha atingida fica com 0.
+        // Item que não pertence a nenhuma campanha aplicada fica com %Diretoria 0.
         $bfOverrides = null;
-        $bfObsAM     = null;   // texto do campo "Obs" a gravar no A&M (ex.: "BF-Desc 13% color, Desc 10% Desco")
+        $bfObsAM     = null;   // texto do campo "Obs" a gravar no A&M (null = não mexe)
         // Campanhas marcadas no modal (JSON com os campanha_id); ausente = todas as atingidas.
         $campSel = isset($_POST['campanhas_sel']) ? json_decode((string)$_POST['campanhas_sel'], true) : null;
         if (!is_array($campSel)) $campSel = null;
         $campAplicadas = [];
-        if (($_POST['modo_bf'] ?? '') === '1' && ($_POST['aplicar_campanha'] ?? '') === '1' && !empty($r['ehBf'])) {
-            $campItens = [];
-            foreach ($r['itens'] as $it) {
-                $campItens[] = [
-                    'codigo'        => $it['codigoAEM'],
-                    'nome'          => $it['nomeProduto'],
-                    'qtd'           => $it['qtd'],
-                    'pct_diretoria' => $it['descDiretoria'] ?? 0,
-                    'valor_total'   => $it['valorTotal'] ?? 0,
-                ];
-            }
-            // Canal do cliente no A&M: "Pedido Accademia = SIM" é Distribuidor; NAO/não localizado é Varejo.
-            $av = campanhasAmAvaliarPedido($campItens, (($r['pedidoAccademia'] ?? '') === 'SIM') ? 'distribuidor' : 'varejo');
-            $campAplicadas = campanhasFiltrarSelecionadas($av['campanhas_atingidas'], $campSel);
-            $bfOverrides = campanhasPctPorCodigo($campAplicadas);
-            // Obs do pedido no A&M: "BF" + as campanhas que renderam desconto.
-            $bfObsAM = campanhasAmTextoObs($campAplicadas);
-        }
-        // "Importa Pedido" com "Aplicar": mesma substituição, mas pelas campanhas do módulo
-        // Comercial > Campanhas, sem depender do Obs.
+        // "Importa Pedido" com "Aplicar": substitui o %Diretoria de cada item pelo % das
+        // campanhas do módulo Comercial > Campanhas.
         if (($_POST['modo_campanha'] ?? '') === 'comercial' && ($_POST['aplicar_campanha'] ?? '') === '1') {
             $campItens = [];
             foreach ($r['itens'] as $it) {
@@ -317,10 +245,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         // Mantém a mesma descrição já usada dentro do pedido para essa condição
         // (cliente/novo-pedido.php) em vez do texto bruto "00 - A Vista" do A&M.
         $formaPagamentoPedido = $r['isAVista'] ? 'A Vista' : null;
-        // Marca o pedido como importado "BF" quando o Obs do A&M começa com "BF"
-        // (característica BF), para o relatório admin/relatorios/bf-am.php filtrar.
-        $ehImportBF = ($_POST['modo_bf'] ?? '') === '1' && !empty($r['ehBf']);
-        $res = criarPedidoImportadoAEM($clienteId, $r['tipoVenda'], $itens, $r['numero'], $formaPagamentoPedido, $r['isAVista'], $ehImportBF);
+        $res = criarPedidoImportadoAEM($clienteId, $r['tipoVenda'], $itens, $r['numero'], $formaPagamentoPedido, $r['isAVista']);
 
         // Coluna "Credito Utilizado" do grid de busca do A&M: crédito do cliente já
         // abatido do pedido lá no A&M. Lança essa quantia como concessão de crédito
@@ -341,12 +266,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         }
 
         $bfMsg = $bfOverrides === null ? ''
-            : (($_POST['modo_campanha'] ?? '') === 'comercial'
-                ? ' Descontos de campanha (Comercial > Campanhas) aplicados no % Diretoria dos itens.'
-                : ' Descontos de campanha (BF) aplicados no % Diretoria dos itens.')
+            : ' Descontos de campanha (Comercial > Campanhas) aplicados no % Diretoria dos itens.'
             . ($campAplicadas ? ' Campanhas: ' . implode(', ', array_column($campAplicadas, 'nome')) . '.' : ' Nenhuma campanha selecionada (% Diretoria zerado).');
 
-        // "Importa Pedido BF" com "Gravar no A&M": aplica o % Diretoria da campanha nos itens
+        // "Gravar no A&M": aplica o % Diretoria da campanha nos itens
         // do próprio pedido no A&M (Consulta/Reimprime > Altera > aba Itens > Validar > Conclui).
         $amMsg = '';
         if ($bfOverrides !== null && ($_POST['gravar_am'] ?? '') === '1') {
@@ -577,12 +500,6 @@ require_once LAYOUT_PATH . '/header.php';
         <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalImportaAEM">
             <i class="bi bi-cloud-download me-1"></i>Importa Pedido
         </button>
-        <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalImportaAEMBF">
-            <i class="bi bi-tags me-1"></i>Importa Pedido BF
-        </button>
-        <a href="<?= BASE_URL ?>/admin/financeiro/campanhas-am.php?origem=pedidos" class="btn btn-outline-secondary">
-            <i class="bi bi-megaphone me-1"></i>Campanhas
-        </a>
     </div>
     <?php endif; ?>
 </div>
@@ -941,16 +858,12 @@ $cardDefs = [
 @media (max-width: 991.98px) { .tbl-bf .prod { max-width: 150px; } }
 </style>
 <?php
-// Os dois botões usam o mesmo modal/fluxo; muda só de onde vêm as campanhas:
-//  - "Importa Pedido": campanhas do módulo Comercial > Campanhas, para todo pedido;
-//  - "Importa Pedido BF": campanhas antigas (campanhas_am), só quando o Obs começa com "BF".
+// "Importa Pedido": campanhas do módulo Comercial > Campanhas, para todo pedido.
+// (O antigo "Importa Pedido BF", com as campanhas_am, foi removido em 2026-11-10.)
 $modaisImporta = [
     ['modal' => 'modalImportaAEM', 'p' => 'aem', 'modo' => 'comercial', 'titulo' => 'Importa Pedido', 'icone' => 'bi-cloud-download',
      'modoCampo' => 'modo_campanha', 'modoValor' => 'comercial',
      'ajuda' => 'Verifica quais campanhas do módulo <strong>Comercial &gt; Campanhas</strong> o pedido atinge e permite gravar o <strong>% Diretoria</strong> de cada item pelo percentual da campanha.'],
-    ['modal' => 'modalImportaAEMBF', 'p' => 'aembf', 'modo' => 'bf', 'titulo' => 'Importa Pedido BF', 'icone' => 'bi-tags',
-     'modoCampo' => 'modo_bf', 'modoValor' => '1',
-     'ajuda' => 'Confere o campo <strong>Obs</strong> do pedido no A&amp;M — se começar com <strong>“BF”</strong>, verifica quais campanhas se aplicam e permite gravar o <strong>% Diretoria</strong> de cada item pela faixa de campanha atingida.'],
 ];
 foreach ($modaisImporta as $mi): ?>
 <div class="modal fade" id="<?= $mi['modal'] ?>" tabindex="-1">

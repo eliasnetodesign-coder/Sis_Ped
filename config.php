@@ -1525,10 +1525,12 @@ function campanhasAmAvaliarPedido(array $itens, string $canal = 'todos'): array 
  *    (campanha_bonificacao × multiplicador); esses itens de brinde não passam pela regra do
  *    %Diretoria. Bonificação selecionável não é conferida (o brinde é escolhido no pedido).
  *
- * @param array $itens itens do PD0303: ['codigo','nome','pct_diretoria','qtd',...]
+ * @param array       $itens   itens do PD0303: ['codigo','nome','pct_diretoria','qtd',...]
+ * @param string|null $dataRef data (Y-m-d) para a vigência das campanhas (ex.: data do pedido); null = hoje
+ * @param array       $incluirInativas códigos de campanhas desativadas que também entram (ver campanhasAgrupadas())
  * @return array mesmo formato de campanhasAmAvaliarPedido()
  */
-function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId, int $clienteId = 0): array {
+function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId, int $clienteId = 0, ?string $dataRef = null, array $incluirInativas = []): array {
     static $prodPorCodigo = null;
     if ($prodPorCodigo === null) {
         $prodPorCodigo = [];
@@ -1560,7 +1562,7 @@ function campanhasComercialAvaliarPedido(array $itens, int $canalVendaId, int $c
     }
     $ctx = ctxCampanha($itensVenda, $canalVendaId, $clienteId);
 
-    $agrupadas = campanhasAgrupadas();
+    $agrupadas = campanhasAgrupadas($dataRef, $incluirInativas);   // vigência na data do pedido quando informada
     $prodNome = [];
     foreach ($prodPorCodigo as $p) $prodNome[(int)$p['id']] = $p['descricao_pt'] ?: $p['codigo_produto'];
 
@@ -3091,15 +3093,26 @@ function statusBadge($s) {
  * Filtro SQL das campanhas que participam da avaliação: ativas e dentro do período
  * de vigência (data_inicio/data_fim NULL = sem limite). $alias = alias da tabela campanhas.
  */
-function campanhaVigenteSql(string $alias = ''): string {
+function campanhaVigenteSql(string $alias = '', ?string $data = null): string {
     $p = $alias !== '' ? $alias . '.' : '';
-    $hoje = date('Y-m-d');
+    // $data = data de referência da vigência (ex.: data do pedido); sem ela, hoje.
+    $hoje = ($data !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $data)) ? $data : date('Y-m-d');
     return "COALESCE({$p}ativo,1) = 1 AND ({$p}data_inicio IS NULL OR {$p}data_inicio <= '$hoje') AND ({$p}data_fim IS NULL OR {$p}data_fim >= '$hoje')";
 }
 
-function campanhasAgrupadas(): array {
-    // Só campanhas ativas e vigentes participam da avaliação (ativo ausente = legado = ativo).
-    try { $rows = db()->query('SELECT * FROM campanhas WHERE ' . campanhaVigenteSql())->fetchAll(); }
+function campanhasAgrupadas(?string $dataRef = null, array $incluirInativas = []): array {
+    // Só campanhas ativas e vigentes (em $dataRef; sem ela, hoje) participam da avaliação (ativo ausente = legado = ativo).
+    // $incluirInativas = códigos de campanhas DESATIVADAS que entram mesmo assim (ainda respeitando as datas de vigência)
+    // — usado no relatório de margem quando o Obs do pedido no A&M cita a campanha (margemSepararCampanha()).
+    $where = campanhaVigenteSql('', $dataRef);
+    $params = [];
+    if ($incluirInativas) {
+        $ref = ($dataRef !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dataRef)) ? $dataRef : date('Y-m-d');
+        $where = "($where) OR (codigo_campanha IN (" . implode(',', array_fill(0, count($incluirInativas), '?')) . ")"
+               . " AND (data_inicio IS NULL OR data_inicio <= '$ref') AND (data_fim IS NULL OR data_fim >= '$ref'))";
+        $params = array_values($incluirInativas);
+    }
+    try { $st = db()->prepare('SELECT * FROM campanhas WHERE ' . $where); $st->execute($params); $rows = $st->fetchAll(); }
     catch (PDOException $e) { $rows = db()->query("SELECT * FROM campanhas")->fetchAll(); }
     $conds = [];
     try {
@@ -3790,7 +3803,7 @@ function criarPedidoImportadoAEM(int $clienteId, string $tipoVenda, array $itens
  * -> impostos por empresa -> custo MP -> custos fixos) + detalhamento fiscal.
  *
  * Extraído de admin/pedido.php (era código inline dos modais "Detalhamento Fiscal" e "Margem")
- * para virar fonte única, reutilizada por admin/relatorios/margem-am.php. O consumidor faz
+ * para virar fonte única, reutilizada pelos relatórios de margem. O consumidor faz
  * `extract(calcularMargemPedido($id))` e continua usando os mesmos nomes de variável.
  *
  * Chaves úteis para relatórios:
@@ -4138,6 +4151,7 @@ function calcularMargemItens(array $pedido, array $itensPedido, float $creditoUs
             'descCanalPct' => $descCanal, 'vCanal' => $vCanal,
             'descClientePct' => $descCliente, 'vCliente' => $vCliente,
             'descPedidoPct' => $descPedidoPct, 'vPedido' => $vPedido,
+            'descComercialPct' => (float)$r['desconto_comercial'], 'descDiretoriaPct' => (float)$r['desconto_diretoria'],
             'descCampanhaPct' => $descCampanhaPct, 'vCampanha' => $vCampanha,
             'resAposDescontos' => $resAposDescontos,
             'pctCredito' => $pctCreditoGeral, 'vCredito' => $vCredito, 'resAposCredito' => $resAposCredito,
@@ -4287,6 +4301,156 @@ function calcularMargemPedidoAEM(array $p): array {
         'canal_nome'   => $canal['canal'] ?? null,
         'cliente_id'   => $cli ? (int)$cli['id'] : null,
     ];
+}
+
+/**
+ * Campanhas DESATIVADAS do Comercial cujo texto "Observação para o A&M" (campanhas.obs_am) aparece no Obs do pedido.
+ * "{pct}" do texto casa com qualquer percentual (ex.: "Desc. {pct} color/oxis" ~ "Desc. 8% color/oxis"); compara sem
+ * diferenciar maiúsculas, acentos e espaços. Campanha sem obs_am (ou apagada do cadastro) não tem como ser reconhecida.
+ * @return string[] códigos (codigo_campanha)
+ */
+function campanhasInativasCitadasNoObs(string $obs): array {
+    static $inativas = null;
+    // minúsculas, sem acentos, sem pontuação (. , ; :) e com espaços simples — "Desc, 20% Lavatório." ~ "desc 20% lavatorio"
+    $norm = function (string $t): string {
+        $t = mb_strtolower($t, 'UTF-8');
+        $t = strtr($t, ['á'=>'a','à'=>'a','â'=>'a','ã'=>'a','ä'=>'a','é'=>'e','ê'=>'e','è'=>'e','ë'=>'e','í'=>'i','ì'=>'i','î'=>'i','ï'=>'i',
+                        'ó'=>'o','ò'=>'o','ô'=>'o','õ'=>'o','ö'=>'o','ú'=>'u','ù'=>'u','û'=>'u','ü'=>'u','ç'=>'c']);
+        $t = preg_replace('/[.,;:]+/u', ' ', $t);
+        $t = preg_replace('/\s*%/u', '%', $t);
+        return trim(preg_replace('/\s+/u', ' ', $t));
+    };
+    if ($inativas === null) {
+        $inativas = [];
+        try {
+            $rows = db()->query("SELECT codigo_campanha, MAX(obs_am) AS obs_am FROM campanhas
+                                 GROUP BY codigo_campanha HAVING MAX(COALESCE(ativo,1)) = 0")->fetchAll();
+        } catch (PDOException $e) { $rows = []; }
+        foreach ($rows as $r) {
+            $txt = $norm((string)$r['obs_am']);
+            if ($txt === '') continue;
+            $rx = str_replace([preg_quote('{pct}', '/'), ' '], ['\d+(?:[.,]\d+)?%', '\s*'], preg_quote($txt, '/'));
+            $inativas[(string)$r['codigo_campanha']] = ['txt' => $txt, 'rx' => '/' . $rx . '/u'];
+        }
+    }
+    if (!$inativas || trim($obs) === '') return [];
+    $o = $norm($obs);
+    // O grid do A&M corta o Obs em 50 caracteres: no Obs cortado, o fim pode ser só o começo do texto da campanha
+    // ("... Desc. 20% lavato"). Aceita quando o pedaço final tem pelo menos 10 caracteres.
+    $cortado = mb_strlen(trim($obs), 'UTF-8') >= 48;
+    preg_match_all('/\d+(?:[.,]\d+)?%/u', $o, $mp);
+    $out = [];
+    foreach ($inativas as $cod => $c) {
+        if (preg_match($c['rx'], $o) === 1) { $out[] = $cod; continue; }
+        if (!$cortado) continue;
+        $variantes = strpos($c['txt'], '{pct}') !== false
+            ? array_map(fn($pct) => str_replace('{pct}', $pct, $c['txt']), array_unique($mp[0]))
+            : [$c['txt']];
+        foreach ($variantes as $v) {
+            for ($k = mb_strlen($v, 'UTF-8') - 1; $k >= 10; $k--) {
+                $pre = mb_substr($v, 0, $k, 'UTF-8');
+                if (mb_substr($o, -$k, null, 'UTF-8') === $pre) { $out[] = $cod; continue 3; }
+            }
+        }
+    }
+    return $out;
+}
+
+/**
+ * Separa, num pedido do A&M, o % Diretoria de cada item em CAMPANHA x DIRETORIA "real" (extra).
+ * O A&M só tem o % Diretoria; o SisPed confere qual seria o % da campanha:
+ *  - pedido com "BF" no Obs  -> campanhas antigas (campanhas_am, campanhasAmAvaliarPedido());
+ *  - demais                  -> Comercial > Campanhas (campanhasComercialAvaliarPedido()), com a vigência
+ *                               na DATA DO PEDIDO (não na de hoje); campanha DESATIVADA também entra quando o
+ *                               Obs do pedido cita o texto dela (campanhasInativasCitadasNoObs()).
+ * Por item (cascata, igual ao waterfall): fator = (1 − %Negociação) × (1 − %Campanha) × (1 − %Dir. extra), com
+ *   %Campanha    = menor entre o % Diretoria e o % da faixa atingida (brinde de bonificação = todo o % Diretoria);
+ *   %Dir. extra  = 1 − (1 − %Diretoria) ÷ (1 − %Campanha)   (0 quando o % Diretoria não passa da faixa).
+ * Os R$ dividem o vPedido do waterfall (Comercial + Campanha + Dir. extra = vPedido) — a margem não muda.
+ *
+ * @param array $p pedido de pedidosFaturadosAEM() (itens, eh_bf, pedido_accademia, data/data_pedido, obs)
+ * @param array $m retorno de calcularMargemPedidoAEM($p)
+ * @return array 'itens' (alinhado com $m['impItens']: pct_dir, pct_esperado, campanha, pct_camp, pct_extra,
+ *               v_comercial, v_campanha, v_extra, abaixo), 'tot' [comercial, campanha, extra] (R$),
+ *               'abaixo'/'com_extra' (nº de itens), 'campanhas' [nome => %], 'obs_esperada' (?string), 'obs_ok' (?bool),
+ *               'via_obs' (campanhas desativadas que valeram por estarem citadas no Obs),
+ *               'ok'/'acima'/'sem_campanha' (nº de itens por situação; item: 'situacao' ok|abaixo|acima|sem_campanha|null)
+ */
+function margemSepararCampanha(array $p, array $m): array {
+    $dataRef = ($p['data_pedido'] ?? null) ?: (($p['data'] ?? null) ?: null);
+    $esperado = [];      // codigo => ['pct' => %, 'campanha' => nome|null, 'brinde' => bool]
+    $campanhas = [];     // nome => % (só as atingidas com desconto)
+    $obsEsperada = null;
+    $viaObs = [];        // campanhas desativadas que entraram por estarem citadas no Obs
+    if (!empty($p['eh_bf'])) {
+        $av = campanhasAmAvaliarPedido($p['itens'] ?? [], ($p['pedido_accademia'] ?? null) === 'SIM' ? 'distribuidor' : 'varejo');
+    } else {
+        // Campanha desativada citada no Obs do A&M entra na avaliação (com as regras do cadastro: produtos, condições, faixa).
+        $viaObs = campanhasInativasCitadasNoObs((string)($p['obs'] ?? ''));
+        $av = campanhasComercialAvaliarPedido($p['itens'] ?? [], (int)($m['pedidoCanalId'] ?? 0), (int)($m['cliente_id'] ?? 0), $dataRef, $viaObs);
+        $obsEsperada = campanhasComercialTextoObsAM($av['campanhas_atingidas']);
+        foreach ($av['esperado_por_codigo'] ?? [] as $cod => $ep) {
+            if (!empty($ep['brinde'])) $esperado[(string)$cod] = ['pct' => 0.0, 'campanha' => $ep['campanha'], 'brinde' => true];
+        }
+    }
+    foreach ($av['campanhas_atingidas'] as $ca) {
+        if ((float)$ca['percentual_esperado'] <= 0.005) continue;
+        $campanhas[(string)$ca['nome']] = (float)$ca['percentual_esperado'];
+        foreach ($ca['pct_por_codigo'] ?? [] as $cod => $pct) {
+            $cod = (string)$cod;
+            if ((float)$pct > ($esperado[$cod]['pct'] ?? -1) || !empty($esperado[$cod]['brinde'])) {
+                $esperado[$cod] = ['pct' => (float)$pct, 'campanha' => (string)$ca['nome'], 'brinde' => !empty($esperado[$cod]['brinde'])];
+            }
+        }
+    }
+
+    $itens = []; $tot = ['comercial' => 0.0, 'campanha' => 0.0, 'extra' => 0.0]; $abaixo = 0; $comExtra = 0;
+    $cont = ['ok' => 0, 'acima' => 0, 'sem_campanha' => 0];
+    foreach ($m['impItens'] ?? [] as $it) {
+        $q    = (int)$it['qtd'];
+        $base = (float)$it['precoPadrao'] - (float)$it['vCanal'] - (float)$it['vCliente'];
+        $com  = min(100.0, (float)($it['descComercialPct'] ?? 0));
+        $dir  = min(100.0, (float)($it['descDiretoriaPct'] ?? 0));
+        $ep   = $esperado[(string)$it['codigo']] ?? ['pct' => 0.0, 'campanha' => null, 'brinde' => false];
+        $esp  = $ep['brinde'] ? $dir : (float)$ep['pct'];
+        $camp = min($dir, $esp);
+        $extra = ($dir > $camp + 0.005 && $camp < 100) ? (1 - (1 - $dir / 100) / (1 - $camp / 100)) * 100 : 0.0;
+        $vCom   = $base * $com / 100;
+        $vCamp  = $base * (1 - $com / 100) * $camp / 100 + (float)$it['vCampanha'];   // + desconto_campanha (0 nos pedidos do A&M)
+        $vExtra = $base * (1 - $com / 100) * (1 - $camp / 100) * $extra / 100;
+        $abx = !$ep['brinde'] && $esp > 0.005 && $dir < $esp - 0.01;
+        // Situação do item: ok = % Diretoria igual à faixa; abaixo = deu menos que a faixa; acima = passou da faixa;
+        // sem_campanha = % Diretoria sem campanha atingida (tudo extra); null = sem % Diretoria e sem campanha.
+        $situacao = $abx ? 'abaixo'
+            : ($esp > 0.005 ? ($extra > 0.005 ? 'acima' : 'ok')
+            : ($dir > 0.005 ? 'sem_campanha' : null));
+        if (isset($cont[$situacao])) $cont[$situacao]++;
+        $itens[] = [
+            'situacao' => $situacao,
+            'pct_dir' => $dir, 'pct_esperado' => $esp, 'campanha' => $ep['campanha'], 'brinde' => $ep['brinde'],
+            'pct_camp' => $camp, 'pct_extra' => $extra,
+            'v_comercial' => $vCom, 'v_campanha' => $vCamp, 'v_extra' => $vExtra, 'abaixo' => $abx,
+        ];
+        $tot['comercial'] += $vCom * $q; $tot['campanha'] += $vCamp * $q; $tot['extra'] += $vExtra * $q;
+        if ($abx) $abaixo++;
+        if ($extra > 0.005) $comExtra++;
+    }
+
+    // Conferência com o Obs do A&M: o texto das campanhas ("Observação para o A&M") deveria estar lá.
+    $obsOk = null;
+    if ($obsEsperada !== null) {
+        $norm = fn($s) => preg_replace('/\s+/', ' ', mb_strtolower(trim((string)$s), 'UTF-8'));
+        $obsOk = true;
+        foreach (explode(', ', $obsEsperada) as $parte) {
+            if ($parte !== '' && mb_strpos($norm($p['obs'] ?? ''), $norm($parte), 0, 'UTF-8') === false) { $obsOk = false; break; }
+        }
+    }
+
+    return ['itens' => $itens, 'tot' => $tot, 'abaixo' => $abaixo, 'com_extra' => $comExtra,
+            'ok' => $cont['ok'], 'acima' => $cont['acima'], 'sem_campanha' => $cont['sem_campanha'],
+            'campanhas' => $campanhas, 'obs_esperada' => $obsEsperada, 'obs_ok' => $obsOk,
+            // desativadas citadas no Obs E atingidas no pedido (as citadas mas não atingidas ficam de fora)
+            'via_obs' => array_values(array_intersect($viaObs, array_keys($campanhas)))];
 }
 
 /**

@@ -58,7 +58,7 @@ $iniA = $dataOk($_GET['ini_a'] ?? null) ?: date('Y-m-d', strtotime($iniB . ' -3 
 $fimA = $dataOk($_GET['fim_a'] ?? null) ?: date('Y-m-d', strtotime($iniB . ' -1 day'));
 $soAmbos = ($_GET['ambos'] ?? '1') === '1';
 $modoPreco = ($_GET['preco'] ?? 'fixo') === 'medio' ? 'medio' : 'fixo';   // padrão = Fixo (pedido do usuário)
-// Filtro da "Var. %" do Resumo: nenhum marcado = todos; marcado = só os insumos que subiram (Positivos) e/ou caíram (Negativos).
+// Filtro da "Var. %" do Resumo: nenhum marcado = todos; marcado = só os insumos que subiram (Aumento) e/ou caíram (Redução).
 $varPos = ($_GET['vpos'] ?? '') === '1';
 $varNeg = ($_GET['vneg'] ?? '') === '1';
 // Classificação = coluna P do cadastro de materiais (só aparece quando há cadastro importado para o tipo).
@@ -283,7 +283,7 @@ require_once LAYOUT_PATH . '/header.php';
         <?php if ($forn !== ''): ?>· <b>Fornecedor:</b> <?= e($forn . ' - ' . ($totForn[$forn]['nome'] ?? array_column($fornecedores, 'nome', 'fornecedor_codigo')[$forn] ?? '')) ?><?php endif; ?>
         <?php if ($grupo !== ''): ?>· <b><?= e($rotGrupo) ?>:</b> <?= $grupo === '__sem__' ? 'Sem classificação' : e($grupo) ?><?php endif; ?>
         <?php if ($q !== ''): ?>· <b>Insumo:</b> <?= e($q) ?><?php endif; ?>
-        <?php if ($varPos || $varNeg): ?>· <b>Var. %:</b> <?= implode(' e ', array_filter([$varPos ? 'Positivos' : '', $varNeg ? 'Negativos' : ''])) ?><?php endif; ?>
+        <?php if ($varPos || $varNeg): ?>· <b>Var. %:</b> <?= implode(' e ', array_filter([$varPos ? 'Aumento' : '', $varNeg ? 'Redução' : ''])) ?><?php endif; ?>
     </div>
     <div class="small text-muted">Gerado em <?= date('d/m/Y H:i') ?><?= !empty(usuario()['nome']) ? ' por ' . e(usuario()['nome']) : '' ?></div>
 </div>
@@ -315,9 +315,9 @@ require_once LAYOUT_PATH . '/header.php';
                 <label class="form-label small fw-semibold mb-1">Var. %</label>
                 <div class="btn-group w-100" role="group" title="Resumo por insumo: mostra só os insumos com a Var. % positiva (subiu) e/ou negativa (caiu). Nenhum marcado = todos.">
                     <input type="checkbox" class="btn-check" name="vpos" id="vpos" value="1" <?= $varPos ? 'checked' : '' ?> onchange="this.form.submit()">
-                    <label class="btn btn-outline-danger" for="vpos"><i class="bi bi-arrow-up-short"></i>Positivos</label>
+                    <label class="btn btn-outline-danger" for="vpos"><i class="bi bi-arrow-up-short"></i>Aumento</label>
                     <input type="checkbox" class="btn-check" name="vneg" id="vneg" value="1" <?= $varNeg ? 'checked' : '' ?> onchange="this.form.submit()">
-                    <label class="btn btn-outline-success" for="vneg"><i class="bi bi-arrow-down-short"></i>Negativos</label>
+                    <label class="btn btn-outline-success" for="vneg"><i class="bi bi-arrow-down-short"></i>Redução</label>
                 </div>
             </div>
             <div class="col-6 col-md col-xxl-2">
@@ -473,7 +473,7 @@ $rodapeMeses = function () use ($meses, $totMes): string {
 $linhasForn = [];
 foreach ($insumos as $I) foreach ($I['forn'] as $fk => $F) $linhasForn[] = ['fk' => $fk, 'forn' => $F['nome'], 'I' => $I, 'mes' => $F['mes']];
 usort($linhasForn, fn($a, $b) => strcmp($a['forn'], $b['forn']) ?: strcmp($a['I']['nome'], $b['I']['nome']));
-// Linhas do Resumo: Var. % do período inteiro (1ª → última compra; só com 2+ compras), filtro Positivos/Negativos e ordem por valor (curva ABC).
+// Linhas do Resumo: Var. % do período inteiro (1ª → última compra; só com 2+ compras), filtro Aumento/Redução e ordem por valor (curva ABC).
 // Os % de representatividade e o acumulado são sempre sobre o total do período (com ou sem o filtro da Var. %).
 $linhasRes = [];
 foreach ($insumos as $I) {
@@ -1276,7 +1276,7 @@ var XLS_FILTROS = <?= json_encode([
     ['Fornecedor', $forn !== '' ? $forn . ' - ' . (array_column($fornecedores, 'nome', 'fornecedor_codigo')[$forn] ?? '') : 'Todos'],
     ['Insumo', $q !== '' ? $q : 'Todos'],
     [$rotGrupo, $grupo === '' ? 'Todos' : ($grupo === '__sem__' ? 'Sem classificação' : $grupo)],
-    ['Var. % (Resumo)', $varPos || $varNeg ? implode(' e ', array_filter([$varPos ? 'Positivos' : '', $varNeg ? 'Negativos' : ''])) : 'Todos'],
+    ['Var. % (Resumo)', $varPos || $varNeg ? implode(' e ', array_filter([$varPos ? 'Aumento' : '', $varNeg ? 'Redução' : ''])) : 'Todos'],
     ['Gerado em', date('d/m/Y H:i') . (!empty(usuario()['nome']) ? ' por ' . usuario()['nome'] : '')],
 ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 var XLS_NOME = <?= json_encode('Custos ' . $tiposNome[$tipo] . ' ' . str_replace('/', '-', dataBR($ini) . ' a ' . dataBR($fim))) ?>;
