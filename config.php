@@ -465,6 +465,8 @@ function db() {
                 KEY idx_insumo (insumo_codigo),
                 KEY idx_fornecedor (fornecedor_codigo)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Observação livre por movimento (relatório Custos de MP e Embalagem) — preservada na reimportação.
+            try { $pdo->exec("ALTER TABLE custos_insumos_compras ADD COLUMN observacao TEXT NULL, ADD COLUMN obs_usuario VARCHAR(100) NULL, ADD COLUMN obs_em DATETIME NULL"); } catch (PDOException $e) {}
             // Cadastro de materiais (planilha do A&M): classificação da coluna P, usada como filtro do relatório.
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS custos_insumos_cadastro (
                 tipo          ENUM('mp','emb') NOT NULL,
@@ -4750,6 +4752,19 @@ function custosInsumosImportar(array $dados, string $arquivo): array {
     $u = usuario();
     $pdo->beginTransaction();
     try {
+        // Observações dos movimentos que serão substituídos: guardadas pela chave natural da linha (+ nº da ocorrência,
+        // pois a mesma NF pode ter linhas idênticas) e devolvidas às linhas equivalentes do arquivo novo.
+        $obsKey = fn(array $l, int $n) => implode('|', [$l['insumo_codigo'], $l['data'], (string)$l['nf'], (string)$l['fornecedor_codigo'],
+                                                         (string)$l['unidade'], number_format((float)$l['quantidade'], 4, '.', ''),
+                                                         number_format((float)$l['valor_unitario'], 6, '.', ''), $n]);
+        $st = $pdo->prepare('SELECT insumo_codigo, data, nf, fornecedor_codigo, unidade, quantidade, valor_unitario, observacao, obs_usuario, obs_em
+                             FROM custos_insumos_compras WHERE tipo = ? AND COALESCE(empresa,"") = ? AND data BETWEEN ? AND ? ORDER BY id');
+        $st->execute([$dados['tipo'], (string)$dados['empresa'], $dados['ini'], $dados['fim']]);
+        $obsAnt = []; $occ = [];
+        foreach ($st->fetchAll() as $l) {
+            $k0 = $obsKey($l, 0); $n = $occ[$k0] = ($occ[$k0] ?? 0) + 1;
+            if (($l['observacao'] ?? '') !== '') $obsAnt[$obsKey($l, $n)] = [$l['observacao'], $l['obs_usuario'], $l['obs_em']];
+        }
         $del = $pdo->prepare('DELETE FROM custos_insumos_compras WHERE tipo = ? AND COALESCE(empresa,"") = ? AND data BETWEEN ? AND ?');
         $del->execute([$dados['tipo'], (string)$dados['empresa'], $dados['ini'], $dados['fim']]);
         $subst = $del->rowCount();
@@ -4759,10 +4774,14 @@ function custosInsumosImportar(array $dados, string $arquivo): array {
                        count($dados['linhas']), $subst, $u['id'] ?? null, $u['nome'] ?? null]);
         $impId = (int)$pdo->lastInsertId();
         $ins = $pdo->prepare('INSERT INTO custos_insumos_compras (importacao_id, tipo, empresa, insumo_codigo, insumo_nome, data, valor_unitario,
-                                  quantidade, unidade, nf, fornecedor_codigo, fornecedor_nome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+                                  quantidade, unidade, nf, fornecedor_codigo, fornecedor_nome, observacao, obs_usuario, obs_em)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+        $occ = [];
         foreach ($dados['linhas'] as $l) {
+            $k0 = $obsKey($l, 0); $n = $occ[$k0] = ($occ[$k0] ?? 0) + 1;
+            $o = $obsAnt[$obsKey($l, $n)] ?? [null, null, null];
             $ins->execute([$impId, $dados['tipo'], $dados['empresa'], $l['insumo_codigo'], $l['insumo_nome'], $l['data'], $l['valor_unitario'],
-                           $l['quantidade'], $l['unidade'], $l['nf'], $l['fornecedor_codigo'], $l['fornecedor_nome']]);
+                           $l['quantidade'], $l['unidade'], $l['nf'], $l['fornecedor_codigo'], $l['fornecedor_nome'], $o[0], $o[1], $o[2]]);
         }
         $pdo->commit();
     } catch (Throwable $e) {

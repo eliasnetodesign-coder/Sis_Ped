@@ -5,6 +5,21 @@ requireComercial();
 $self = BASE_URL . '/admin/relatorios/custos-insumos-am.php';
 $tiposNome = ['mp' => 'Matéria-prima', 'emb' => 'Material de embalagem'];
 
+// ── Observação de um movimento (modal de histórico e aba Compras) — AJAX, responde JSON ──
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'obs') {
+    header('Content-Type: application/json; charset=utf-8');
+    $id = (int)($_POST['id'] ?? 0);
+    $txt = trim(str_replace("\r\n", "\n", (string)($_POST['observacao'] ?? '')));
+    if (mb_strlen($txt) > 2000) $txt = mb_substr($txt, 0, 2000);
+    $u = usuario();
+    $st = db()->prepare('UPDATE custos_insumos_compras SET observacao = ?, obs_usuario = ?, obs_em = ? WHERE id = ?');
+    $st->execute($txt === '' ? [null, null, null, $id] : [$txt, $u['nome'] ?? null, date('Y-m-d H:i:s'), $id]);
+    $ok = (bool)db()->query('SELECT COUNT(*) FROM custos_insumos_compras WHERE id = ' . $id)->fetchColumn();
+    echo json_encode($ok ? ['ok' => true, 'obs' => $txt, 'por' => $txt === '' ? '' : (($u['nome'] ?? '') . ' em ' . date('d/m/Y H:i'))]
+                         : ['ok' => false, 'erro' => 'Movimento não encontrado (a planilha pode ter sido reimportada — recarregue a página).']);
+    exit;
+}
+
 // ── Importação: "Listagem Resumida" do A&M (.xlsx), um ou vários arquivos de uma vez ──
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_FILES['arquivos']) || isset($_FILES['cadastro']))) {
     $f = $_FILES['arquivos'] ?? ['name' => []];
@@ -101,6 +116,7 @@ $buscar = function (string $de, string $ate) use ($tipo, $forn, $q, $grupo): arr
     return $st->fetchAll();
 };
 $compras = $buscar($ini, $fim);
+$obsPor = fn(array $c) => ($c['observacao'] ?? '') === '' ? '' : trim(($c['obs_usuario'] ?? '') . ($c['obs_em'] ? ' em ' . date('d/m/Y H:i', strtotime($c['obs_em'])) : ''));
 
 // Agrupamento por insumo + unidade (o mesmo insumo pode vir em unidades diferentes — ex.: fita em M e PC —
 // e preço por metro não se compara com preço por peça). Preço médio = ponderado pela quantidade.
@@ -131,7 +147,8 @@ foreach ($compras as $c) {
     }
     $I = &$insumos[$k];
     $acumula($I['acc'], $c);
-    $I['hist'][] = [$c['data'], $c['nf'], $c['fornecedor_nome'], (float)$c['quantidade'], (float)$c['valor_unitario']];
+    $I['hist'][] = [$c['data'], $c['nf'], $c['fornecedor_nome'], (float)$c['quantidade'], (float)$c['valor_unitario'],
+                    (int)$c['id'], (string)($c['observacao'] ?? ''), $obsPor($c)];
     // Ordenado por data, id. Linhas da mesma NF na mesma data são UMA compra: não viram "penúltima".
     $novaCompra = !$I['ultimo'] || $I['ultimo']['nf'] !== $c['nf'] || $I['ultimo']['data'] !== $c['data'];
     if ($novaCompra && $I['ultimo']) $I['penultimo'] = $I['ultimo'];
@@ -945,6 +962,12 @@ $abas = [
 </div>
 
 <!-- ══ Compras ══ -->
+<?php
+// Botão de observação do movimento (igual ao do modal de histórico, montado no JS por hBtnObs).
+$btnObs = fn(int $id, string $obs) => '<button type="button" class="btn btn-sm py-0 px-1 btn-obs ' . ($obs === '' ? 'btn-outline-secondary' : 'btn-warning')
+    . '" data-obs-id="' . $id . '" title="' . ($obs === '' ? 'Adicionar observação' : 'Editar observação') . '"><i class="bi '
+    . ($obs === '' ? 'bi-chat-left' : 'bi-chat-left-text-fill') . '"></i></button>';
+?>
 <div class="tab-pane fade <?= $visao === 'compras' ? 'show active' : '' ?>" id="vis-compras" role="tabpanel">
 <h5 class="print-titulo"><?= e($abas['compras'][1]) ?></h5>
 <div class="card shadow-sm border-0"><div class="card-body p-0"><div class="table-responsive tbl-fixa-wrap">
@@ -953,7 +976,7 @@ $abas = [
         'data' => ['Data', '', 'txt'], 'codigo' => ['Código', '', 'num'], 'nome' => ['Insumo', '', 'txt'], 'forn' => ['Fornecedor', '', 'txt'],
         'nf' => ['NF', '', 'num'], 'qtd' => ['Qtd.', 'text-end', 'num'], 'un' => ['Un.', '', 'txt'], 'vu' => ['Valor unitário', 'text-end', 'num'],
         'tot' => ['Total', 'text-end', 'num'],
-    ]) ?></tr></thead>
+    ]) ?><th class="text-center d-print-none" style="width:1%">Obs.</th></tr></thead>
     <tbody>
     <?php foreach (array_reverse($compras) as $c): $tot = (float)$c['quantidade'] * (float)$c['valor_unitario']; ?>
         <tr class="lin-ord"<?= $ordAttrs(['data' => $c['data'] . str_pad($c['id'], 9, '0', STR_PAD_LEFT), 'codigo' => $c['insumo_codigo'], 'nome' => $c['insumo_nome'],
@@ -961,19 +984,21 @@ $abas = [
             <td class="text-nowrap"><?= dataBR($c['data']) ?></td>
             <td class="text-muted"><?= e($c['insumo_codigo']) ?></td>
             <td class="fw-semibold"><?= e($c['insumo_nome']) ?></td>
-            <td><?= e($c['fornecedor_nome']) ?> <span class="text-muted small"><?= e($c['fornecedor_codigo']) ?></span></td>
+            <td><?= e($c['fornecedor_nome']) ?> <span class="text-muted small"><?= e($c['fornecedor_codigo']) ?></span>
+                <div class="obs-txt small text-body-secondary fst-italic<?= ($c['observacao'] ?? '') === '' ? ' d-none' : '' ?>" data-obs-txt="<?= (int)$c['id'] ?>" title="<?= e($obsPor($c)) ?>"><i class="bi bi-chat-left-text me-1"></i><span><?= nl2br(e($c['observacao'] ?? '')) ?></span></div></td>
             <td><?= e($c['nf']) ?></td>
             <td class="text-end"><?= qtdFmt($c['quantidade']) ?></td>
             <td><?= e($c['unidade']) ?></td>
             <td class="text-end"><?= precoUn($c['valor_unitario']) ?></td>
             <td class="text-end"><?= moedaBR($tot) ?></td>
+            <td class="text-center d-print-none"><?= $btnObs((int)$c['id'], (string)($c['observacao'] ?? '')) ?></td>
         </tr>
     <?php endforeach; if (!$compras): ?>
-        <tr><td colspan="9" class="text-center text-muted py-4">Nenhuma compra com estes filtros.</td></tr>
+        <tr><td colspan="10" class="text-center text-muted py-4">Nenhuma compra com estes filtros.</td></tr>
     <?php endif; ?>
     </tbody>
     <?php if ($compras): ?>
-    <tfoot><tr class="fw-bold"><td colspan="8">Total (<?= count($compras) ?> compras)</td><td class="text-end"><?= moedaBR($total['valor']) ?></td></tr></tfoot>
+    <tfoot><tr class="fw-bold"><td colspan="8">Total (<?= count($compras) ?> compras)</td><td class="text-end"><?= moedaBR($total['valor']) ?></td><td class="d-print-none"></td></tr></tfoot>
     <?php endif; ?>
 </table>
 </div></div></div>
@@ -998,7 +1023,7 @@ $abas = [
                 <table class="table table-sm table-hover align-middle mb-0" style="font-size:.85rem">
                     <thead class="table-light"><tr>
                         <th>Data</th><th>NF</th><th>Fornecedor</th><th class="text-end">Qtd.</th>
-                        <th class="text-end">Valor unitário</th><th class="text-end">Var. vs compra anterior</th><th class="text-end">Total</th>
+                        <th class="text-end">Valor unitário</th><th class="text-end">Var. vs compra anterior</th><th class="text-end">Total</th><th class="text-center" style="width:1%">Obs.</th>
                     </tr></thead>
                     <tbody id="histCorpo"></tbody>
                 </table>
@@ -1117,6 +1142,7 @@ Array.prototype.forEach.call(document.querySelectorAll('.tbl-fixa'), function (t
         });
     }
     function ordena(th, dir) {
+        Array.prototype.forEach.call(corpo.querySelectorAll('.obs-editor'), function (r) { r.remove(); });   // editor de observação aberto
         var col = th.dataset.col, num = th.dataset.tipo === 'num';
         asc = dir ? dir === 'asc' : (col === colAtual) ? !asc : true;
         colAtual = col;
@@ -1160,7 +1186,7 @@ function aplicarAB() {
     f.elements.visao.value = 'periodo';
     f.submit();
 }
-// Histórico de compras do insumo: [data, nf, fornecedor, qtd, valor unitário], em ordem de data.
+// Histórico de compras do insumo: [data, nf, fornecedor, qtd, valor unitário, id, observação, autor], em ordem de data.
 var HIST = <?= json_encode($histJs ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 var PERIODO = <?= json_encode(dataBR($ini) . ' a ' . dataBR($fim)) ?>;
 function hEsc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
@@ -1174,6 +1200,61 @@ function hVar(v) {
     return '<span class="fw-semibold text-nowrap ' + (v > 0 ? 'text-danger' : 'text-success') + '"><i class="bi ' + (v > 0 ? 'bi-arrow-up-short' : 'bi-arrow-down-short') + '"></i>'
          + (v > 0 ? '+' : '') + v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '%</span>';
 }
+// ── Observação por movimento: botão no fim da linha abre um editor logo abaixo; gravar atualiza o histórico e a aba Compras ──
+function hBtnObs(id, obs) {
+    return '<button type="button" class="btn btn-sm py-0 px-1 btn-obs ' + (obs ? 'btn-warning' : 'btn-outline-secondary') + '" data-obs-id="' + id
+         + '" title="' + (obs ? 'Editar observação' : 'Adicionar observação') + '"><i class="bi ' + (obs ? 'bi-chat-left-text-fill' : 'bi-chat-left') + '"></i></button>';
+}
+function hObsTxt(id, obs, por) {
+    return '<div class="obs-txt small text-body-secondary fst-italic' + (obs ? '' : ' d-none') + '" data-obs-txt="' + id + '" title="' + hEsc(por || '') + '">'
+         + '<i class="bi bi-chat-left-text me-1"></i><span>' + hEsc(obs).replace(/\n/g, '<br>') + '</span></div>';
+}
+function obsAtual(id) {
+    for (var k in HIST) for (var j = 0; j < HIST[k].l.length; j++) if (HIST[k].l[j][5] === id) return HIST[k].l[j][6];
+    var t = document.querySelector('[data-obs-txt="' + id + '"] span');
+    return t ? t.innerText.trim() : '';
+}
+function obsAplica(id, obs, por) {
+    for (var k in HIST) HIST[k].l.forEach(function (c) { if (c[5] === id) { c[6] = obs; c[7] = por; } });
+    Array.prototype.forEach.call(document.querySelectorAll('.btn-obs[data-obs-id="' + id + '"]'), function (b) { b.outerHTML = hBtnObs(id, obs); });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-obs-txt="' + id + '"]'), function (d) { d.outerHTML = hObsTxt(id, obs, por); });
+}
+function obsEditor(btn) {
+    var tr = btn.closest('tr'), id = +btn.dataset.obsId, prox = tr.nextElementSibling;
+    var aberto = tr.parentNode.querySelector('.obs-editor');
+    if (aberto) aberto.remove();
+    if (aberto && aberto === prox) return;                         // clicar de novo fecha
+    var ed = document.createElement('tr');
+    ed.className = 'obs-editor d-print-none';
+    ed.innerHTML = '<td colspan="' + tr.cells.length + '" class="bg-body-tertiary"><div class="d-flex flex-column flex-md-row gap-2 align-items-md-start">'
+        + '<textarea class="form-control form-control-sm" rows="2" maxlength="2000" placeholder="Observação sobre este movimento…"></textarea>'
+        + '<div class="d-flex gap-1 flex-shrink-0"><button type="button" class="btn btn-sm btn-primary obs-salvar"><i class="bi bi-check-lg me-1"></i>Salvar</button>'
+        + '<button type="button" class="btn btn-sm btn-outline-secondary obs-cancelar">Cancelar</button></div></div>'
+        + '<div class="small text-danger mt-1 obs-erro d-none"></div></td>';
+    tr.parentNode.insertBefore(ed, prox);
+    var ta = ed.querySelector('textarea'), bs = ed.querySelector('.obs-salvar'), er = ed.querySelector('.obs-erro');
+    ta.value = obsAtual(id); ta.focus();
+    ed.querySelector('.obs-cancelar').addEventListener('click', function () { ed.remove(); });
+    ta.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); ed.remove(); }
+        if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) bs.click();
+    });
+    bs.addEventListener('click', function () {
+        var fd = new FormData(); fd.append('acao', 'obs'); fd.append('id', id); fd.append('observacao', ta.value);
+        bs.disabled = true; er.classList.add('d-none');
+        fetch(location.pathname, {method: 'POST', body: fd, credentials: 'same-origin'})
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (!j.ok) throw new Error(j.erro || 'Falha ao salvar.');
+                obsAplica(id, j.obs, j.por); ed.remove();
+            })
+            .catch(function (e) { er.textContent = e.message || 'Falha ao salvar.'; er.classList.remove('d-none'); bs.disabled = false; });
+    });
+}
+document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('.btn-obs'); if (!b) return;
+    ev.preventDefault(); ev.stopPropagation(); obsEditor(b);
+});
 function abrirHist(i) {
     var h = HIST[i]; if (!h) return;
     var qtd = 0, valor = 0, min = null, max = null, forn = {}, nfs = {}, linhas = [], ant = null;
@@ -1184,9 +1265,9 @@ function abrirHist(i) {
         // compara com a compra anterior (outra NF/data); linhas da mesma NF são a mesma compra
         if (j > 0 && (h.l[j - 1][1] !== c[1] || h.l[j - 1][0] !== c[0])) ant = h.l[j - 1][4];
         var v = ant ? (c[4] / ant - 1) * 100 : null;
-        linhas.push('<tr><td class="text-nowrap">' + hData(c[0]) + '</td><td>' + hEsc(c[1]) + '</td><td>' + hEsc(c[2]) + '</td>'
+        linhas.push('<tr><td class="text-nowrap">' + hData(c[0]) + '</td><td>' + hEsc(c[1]) + '</td><td>' + hEsc(c[2]) + hObsTxt(c[5], c[6], c[7]) + '</td>'
             + '<td class="text-end">' + hQtd(c[3]) + ' ' + hEsc(h.u) + '</td><td class="text-end fw-semibold' + (c[4] === min ? ' text-success' : (c[4] === max ? ' text-danger' : '')) + '">' + hPreco(c[4]) + '</td>'
-            + '<td class="text-end">' + hVar(v) + '</td><td class="text-end">' + hMoeda(tot) + '</td></tr>');
+            + '<td class="text-end">' + hVar(v) + '</td><td class="text-end">' + hMoeda(tot) + '</td><td class="text-center">' + hBtnObs(c[5], c[6]) + '</td></tr>');
     });
     document.getElementById('histTitulo').textContent = h.n;
     document.getElementById('histSub').textContent = 'Código ' + h.c + ' · unidade ' + h.u + ' · ' + PERIODO;
