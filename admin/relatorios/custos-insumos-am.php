@@ -5,18 +5,111 @@ requireComercial();
 $self = BASE_URL . '/admin/relatorios/custos-insumos-am.php';
 $tiposNome = ['mp' => 'Matéria-prima', 'emb' => 'Material de embalagem'];
 
+// Rótulo exibido sob a observação: data/hora da última alteração e quem fez.
+function obsRotulo(?string $usuario, ?string $em): string {
+    return trim(($em ? 'Alterada em ' . date('d/m/Y H:i', strtotime($em)) : '') . ($usuario ? ' · ' . $usuario : ''), ' ·');
+}
+
 // ── Observação de um movimento (modal de histórico e aba Compras) — AJAX, responde JSON ──
+// Cada inclusão/alteração/remoção fica registrada em custos_insumos_obs_log (texto anterior × novo, usuário, data/hora).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'obs') {
     header('Content-Type: application/json; charset=utf-8');
     $id = (int)($_POST['id'] ?? 0);
     $txt = trim(str_replace("\r\n", "\n", (string)($_POST['observacao'] ?? '')));
     if (mb_strlen($txt) > 2000) $txt = mb_substr($txt, 0, 2000);
     $u = usuario();
-    $st = db()->prepare('UPDATE custos_insumos_compras SET observacao = ?, obs_usuario = ?, obs_em = ? WHERE id = ?');
-    $st->execute($txt === '' ? [null, null, null, $id] : [$txt, $u['nome'] ?? null, date('Y-m-d H:i:s'), $id]);
-    $ok = (bool)db()->query('SELECT COUNT(*) FROM custos_insumos_compras WHERE id = ' . $id)->fetchColumn();
-    echo json_encode($ok ? ['ok' => true, 'obs' => $txt, 'por' => $txt === '' ? '' : (($u['nome'] ?? '') . ' em ' . date('d/m/Y H:i'))]
-                         : ['ok' => false, 'erro' => 'Movimento não encontrado (a planilha pode ter sido reimportada — recarregue a página).']);
+    $pdo = db();
+    $st = $pdo->prepare('SELECT * FROM custos_insumos_compras WHERE id = ?');
+    $st->execute([$id]);
+    $c = $st->fetch();
+    if (!$c) {
+        echo json_encode(['ok' => false, 'erro' => 'Movimento não encontrado (a planilha pode ter sido reimportada — recarregue a página).']);
+        exit;
+    }
+    $antes = (string)($c['observacao'] ?? '');
+    if ($antes !== $txt) {
+        $agora = date('Y-m-d H:i:s');
+        $pdo->beginTransaction();
+        $pdo->prepare('UPDATE custos_insumos_compras SET observacao = ?, obs_usuario = ?, obs_em = ? WHERE id = ?')
+            ->execute($txt === '' ? [null, null, null, $id] : [$txt, $u['nome'] ?? null, $agora, $id]);
+        $pdo->prepare('INSERT INTO custos_insumos_obs_log (compra_id, tipo, insumo_codigo, insumo_nome, data_compra, nf, fornecedor_codigo,
+                           fornecedor_nome, acao, obs_anterior, obs_nova, usuario_id, usuario_nome, criado_em) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            ->execute([$id, $c['tipo'], $c['insumo_codigo'], $c['insumo_nome'], $c['data'], $c['nf'], $c['fornecedor_codigo'], $c['fornecedor_nome'],
+                       $antes === '' ? 'incluida' : ($txt === '' ? 'removida' : 'alterada'), $antes === '' ? null : $antes, $txt === '' ? null : $txt,
+                       $u['id'] ?? null, $u['nome'] ?? null, $agora]);
+        $pdo->commit();
+        $c['obs_usuario'] = $u['nome'] ?? null; $c['obs_em'] = $agora;
+    }
+    echo json_encode(['ok' => true, 'obs' => $txt,
+                      'por' => $txt === '' ? '' : obsRotulo($c['obs_usuario'] ?? null, $c['obs_em'] ?? null)]);
+    exit;
+}
+
+// ── Consulta do log de alterações das observações — AJAX, responde JSON ──
+// Filtros: tipo, período da alteração (de/ate), texto livre (insumo, fornecedor, NF, usuário, observação) ou um movimento (compra).
+if (($_GET['acao'] ?? '') === 'obslog') {
+    header('Content-Type: application/json; charset=utf-8');
+    $dOk = fn($d) => is_string($d) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $d) ? $d : null;
+    $w = ['tipo = ?']; $p = [($_GET['tipo'] ?? 'mp') === 'emb' ? 'emb' : 'mp'];
+    if ($cid = (int)($_GET['compra'] ?? 0)) { $w[] = 'compra_id = ?'; $p[] = $cid; }
+    if ($d = $dOk($_GET['de'] ?? null))  { $w[] = 'criado_em >= ?'; $p[] = $d . ' 00:00:00'; }
+    if ($d = $dOk($_GET['ate'] ?? null)) { $w[] = 'criado_em <= ?'; $p[] = $d . ' 23:59:59'; }
+    if (in_array($_GET['acao_log'] ?? '', ['incluida', 'alterada', 'removida'], true)) { $w[] = 'acao = ?'; $p[] = $_GET['acao_log']; }
+    if (($b = trim((string)($_GET['busca'] ?? ''))) !== '') {
+        $w[] = '(insumo_codigo LIKE ? OR insumo_nome LIKE ? OR fornecedor_nome LIKE ? OR fornecedor_codigo LIKE ? OR nf LIKE ?
+                 OR usuario_nome LIKE ? OR obs_anterior LIKE ? OR obs_nova LIKE ?)';
+        array_push($p, ...array_fill(0, 8, '%' . $b . '%'));
+    }
+    $st = db()->prepare('SELECT * FROM custos_insumos_obs_log WHERE ' . implode(' AND ', $w) . ' ORDER BY criado_em DESC, id DESC LIMIT 1001');
+    $st->execute($p);
+    $rows = $st->fetchAll();
+    echo json_encode(['ok' => true, 'mais' => count($rows) > 1000, 'linhas' => array_map(fn($r) => [
+        'em' => date('d/m/Y H:i', strtotime($r['criado_em'])), 'usuario' => (string)$r['usuario_nome'], 'acao' => $r['acao'],
+        'codigo' => $r['insumo_codigo'], 'insumo' => (string)$r['insumo_nome'], 'data' => $r['data_compra'] ? date('d/m/Y', strtotime($r['data_compra'])) : '',
+        'nf' => (string)$r['nf'], 'fornecedor' => (string)$r['fornecedor_nome'], 'antes' => (string)$r['obs_anterior'], 'depois' => (string)$r['obs_nova'],
+    ], array_slice($rows, 0, 1000))], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ── Listas de insumos (nome + insumos escolhidos), usadas como filtro do relatório — AJAX, responde JSON ──
+// Compartilhadas entre os usuários; cada lista é de um tipo (MP ou embalagem).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['lista_salvar', 'lista_excluir'], true)) {
+    header('Content-Type: application/json; charset=utf-8');
+    $pdo = db();
+    $id = (int)($_POST['id'] ?? 0);
+    if ($_POST['acao'] === 'lista_excluir') {
+        $pdo->beginTransaction();
+        $pdo->prepare('DELETE FROM custos_insumos_lista_itens WHERE lista_id = ?')->execute([$id]);
+        $pdo->prepare('DELETE FROM custos_insumos_listas WHERE id = ?')->execute([$id]);
+        $pdo->commit();
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+    $tp = ($_POST['tipo'] ?? '') === 'emb' ? 'emb' : 'mp';
+    $nome = mb_substr(trim(preg_replace('/\s+/', ' ', (string)($_POST['nome'] ?? ''))), 0, 120);
+    $itens = array_values(array_unique(array_filter(array_map(fn($c) => mb_substr(trim((string)$c), 0, 30), (array)($_POST['itens'] ?? [])), 'strlen')));
+    if ($nome === '') { echo json_encode(['ok' => false, 'erro' => 'Informe o nome da lista.']); exit; }
+    if (!$itens)      { echo json_encode(['ok' => false, 'erro' => 'Adicione pelo menos um produto à lista.']); exit; }
+    $st = $pdo->prepare('SELECT id FROM custos_insumos_listas WHERE tipo = ? AND nome = ? AND id <> ?');
+    $st->execute([$tp, $nome, $id]);
+    if ($st->fetchColumn()) { echo json_encode(['ok' => false, 'erro' => 'Já existe uma lista com esse nome.']); exit; }
+    $u = usuario(); $agora = date('Y-m-d H:i:s');
+    $pdo->beginTransaction();
+    if ($id) {
+        $st = $pdo->prepare('SELECT id FROM custos_insumos_listas WHERE id = ? AND tipo = ?');
+        $st->execute([$id, $tp]);
+        if (!$st->fetchColumn()) { $pdo->rollBack(); echo json_encode(['ok' => false, 'erro' => 'Lista não encontrada (pode ter sido excluída — recarregue a página).']); exit; }
+        $pdo->prepare('UPDATE custos_insumos_listas SET nome = ?, atualizado_em = ? WHERE id = ?')->execute([$nome, $agora, $id]);
+        $pdo->prepare('DELETE FROM custos_insumos_lista_itens WHERE lista_id = ?')->execute([$id]);
+    } else {
+        $pdo->prepare('INSERT INTO custos_insumos_listas (tipo, nome, usuario_id, usuario_nome, criado_em, atualizado_em) VALUES (?,?,?,?,?,?)')
+            ->execute([$tp, $nome, $u['id'] ?? null, $u['nome'] ?? null, $agora, $agora]);
+        $id = (int)$pdo->lastInsertId();
+    }
+    $ins = $pdo->prepare('INSERT INTO custos_insumos_lista_itens (lista_id, insumo_codigo) VALUES (?,?)');
+    foreach ($itens as $c) $ins->execute([$id, $c]);
+    $pdo->commit();
+    echo json_encode(['ok' => true, 'id' => $id]);
     exit;
 }
 
@@ -101,7 +194,35 @@ $st = db()->prepare('SELECT insumo_codigo, MAX(insumo_nome) AS nome FROM custos_
 $st->execute([$tipo]);
 $insumosOpc = $st->fetchAll();
 
-$buscar = function (string $de, string $ate) use ($tipo, $forn, $q, $grupo): array {
+// Listas de insumos do tipo (filtro GET `lista` = id). Produtos disponíveis para montar a lista: os que têm compra
+// importada e os do cadastro de materiais (mesmo sem compra ainda) — [código, nome, tem compra?].
+$st = db()->prepare('SELECT l.id, l.nome, l.usuario_nome, l.atualizado_em, COUNT(i.insumo_codigo) AS n
+                     FROM custos_insumos_listas l LEFT JOIN custos_insumos_lista_itens i ON i.lista_id = l.id
+                     WHERE l.tipo = ? GROUP BY l.id ORDER BY l.nome');
+$st->execute([$tipo]);
+$listas = $st->fetchAll(PDO::FETCH_UNIQUE);
+$lista = (int)($_GET['lista'] ?? 0);
+if (!isset($listas[$lista])) $lista = 0;
+$listaItens = [];
+if ($listas) {
+    $st = db()->prepare('SELECT i.lista_id, i.insumo_codigo FROM custos_insumos_lista_itens i JOIN custos_insumos_listas l ON l.id = i.lista_id WHERE l.tipo = ?');
+    $st->execute([$tipo]);
+    foreach ($st->fetchAll() as $r) $listaItens[$r['lista_id']][] = $r['insumo_codigo'];
+}
+$listasJs = [];
+foreach ($listas as $lid => $l) {
+    $listasJs[] = ['id' => $lid, 'nome' => $l['nome'], 'itens' => $listaItens[$lid] ?? [],
+                   'por' => trim(($l['usuario_nome'] ?: '') . ' · ' . date('d/m/Y H:i', strtotime($l['atualizado_em'])), ' ·')];
+}
+$produtosLista = [];
+foreach ($insumosOpc as $o) $produtosLista[$o['insumo_codigo']] = [$o['insumo_codigo'], (string)$o['nome'], 1];
+$st = db()->prepare('SELECT insumo_codigo, insumo_nome FROM custos_insumos_cadastro WHERE tipo = ?');
+$st->execute([$tipo]);
+foreach ($st->fetchAll() as $r) $produtosLista[$r['insumo_codigo']] ??= [$r['insumo_codigo'], (string)$r['insumo_nome'], 0];
+foreach ($listaItens as $its) foreach ($its as $c) $produtosLista[$c] ??= [$c, '(sem nome)', 0];   // item que saiu da base
+uasort($produtosLista, fn($a, $b) => $b[2] <=> $a[2] ?: strcmp($a[1], $b[1]));
+
+$buscar = function (string $de, string $ate) use ($tipo, $forn, $q, $grupo, $lista): array {
     $sql = 'SELECT * FROM custos_insumos_compras WHERE tipo = ? AND data BETWEEN ? AND ?';
     $par = [$tipo, $de, $ate];
     if ($forn !== '') { $sql .= ' AND fornecedor_codigo = ?'; $par[] = $forn; }
@@ -111,12 +232,13 @@ $buscar = function (string $de, string $ate) use ($tipo, $forn, $q, $grupo): arr
     } elseif ($grupo !== '') {
         $sql .= ' AND insumo_codigo IN (SELECT insumo_codigo FROM custos_insumos_cadastro WHERE tipo = ? AND grupo = ?)'; $par[] = $tipo; $par[] = $grupo;
     }
+    if ($lista) { $sql .= ' AND insumo_codigo IN (SELECT insumo_codigo FROM custos_insumos_lista_itens WHERE lista_id = ?)'; $par[] = $lista; }
     $st = db()->prepare($sql . ' ORDER BY data, id');
     $st->execute($par);
     return $st->fetchAll();
 };
 $compras = $buscar($ini, $fim);
-$obsPor = fn(array $c) => ($c['observacao'] ?? '') === '' ? '' : trim(($c['obs_usuario'] ?? '') . ($c['obs_em'] ? ' em ' . date('d/m/Y H:i', strtotime($c['obs_em'])) : ''));
+$obsPor = fn(array $c) => ($c['observacao'] ?? '') === '' ? '' : obsRotulo($c['obs_usuario'] ?? null, $c['obs_em'] ?? null);
 
 // Agrupamento por insumo + unidade (o mesmo insumo pode vir em unidades diferentes — ex.: fita em M e PC —
 // e preço por metro não se compara com preço por peça). Preço médio = ponderado pela quantidade.
@@ -230,8 +352,8 @@ $mesNome = function (string $ym): string {
     static $n = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
     return $n[(int)substr($ym, 5, 2) - 1] . '/' . substr($ym, 2, 2);
 };
-$linkInsumo = function (string $codigo, string $nome, string $visaoDest = 'compras') use ($self, $tipo, $ini, $fim, $forn, $grupo, $modoPreco): string {
-    $u = $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim, 'fornecedor' => $forn, 'grupo' => $grupo, 'q' => $codigo, 'visao' => $visaoDest]);
+$linkInsumo = function (string $codigo, string $nome, string $visaoDest = 'compras') use ($self, $tipo, $ini, $fim, $forn, $grupo, $lista, $modoPreco): string {
+    $u = $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim, 'fornecedor' => $forn, 'grupo' => $grupo, 'lista' => $lista ?: '', 'q' => $codigo, 'visao' => $visaoDest]);
     return '<a href="' . e($u) . '" class="text-reset text-decoration-none" title="Ver as compras deste insumo">' . e($nome) . '</a>';
 };
 // Sem coluna "Un.": a unidade só aparece (selo ao lado do nome) quando o mesmo insumo tem compras em mais de uma unidade.
@@ -286,6 +408,12 @@ require_once LAYOUT_PATH . '/header.php';
         <button type="button" class="btn btn-outline-success" onclick="gerarExcel()" title="Baixar todas as abas em Excel (uma planilha por aba)">
             <i class="bi bi-file-earmark-excel me-1"></i>Gerar Excel
         </button>
+        <button type="button" class="btn btn-outline-secondary" onclick="abrirObsLog({})" title="Consultar inclusões, alterações e remoções das observações dos movimentos">
+            <i class="bi bi-clock-history me-1"></i>Alterações de observações
+        </button>
+        <button type="button" class="btn btn-outline-primary" onclick="abrirListas(LISTA_ATUAL)" title="Criar ou editar listas de produtos para usar como filtro do relatório">
+            <i class="bi bi-list-check me-1"></i>Listas de produtos
+        </button>
         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalImportar">
             <i class="bi bi-upload me-1"></i>Importar planilhas
         </button>
@@ -299,6 +427,7 @@ require_once LAYOUT_PATH . '/header.php';
         · <b>Período:</b> <?= dataBR($ini) ?> a <?= dataBR($fim) ?>
         <?php if ($forn !== ''): ?>· <b>Fornecedor:</b> <?= e($forn . ' - ' . ($totForn[$forn]['nome'] ?? array_column($fornecedores, 'nome', 'fornecedor_codigo')[$forn] ?? '')) ?><?php endif; ?>
         <?php if ($grupo !== ''): ?>· <b><?= e($rotGrupo) ?>:</b> <?= $grupo === '__sem__' ? 'Sem classificação' : e($grupo) ?><?php endif; ?>
+        <?php if ($lista): ?>· <b>Lista:</b> <?= e($listas[$lista]['nome']) ?><?php endif; ?>
         <?php if ($q !== ''): ?>· <b>Insumo:</b> <?= e($q) ?><?php endif; ?>
         <?php if ($varPos || $varNeg): ?>· <b>Var. %:</b> <?= implode(' e ', array_filter([$varPos ? 'Aumento' : '', $varNeg ? 'Redução' : ''])) ?><?php endif; ?>
     </div>
@@ -314,7 +443,7 @@ require_once LAYOUT_PATH . '/header.php';
                 <div class="btn-group w-100" role="group">
                     <?php foreach ($tiposNome as $tk => $tn): ?>
                     <input type="radio" class="btn-check" name="tipo" id="tipo-<?= $tk ?>" value="<?= $tk ?>" <?= $tipo === $tk ? 'checked' : '' ?>
-                           onchange="this.form.fornecedor.value='';this.form.q.value='';if(this.form.grupo)this.form.grupo.value='';this.form.submit()">
+                           onchange="this.form.fornecedor.value='';this.form.q.value='';if(this.form.grupo)this.form.grupo.value='';this.form.lista.value='';this.form.submit()">
                     <label class="btn btn-outline-primary" for="tipo-<?= $tk ?>"><i class="bi <?= $tk === 'mp' ? 'bi-droplet' : 'bi-box-seam' ?> me-1"></i><?= $tn ?></label>
                     <?php endforeach; ?>
                 </div>
@@ -357,6 +486,20 @@ require_once LAYOUT_PATH . '/header.php';
                 </select>
             </div>
             <?php endif; ?>
+            <div class="col-12 col-md col-xxl-2">
+                <label class="form-label small fw-semibold mb-1">Lista</label>
+                <div class="input-group">
+                    <select name="lista" class="form-select" onchange="this.form.submit()" title="Mostra só os produtos da lista escolhida">
+                        <option value="">Todos os produtos</option>
+                        <?php foreach ($listas as $lid => $l): ?>
+                        <option value="<?= $lid ?>" <?= $lista === $lid ? 'selected' : '' ?>><?= e($l['nome']) ?> (<?= (int)$l['n'] ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button type="button" class="btn btn-outline-secondary" onclick="abrirListas(LISTA_ATUAL)" title="<?= $lista ? 'Editar esta lista' : 'Criar uma lista' ?>">
+                        <i class="bi <?= $lista ? 'bi-pencil' : 'bi-plus-lg' ?>"></i>
+                    </button>
+                </div>
+            </div>
             <div class="col-12 col-md-6 col-xxl">
                 <label class="form-label small fw-semibold mb-1">Insumo</label>
                 <input type="search" name="q" class="form-control" list="lstInsumos" value="<?= e($q) ?>" placeholder="Todos (código ou parte do nome)">
@@ -600,7 +743,7 @@ $abas = [
         $histIdx[$I['codigo'] . '|' . $I['un']] = $hIdx;
         $histJs[] =['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
                      'url' => $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim,
-                                                              'fornecedor' => $forn, 'grupo' => $grupo, 'q' => $I['codigo'], 'visao' => 'compras'])];
+                                                              'fornecedor' => $forn, 'grupo' => $grupo, 'lista' => $lista ?: '', 'q' => $I['codigo'], 'visao' => 'compras'])];
         $a = $I['acc'];
         $resN += $a['n']; $resValor += $a['valor']; $acum += $a['valor'];
         if ($var !== null) {
@@ -671,7 +814,7 @@ $abas = [
         $varG = $G['pen'] > 0 ? ($G['ult'] / $G['pen'] - 1) * 100 : null;
         $gVal = $G['nome'] !== '' ? $G['nome'] : '__sem__';
         $uG = $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim, 'fornecedor' => $forn, 'q' => $q,
-                                              'grupo' => $gVal, 'visao' => 'resumo', 'ini_a' => $iniA, 'fim_a' => $fimA, 'ini_b' => $iniB, 'fim_b' => $fimB, 'ambos' => $soAmbos ? '1' : '0']);
+                                              'grupo' => $gVal, 'lista' => $lista ?: '', 'visao' => 'resumo', 'ini_a' => $iniA, 'fim_a' => $fimA, 'ini_b' => $iniB, 'fim_b' => $fimB, 'ambos' => $soAmbos ? '1' : '0']);
         // Insumos do sub grupo para o modal: [código, nome, un., CP, qtd, valor, 1ª compra, atual, data atual, índice no HIST]
         $itens = [];
         foreach ($G['lista'] as $I) {
@@ -680,7 +823,7 @@ $abas = [
                 $histIdx[$hk] = count($histJs);
                 $histJs[] = ['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
                              'url' => $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim,
-                                                                      'fornecedor' => $forn, 'grupo' => $grupo, 'q' => $I['codigo'], 'visao' => 'compras'])];
+                                                                      'fornecedor' => $forn, 'grupo' => $grupo, 'lista' => $lista ?: '', 'q' => $I['codigo'], 'visao' => 'compras'])];
             }
             $itens[] = [$I['codigo'], $I['nome'], count($unsPorInsumo[$I['codigo']] ?? []) > 1 ? $I['un'] : '', $I['acc']['n'], $I['acc']['qtd'], round($I['acc']['valor'], 2),
                         $I['penultimo'] ? (float)$I['primeiro']['valor_unitario'] : null, (float)$I['ultimo']['valor_unitario'], $I['ultimo']['data'], $histIdx[$hk]];
@@ -775,7 +918,7 @@ $abas = [
             $histIdx[$hk] = count($histJs);
             $histJs[] = ['c' => $I['codigo'], 'n' => $I['nome'], 'u' => $I['un'], 'l' => $I['hist'],
                          'url' => $self . '?' . http_build_query(['tipo' => $tipo, 'preco' => $modoPreco, 'ini' => $ini, 'fim' => $fim,
-                                                                  'fornecedor' => $forn, 'grupo' => $grupo, 'q' => $I['codigo'], 'visao' => 'compras'])];
+                                                                  'fornecedor' => $forn, 'grupo' => $grupo, 'lista' => $lista ?: '', 'q' => $I['codigo'], 'visao' => 'compras'])];
         }
         $dif = $L['va'] - $L['v1']; $real = $L['pago'] - $L['v1']; ?>
         <tr class="lin-ord"<?= $ordAttrs(['codigo' => $I['codigo'], 'nome' => $I['nome'], 'qtd' => $I['acc']['qtd'], 'pen' => $L['pp'], 'ult' => $L['pu'],
@@ -985,7 +1128,7 @@ $btnObs = fn(int $id, string $obs) => '<button type="button" class="btn btn-sm p
             <td class="text-muted"><?= e($c['insumo_codigo']) ?></td>
             <td class="fw-semibold"><?= e($c['insumo_nome']) ?></td>
             <td><?= e($c['fornecedor_nome']) ?> <span class="text-muted small"><?= e($c['fornecedor_codigo']) ?></span>
-                <div class="obs-txt small text-body-secondary fst-italic<?= ($c['observacao'] ?? '') === '' ? ' d-none' : '' ?>" data-obs-txt="<?= (int)$c['id'] ?>" title="<?= e($obsPor($c)) ?>"><i class="bi bi-chat-left-text me-1"></i><span><?= nl2br(e($c['observacao'] ?? '')) ?></span></div></td>
+                <div class="obs-txt small text-body-secondary fst-italic<?= ($c['observacao'] ?? '') === '' ? ' d-none' : '' ?>" data-obs-txt="<?= (int)$c['id'] ?>" ><i class="bi bi-chat-left-text me-1"></i><span><?= nl2br(e($c['observacao'] ?? '')) ?></span><div class="obs-por fst-normal text-muted"><?= e($obsPor($c)) ?></div></div></td>
             <td><?= e($c['nf']) ?></td>
             <td class="text-end"><?= qtdFmt($c['quantidade']) ?></td>
             <td><?= e($c['unidade']) ?></td>
@@ -1037,6 +1180,48 @@ $btnObs = fn(int $id, string $obs) => '<button type="button" class="btn btn-sm p
     </div>
 </div>
 
+<!-- ══ Modal: log de alterações das observações ══ -->
+<div class="modal fade" id="modalObsLog" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0"><i class="bi bi-clock-history me-2"></i>Alterações de observações</h5>
+                    <div class="small text-muted" id="olSub"><?= e($tiposNome[$tipo]) ?> · quem incluiu, alterou ou removeu cada observação, e quando</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form class="row g-2 mb-3 align-items-end" id="olFiltro" onsubmit="event.preventDefault(); carregarObsLog();">
+                    <div class="col-6 col-md-2"><label class="form-label small mb-0">Alterado de</label><input type="date" class="form-control form-control-sm" name="de"></div>
+                    <div class="col-6 col-md-2"><label class="form-label small mb-0">até</label><input type="date" class="form-control form-control-sm" name="ate"></div>
+                    <div class="col-6 col-md-2"><label class="form-label small mb-0">Ação</label>
+                        <select class="form-select form-select-sm" name="acao_log"><option value="">Todas</option><option value="incluida">Incluída</option>
+                            <option value="alterada">Alterada</option><option value="removida">Removida</option></select></div>
+                    <div class="col-6 col-md-4"><label class="form-label small mb-0">Busca</label>
+                        <input type="search" class="form-control form-control-sm" name="busca" placeholder="Insumo, fornecedor, NF, usuário ou texto"></div>
+                    <div class="col-12 col-md-2 d-flex gap-1"><button class="btn btn-sm btn-primary flex-fill"><i class="bi bi-search me-1"></i>Filtrar</button></div>
+                    <input type="hidden" name="compra">
+                </form>
+                <div class="alert alert-secondary py-1 px-2 small d-none" id="olMov"><i class="bi bi-funnel me-1"></i>Mostrando só um movimento.
+                    <a href="#" onclick="event.preventDefault(); abrirObsLog({});">Ver todos</a></div>
+                <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0" style="font-size:.85rem">
+                    <thead class="table-light"><tr>
+                        <th>Alterado em</th><th>Usuário</th><th>Ação</th><th>Movimento</th><th>Observação anterior</th><th>Observação nova</th>
+                    </tr></thead>
+                    <tbody id="olCorpo"></tbody>
+                </table>
+                </div>
+                <div class="small text-muted mt-2" id="olRodape"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- ══ Modal: insumos de um sub grupo (aba Por sub grupo) ══ -->
 <div class="modal fade" id="modalGrupo" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -1064,6 +1249,63 @@ $btnObs = fn(int $id, string $obs) => '<button type="button" class="btn btn-sm p
             <div class="modal-footer">
                 <a href="#" id="grpLink" class="btn btn-outline-secondary btn-sm"><i class="bi bi-funnel me-1"></i>Filtrar o relatório por este <?= e(mb_strtolower($rotGrupo)) ?></a>
                 <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══ Modal: listas de produtos (nome + produtos), usadas no filtro "Lista" ══ -->
+<div class="modal fade" id="modalListas" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title mb-0"><i class="bi bi-list-check me-2"></i>Listas de produtos</h5>
+                    <div class="small text-muted"><?= e($tiposNome[$tipo]) ?> · dê um nome à lista, marque os produtos e use-a no filtro <b>Lista</b> do relatório</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-12 col-lg-3">
+                        <button type="button" class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="editarLista(0)"><i class="bi bi-plus-lg me-1"></i>Nova lista</button>
+                        <div class="list-group small" id="lsListas"></div>
+                    </div>
+                    <div class="col-12 col-lg-9">
+                        <div class="row g-2 align-items-end mb-2">
+                            <div class="col-12 col-md-6">
+                                <label class="form-label small fw-semibold mb-1">Nome da lista</label>
+                                <input type="text" class="form-control" id="lsNome" maxlength="120" placeholder="Ex.: Embalagens linha capilar">
+                            </div>
+                            <div class="col-12 col-md-6">
+                                <label class="form-label small fw-semibold mb-1">Buscar produto</label>
+                                <input type="search" class="form-control" id="lsBusca" placeholder="Código ou parte do nome">
+                            </div>
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2 mb-2 small">
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="lsSoSel">
+                                <label class="form-check-label" for="lsSoSel">Só os da lista</label>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="marcarExibidos(true)">Marcar exibidos</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="marcarExibidos(false)">Desmarcar exibidos</button>
+                            <span class="ms-auto fw-semibold" id="lsConta"></span>
+                        </div>
+                        <div class="border rounded" style="max-height:52vh;overflow:auto">
+                            <table class="table table-sm table-hover align-middle mb-0" style="font-size:.85rem">
+                                <tbody id="lsProdutos"></tbody>
+                            </table>
+                        </div>
+                        <div class="small text-muted mt-1" id="lsRodape"></div>
+                        <div class="small text-danger mt-1 d-none" id="lsErro"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-danger me-auto d-none" id="lsExcluir" onclick="excluirLista()"><i class="bi bi-trash me-1"></i>Excluir lista</button>
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-outline-primary" onclick="salvarLista(false)"><i class="bi bi-check-lg me-1"></i>Salvar</button>
+                <button type="button" class="btn btn-primary" onclick="salvarLista(true)"><i class="bi bi-funnel me-1"></i>Salvar e filtrar</button>
             </div>
         </div>
     </div>
@@ -1206,8 +1448,9 @@ function hBtnObs(id, obs) {
          + '" title="' + (obs ? 'Editar observação' : 'Adicionar observação') + '"><i class="bi ' + (obs ? 'bi-chat-left-text-fill' : 'bi-chat-left') + '"></i></button>';
 }
 function hObsTxt(id, obs, por) {
-    return '<div class="obs-txt small text-body-secondary fst-italic' + (obs ? '' : ' d-none') + '" data-obs-txt="' + id + '" title="' + hEsc(por || '') + '">'
-         + '<i class="bi bi-chat-left-text me-1"></i><span>' + hEsc(obs).replace(/\n/g, '<br>') + '</span></div>';
+    return '<div class="obs-txt small text-body-secondary fst-italic' + (obs ? '' : ' d-none') + '" data-obs-txt="' + id + '">'
+         + '<i class="bi bi-chat-left-text me-1"></i><span>' + hEsc(obs).replace(/\n/g, '<br>') + '</span>'
+         + '<div class="obs-por fst-normal text-muted">' + hEsc(por || '') + '</div></div>';
 }
 function obsAtual(id) {
     for (var k in HIST) for (var j = 0; j < HIST[k].l.length; j++) if (HIST[k].l[j][5] === id) return HIST[k].l[j][6];
@@ -1229,12 +1472,14 @@ function obsEditor(btn) {
     ed.innerHTML = '<td colspan="' + tr.cells.length + '" class="bg-body-tertiary"><div class="d-flex flex-column flex-md-row gap-2 align-items-md-start">'
         + '<textarea class="form-control form-control-sm" rows="2" maxlength="2000" placeholder="Observação sobre este movimento…"></textarea>'
         + '<div class="d-flex gap-1 flex-shrink-0"><button type="button" class="btn btn-sm btn-primary obs-salvar"><i class="bi bi-check-lg me-1"></i>Salvar</button>'
-        + '<button type="button" class="btn btn-sm btn-outline-secondary obs-cancelar">Cancelar</button></div></div>'
+        + '<button type="button" class="btn btn-sm btn-outline-secondary obs-cancelar">Cancelar</button>'
+        + '<button type="button" class="btn btn-sm btn-link obs-hist text-nowrap" title="Todas as alterações da observação deste movimento"><i class="bi bi-clock-history me-1"></i>Alterações</button></div></div>'
         + '<div class="small text-danger mt-1 obs-erro d-none"></div></td>';
     tr.parentNode.insertBefore(ed, prox);
     var ta = ed.querySelector('textarea'), bs = ed.querySelector('.obs-salvar'), er = ed.querySelector('.obs-erro');
     ta.value = obsAtual(id); ta.focus();
     ed.querySelector('.obs-cancelar').addEventListener('click', function () { ed.remove(); });
+    ed.querySelector('.obs-hist').addEventListener('click', function () { abrirObsLog({compra: id}); });
     ta.addEventListener('keydown', function (ev) {
         if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); ed.remove(); }
         if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) bs.click();
@@ -1255,6 +1500,37 @@ document.addEventListener('click', function (ev) {
     var b = ev.target.closest('.btn-obs'); if (!b) return;
     ev.preventDefault(); ev.stopPropagation(); obsEditor(b);
 });
+// ── Log de alterações das observações (botão do cabeçalho e link "Alterações" do editor) ──
+var OL_TIPO = <?= json_encode($tipo) ?>, OL_ACAO = {incluida: ['Incluída', 'text-bg-success'], alterada: ['Alterada', 'text-bg-warning'], removida: ['Removida', 'text-bg-danger']};
+function abrirObsLog(f) {
+    var fm = document.getElementById('olFiltro');
+    fm.reset(); fm.elements.compra.value = f.compra || '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('modalObsLog')).show();
+    carregarObsLog();
+}
+function carregarObsLog() {
+    var fm = document.getElementById('olFiltro'), corpo = document.getElementById('olCorpo'), rod = document.getElementById('olRodape');
+    var u = new URL(location.pathname, location.origin);
+    u.searchParams.set('acao', 'obslog'); u.searchParams.set('tipo', OL_TIPO);
+    ['de', 'ate', 'acao_log', 'busca', 'compra'].forEach(function (n) { if (fm.elements[n].value) u.searchParams.set(n, fm.elements[n].value); });
+    document.getElementById('olMov').classList.toggle('d-none', !fm.elements.compra.value);
+    corpo.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3"><span class="spinner-border spinner-border-sm me-2"></span>Carregando…</td></tr>';
+    rod.textContent = '';
+    fetch(u, {credentials: 'same-origin'}).then(function (r) { return r.json(); }).then(function (j) {
+        var obs = function (t) { return t ? hEsc(t).replace(/\n/g, '<br>') : '<span class="text-muted">—</span>'; };
+        corpo.innerHTML = j.linhas.length ? j.linhas.map(function (l) {
+            var a = OL_ACAO[l.acao] || [l.acao, 'text-bg-secondary'];
+            return '<tr><td class="text-nowrap">' + hEsc(l.em) + '</td><td>' + hEsc(l.usuario || '—') + '</td>'
+                + '<td><span class="badge ' + a[1] + '">' + a[0] + '</span></td>'
+                + '<td><div class="fw-semibold">' + hEsc(l.insumo) + ' <span class="text-muted fw-normal">' + hEsc(l.codigo) + '</span></div>'
+                + '<div class="text-muted">' + hEsc(l.data) + (l.nf ? ' · NF ' + hEsc(l.nf) : '') + (l.fornecedor ? ' · ' + hEsc(l.fornecedor) : '') + '</div></td>'
+                + '<td class="text-body-secondary">' + obs(l.antes) + '</td><td>' + obs(l.depois) + '</td></tr>';
+        }).join('') : '<tr><td colspan="6" class="text-center text-muted py-4">Nenhuma alteração encontrada.</td></tr>';
+        rod.textContent = j.linhas.length + ' registro(s)' + (j.mais ? ' — mostrando os 1.000 mais recentes; refine os filtros.' : '.');
+    }).catch(function () {
+        corpo.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-3">Falha ao carregar o histórico.</td></tr>';
+    });
+}
 function abrirHist(i) {
     var h = HIST[i]; if (!h) return;
     var qtd = 0, valor = 0, min = null, max = null, forn = {}, nfs = {}, linhas = [], ant = null;
@@ -1331,6 +1607,108 @@ Array.prototype.forEach.call(document.querySelectorAll('tr[data-grp]'), function
     tr.addEventListener('click', function () { abrirGrupo(+tr.dataset.grp); });
     tr.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') abrirGrupo(+tr.dataset.grp); });
 });
+// ── Listas de produtos: criar/editar/excluir; "Salvar e filtrar" recarrega o relatório com o filtro Lista ──
+var LISTAS = <?= json_encode($listasJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+var PRODUTOS = <?= json_encode(array_values($produtosLista), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;   // [código, nome, tem compra]
+var LISTA_ATUAL = <?= (int)$lista ?>, LS_TIPO = <?= json_encode($tipo) ?>;
+var lsId = 0, lsSel = {};
+(function () {
+    var corpo = document.getElementById('lsProdutos');
+    corpo.innerHTML = PRODUTOS.map(function (p, i) {
+        return '<tr data-i="' + i + '"><td style="width:1%"><input type="checkbox" class="form-check-input ls-chk" id="lsp' + i + '"></td>'
+             + '<td class="text-muted text-nowrap"><label for="lsp' + i + '">' + hEsc(p[0]) + '</label></td>'
+             + '<td class="w-100"><label for="lsp' + i + '">' + hEsc(p[1]) + '</label>'
+             + (p[2] ? '' : ' <span class="badge text-bg-light border fw-normal" title="Está no cadastro, mas ainda não tem compra importada">sem compra</span>') + '</td></tr>';
+    }).join('') || '<tr><td class="text-center text-muted py-4">Nenhum produto importado para este tipo.</td></tr>';
+    corpo.addEventListener('change', function (ev) {
+        var tr = ev.target.closest('tr[data-i]'); if (!tr) return;
+        var c = PRODUTOS[+tr.dataset.i][0];
+        if (ev.target.checked) lsSel[c] = 1; else delete lsSel[c];
+        lsConta();
+    });
+    document.getElementById('lsBusca').addEventListener('input', lsFiltra);
+    document.getElementById('lsSoSel').addEventListener('change', lsFiltra);
+    document.getElementById('lsNome').addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); salvarLista(true); } });
+})();
+function lsNorm(t) { return String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
+function lsConta() {
+    document.getElementById('lsConta').textContent = Object.keys(lsSel).length + ' produto(s) na lista';
+}
+function lsFiltra() {
+    var b = lsNorm(document.getElementById('lsBusca').value.trim()), so = document.getElementById('lsSoSel').checked, n = 0;
+    Array.prototype.forEach.call(document.querySelectorAll('#lsProdutos tr[data-i]'), function (tr) {
+        var p = PRODUTOS[+tr.dataset.i];
+        var vis = (!so || lsSel[p[0]]) && (!b || lsNorm(p[0] + ' ' + p[1]).indexOf(b) >= 0);
+        tr.classList.toggle('d-none', !vis);
+        if (vis) n++;
+    });
+    document.getElementById('lsRodape').textContent = n + ' de ' + PRODUTOS.length + ' produto(s) exibido(s).';
+}
+function marcarExibidos(marca) {
+    Array.prototype.forEach.call(document.querySelectorAll('#lsProdutos tr[data-i]:not(.d-none)'), function (tr) {
+        var c = PRODUTOS[+tr.dataset.i][0];
+        tr.querySelector('.ls-chk').checked = marca;
+        if (marca) lsSel[c] = 1; else delete lsSel[c];
+    });
+    lsConta();
+}
+function lsRenderListas() {
+    document.getElementById('lsListas').innerHTML = LISTAS.length ? LISTAS.map(function (l) {
+        return '<button type="button" class="list-group-item list-group-item-action' + (l.id === lsId ? ' active' : '') + '" onclick="editarLista(' + l.id + ')">'
+             + '<div class="fw-semibold">' + hEsc(l.nome) + '</div><div class="small opacity-75">' + l.itens.length + ' produto(s)'
+             + (l.por ? ' · ' + hEsc(l.por) : '') + '</div></button>';
+    }).join('') : '<div class="text-muted small p-2">Nenhuma lista criada ainda.</div>';
+}
+function editarLista(id) {
+    var l = LISTAS.filter(function (x) { return x.id === id; })[0];
+    lsId = l ? l.id : 0; lsSel = {};
+    if (l) l.itens.forEach(function (c) { lsSel[c] = 1; });
+    document.getElementById('lsNome').value = l ? l.nome : '';
+    document.getElementById('lsBusca').value = '';
+    document.getElementById('lsSoSel').checked = !!l;            // ao abrir uma lista, mostra primeiro o que já está nela
+    document.getElementById('lsExcluir').classList.toggle('d-none', !l);
+    document.getElementById('lsErro').classList.add('d-none');
+    Array.prototype.forEach.call(document.querySelectorAll('#lsProdutos tr[data-i]'), function (tr) {
+        tr.querySelector('.ls-chk').checked = !!lsSel[PRODUTOS[+tr.dataset.i][0]];
+    });
+    lsRenderListas(); lsConta(); lsFiltra();
+    document.getElementById('lsNome').focus();
+}
+function abrirListas(id) {
+    var m = document.getElementById('modalListas');
+    m.addEventListener('shown.bs.modal', function () { document.getElementById('lsNome').focus(); }, {once: true});
+    bootstrap.Modal.getOrCreateInstance(m).show();
+    editarLista(id || 0);
+}
+function lsErro(msg) { var e = document.getElementById('lsErro'); e.textContent = msg; e.classList.remove('d-none'); }
+function lsRecarrega(lista) {
+    var u = new URL(location.href);
+    if (lista) u.searchParams.set('lista', lista); else if (lista === 0) u.searchParams.delete('lista');
+    location.href = u.toString();
+}
+function salvarLista(filtrar) {
+    var fd = new FormData(), itens = Object.keys(lsSel);
+    fd.append('acao', 'lista_salvar'); fd.append('id', lsId); fd.append('tipo', LS_TIPO);
+    fd.append('nome', document.getElementById('lsNome').value);
+    itens.forEach(function (c) { fd.append('itens[]', c); });
+    document.getElementById('lsErro').classList.add('d-none');
+    fetch(location.pathname, {method: 'POST', body: fd, credentials: 'same-origin'})
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+            if (!j.ok) throw new Error(j.erro || 'Falha ao salvar.');
+            lsRecarrega(filtrar ? j.id : (LISTA_ATUAL || null));
+        })
+        .catch(function (e) { lsErro(e.message || 'Falha ao salvar.'); });
+}
+function excluirLista() {
+    var l = LISTAS.filter(function (x) { return x.id === lsId; })[0];
+    if (!l || !confirm('Excluir a lista "' + l.nome + '"? Os produtos e as compras não são apagados.')) return;
+    var fd = new FormData(); fd.append('acao', 'lista_excluir'); fd.append('id', lsId);
+    fetch(location.pathname, {method: 'POST', body: fd, credentials: 'same-origin'})
+        .then(function (r) { return r.json(); })
+        .then(function (j) { if (!j.ok) throw new Error(j.erro || 'Falha ao excluir.'); lsRecarrega(lsId === LISTA_ATUAL ? 0 : null); })
+        .catch(function (e) { lsErro(e.message || 'Falha ao excluir.'); });
+}
 // PDF pela impressão do navegador ("Salvar como PDF"). Imprime sempre em tema claro; "todas" mostra as 5 abas, uma por página.
 function gerarPdf(todas) {
     var html = document.documentElement, tema = html.getAttribute('data-bs-theme');
@@ -1355,6 +1733,7 @@ var XLS_FILTROS = <?= json_encode([
     ['Período', dataBR($ini) . ' a ' . dataBR($fim)],
     ['Período A × B', 'A: ' . dataBR($iniA) . ' a ' . dataBR($fimA) . ' | B: ' . dataBR($iniB) . ' a ' . dataBR($fimB) . ($soAmbos ? ' (só insumos dos dois períodos)' : '')],
     ['Fornecedor', $forn !== '' ? $forn . ' - ' . (array_column($fornecedores, 'nome', 'fornecedor_codigo')[$forn] ?? '') : 'Todos'],
+    ['Lista', $lista ? $listas[$lista]['nome'] : 'Todos os produtos'],
     ['Insumo', $q !== '' ? $q : 'Todos'],
     [$rotGrupo, $grupo === '' ? 'Todos' : ($grupo === '__sem__' ? 'Sem classificação' : $grupo)],
     ['Var. % (Resumo)', $varPos || $varNeg ? implode(' e ', array_filter([$varPos ? 'Aumento' : '', $varNeg ? 'Redução' : ''])) : 'Todos'],

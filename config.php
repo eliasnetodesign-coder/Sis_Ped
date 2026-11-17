@@ -467,6 +467,28 @@ function db() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
             // Observação livre por movimento (relatório Custos de MP e Embalagem) — preservada na reimportação.
             try { $pdo->exec("ALTER TABLE custos_insumos_compras ADD COLUMN observacao TEXT NULL, ADD COLUMN obs_usuario VARCHAR(100) NULL, ADD COLUMN obs_em DATETIME NULL"); } catch (PDOException $e) {}
+            // Log de alterações das observações. Guarda a identificação do movimento por extenso (o id da compra muda
+            // quando a planilha é reimportada), o texto anterior e o novo, quem alterou e quando.
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS custos_insumos_obs_log (
+                id                INT AUTO_INCREMENT PRIMARY KEY,
+                compra_id         INT NULL,
+                tipo              ENUM('mp','emb') NOT NULL,
+                insumo_codigo     VARCHAR(30) NOT NULL,
+                insumo_nome       VARCHAR(255) NULL,
+                data_compra       DATE NULL,
+                nf                VARCHAR(30) NULL,
+                fornecedor_codigo VARCHAR(30) NULL,
+                fornecedor_nome   VARCHAR(255) NULL,
+                acao              ENUM('incluida','alterada','removida') NOT NULL,
+                obs_anterior      TEXT NULL,
+                obs_nova          TEXT NULL,
+                usuario_id        INT NULL,
+                usuario_nome      VARCHAR(100) NULL,
+                criado_em         DATETIME NOT NULL,
+                KEY idx_tipo_em (tipo, criado_em),
+                KEY idx_insumo (insumo_codigo),
+                KEY idx_compra (compra_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
             // Cadastro de materiais (planilha do A&M): classificação da coluna P, usada como filtro do relatório.
             try { $pdo->exec("CREATE TABLE IF NOT EXISTS custos_insumos_cadastro (
                 tipo          ENUM('mp','emb') NOT NULL,
@@ -476,6 +498,22 @@ function db() {
                 rotulo        VARCHAR(100) NULL,
                 PRIMARY KEY (tipo, insumo_codigo),
                 KEY idx_grupo (tipo, grupo)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            // Listas de insumos nomeadas pelo usuário (relatório Custos de MP e Embalagem): servem de filtro do relatório.
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS custos_insumos_listas (
+                id            INT AUTO_INCREMENT PRIMARY KEY,
+                tipo          ENUM('mp','emb') NOT NULL,
+                nome          VARCHAR(120) NOT NULL,
+                usuario_id    INT NULL,
+                usuario_nome  VARCHAR(100) NULL,
+                criado_em     DATETIME NOT NULL,
+                atualizado_em DATETIME NOT NULL,
+                KEY idx_tipo (tipo, nome)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
+            try { $pdo->exec("CREATE TABLE IF NOT EXISTS custos_insumos_lista_itens (
+                lista_id      INT NOT NULL,
+                insumo_codigo VARCHAR(30) NOT NULL,
+                PRIMARY KEY (lista_id, insumo_codigo)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); } catch (PDOException $e) {}
             try {
                 if ((int)$pdo->query('SELECT COUNT(*) FROM campanhas_am')->fetchColumn() === 0) {
@@ -4757,13 +4795,13 @@ function custosInsumosImportar(array $dados, string $arquivo): array {
         $obsKey = fn(array $l, int $n) => implode('|', [$l['insumo_codigo'], $l['data'], (string)$l['nf'], (string)$l['fornecedor_codigo'],
                                                          (string)$l['unidade'], number_format((float)$l['quantidade'], 4, '.', ''),
                                                          number_format((float)$l['valor_unitario'], 6, '.', ''), $n]);
-        $st = $pdo->prepare('SELECT insumo_codigo, data, nf, fornecedor_codigo, unidade, quantidade, valor_unitario, observacao, obs_usuario, obs_em
+        $st = $pdo->prepare('SELECT id, insumo_codigo, data, nf, fornecedor_codigo, unidade, quantidade, valor_unitario, observacao, obs_usuario, obs_em
                              FROM custos_insumos_compras WHERE tipo = ? AND COALESCE(empresa,"") = ? AND data BETWEEN ? AND ? ORDER BY id');
         $st->execute([$dados['tipo'], (string)$dados['empresa'], $dados['ini'], $dados['fim']]);
         $obsAnt = []; $occ = [];
         foreach ($st->fetchAll() as $l) {
             $k0 = $obsKey($l, 0); $n = $occ[$k0] = ($occ[$k0] ?? 0) + 1;
-            if (($l['observacao'] ?? '') !== '') $obsAnt[$obsKey($l, $n)] = [$l['observacao'], $l['obs_usuario'], $l['obs_em']];
+            if (($l['observacao'] ?? '') !== '') $obsAnt[$obsKey($l, $n)] = [$l['observacao'], $l['obs_usuario'], $l['obs_em'], (int)$l['id']];
         }
         $del = $pdo->prepare('DELETE FROM custos_insumos_compras WHERE tipo = ? AND COALESCE(empresa,"") = ? AND data BETWEEN ? AND ?');
         $del->execute([$dados['tipo'], (string)$dados['empresa'], $dados['ini'], $dados['fim']]);
@@ -4776,13 +4814,17 @@ function custosInsumosImportar(array $dados, string $arquivo): array {
         $ins = $pdo->prepare('INSERT INTO custos_insumos_compras (importacao_id, tipo, empresa, insumo_codigo, insumo_nome, data, valor_unitario,
                                   quantidade, unidade, nf, fornecedor_codigo, fornecedor_nome, observacao, obs_usuario, obs_em)
                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-        $occ = [];
+        $occ = []; $relog = [];
         foreach ($dados['linhas'] as $l) {
             $k0 = $obsKey($l, 0); $n = $occ[$k0] = ($occ[$k0] ?? 0) + 1;
-            $o = $obsAnt[$obsKey($l, $n)] ?? [null, null, null];
+            $o = $obsAnt[$obsKey($l, $n)] ?? [null, null, null, 0];
             $ins->execute([$impId, $dados['tipo'], $dados['empresa'], $l['insumo_codigo'], $l['insumo_nome'], $l['data'], $l['valor_unitario'],
                            $l['quantidade'], $l['unidade'], $l['nf'], $l['fornecedor_codigo'], $l['fornecedor_nome'], $o[0], $o[1], $o[2]]);
+            if ($o[3]) $relog[$o[3]] = (int)$pdo->lastInsertId();
         }
+        // O log de observações aponta para o id da compra: acompanha o movimento para o id novo.
+        $upLog = $pdo->prepare('UPDATE custos_insumos_obs_log SET compra_id = ? WHERE compra_id = ?');
+        foreach ($relog as $old => $new) $upLog->execute([$new, $old]);
         $pdo->commit();
     } catch (Throwable $e) {
         $pdo->rollBack();
